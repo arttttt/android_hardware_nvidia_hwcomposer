@@ -27,6 +27,7 @@
 #include "display/AtomicCommitSink.h"
 #include "display/Device.h"
 #include "tegra/TegraConnector.h"
+#include "tegra/TegraFbImporter.h"
 
 namespace android {
 namespace hwc {
@@ -71,6 +72,11 @@ public:
         return std::nullopt;
     }
 
+    /* What turns a described buffer into something a frame can name. One for
+     * the whole controller: there is nothing per-display about it, and
+     * nothing to remember between frames. */
+    drm_hwcomposer::FbImporter &importer() { return mImporter; }
+
     /* The panels found at start-up, in head order. What builds a display is
      * handed one of these; the pipeline it builds binds to it. */
     const std::vector<std::unique_ptr<drm_hwcomposer::Connector>>
@@ -80,6 +86,8 @@ public:
 
 private:
     TegraDevice() = default;
+
+    drm_hwcomposer::TegraFbImporter mImporter;
 
     std::vector<std::unique_ptr<drm_hwcomposer::Connector>> mConnectors;
 

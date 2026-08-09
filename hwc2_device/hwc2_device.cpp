@@ -34,6 +34,7 @@
 #include "hwc/HwcDisplay.h"
 #include "hwc/HwcLayer.h"
 #include "hwc2_device/DrmHwcTwo.h"
+#include "utils/Time.h"
 #include "utils/log.h"
 #include "utils/properties.h"
 
@@ -90,7 +91,12 @@ static auto GetHwc2DeviceDisplay(HwcDisplay &display)
 
 class Hwc2DeviceLayer : public FrontendLayerBase {
  public:
-  auto HandleNextBuffer(buffer_handle_t buffer_handle, int32_t fence_fd)
+  /* The layer no longer keeps a buffer per slot of its own -- that went from
+   * HwcLayer after this file was written -- so what a slot saves is a reading
+   * of the buffer rather than a place to put it. A description is read once
+   * per slot and handed over again each frame with that frame's fence. */
+  auto HandleNextBuffer(buffer_handle_t buffer_handle, int32_t fence_fd,
+                        FbImporter &importer)
       -> std::pair<std::optional<HwcLayer::LayerProperties>,
                    bool /* not a swapchain */> {
     auto slot = GetSlotNumber(buffer_handle);
@@ -104,12 +110,11 @@ class Hwc2DeviceLayer : public FrontendLayerBase {
     int32_t slot_id = 0;
 
     if (slot.has_value()) {
-      buffer_provided = swchain_slots_[slot.value()];
+      buffer_provided = swchain_slots_.count(slot.value()) != 0;
       slot_id = slot.value();
       not_a_swapchain = true;
     }
 
-    HwcLayer::LayerProperties lp;
     if (!buffer_provided) {
       auto bo_info = BufferInfoGetter::GetInstance()->GetBoInfo(buffer_handle);
       if (!bo_info) {
@@ -117,13 +122,13 @@ class Hwc2DeviceLayer : public FrontendLayerBase {
         return std::make_pair(std::nullopt, true);
       }
 
-      lp.slot_buffer = {
-          .slot_id = slot_id,
-          .bi = bo_info,
-      };
+      swchain_slots_[slot_id] = bo_info.value();
     }
-    lp.active_slot = {
-        .slot_id = slot_id,
+
+    HwcLayer::LayerProperties lp;
+    lp.buffer = HwcLayer::Buffer{
+        .bi = swchain_slots_[slot_id],
+        .fb = importer.GetOrCreateFbId(&swchain_slots_[slot_id]),
         .fence = MakeSharedFd(fence_fd),
     };
 
@@ -178,7 +183,7 @@ class Hwc2DeviceLayer : public FrontendLayerBase {
 
   bool invalid_{}; /* Layer is invalid and should be skipped */
   std::map<BufferUniqueId, int /*slot*/> swchain_lookup_table_;
-  std::map<int /*slot*/, bool /*buffer_provided*/> swchain_slots_;
+  std::map<int /*slot*/, BufferInfo /*already read*/> swchain_slots_;
   bool swchain_reassembled_{};
 };
 
@@ -261,20 +266,23 @@ static void HookDevGetCapabilities(hwc2_device_t * /*dev*/, uint32_t *out_count,
 
 // NOLINTEND(cppcoreguidelines-macro-usage)
 
-static BufferColorSpace Hwc2ToColorSpace(int32_t dataspace) {
+/* What upstream calls a colour space here is the matrix a buffer's colour was
+ * encoded with, and the type it goes into was renamed to say so after this
+ * file was written. The mapping is unchanged. */
+static BufferColorEncoding Hwc2ToColorSpace(int32_t dataspace) {
   switch (dataspace & HAL_DATASPACE_STANDARD_MASK) {
     case HAL_DATASPACE_STANDARD_BT709:
-      return BufferColorSpace::kItuRec709;
+      return BufferColorEncoding::kItuRec709;
     case HAL_DATASPACE_STANDARD_BT601_625:
     case HAL_DATASPACE_STANDARD_BT601_625_UNADJUSTED:
     case HAL_DATASPACE_STANDARD_BT601_525:
     case HAL_DATASPACE_STANDARD_BT601_525_UNADJUSTED:
-      return BufferColorSpace::kItuRec601;
+      return BufferColorEncoding::kItuRec601;
     case HAL_DATASPACE_STANDARD_BT2020:
     case HAL_DATASPACE_STANDARD_BT2020_CONSTANT_LUMINANCE:
-      return BufferColorSpace::kItuRec2020;
+      return BufferColorEncoding::kItuRec2020;
     default:
-      return BufferColorSpace::kUndefined;
+      return BufferColorEncoding::kUndefined;
   }
 }
 
@@ -451,23 +459,20 @@ static int32_t SetClientTarget(hwc2_device_t *device, hwc2_display_t display,
   }
 
   if (target == nullptr) {
-    client_layer.ClearSlots();
     h2l->SwChainClearCache();
 
     return 0;
   }
 
-  auto [lp, not_a_swapchain] = h2l->HandleNextBuffer(target, acquire_fence);
+  auto [lp, not_a_swapchain] = h2l->HandleNextBuffer(target, acquire_fence,
+                                                    *idisplay->GetPipe()
+                                                         .importer);
   if (!lp) {
     ALOGE("Failed to process client target");
     return static_cast<int32_t>(HWC2::Error::BadLayer);
   }
 
-  if (not_a_swapchain) {
-    client_layer.ClearSlots();
-  }
-
-  lp->color_space = Hwc2ToColorSpace(dataspace);
+  lp->color_encoding = Hwc2ToColorSpace(dataspace);
   lp->sample_range = Hwc2ToSampleRange(dataspace);
 
   idisplay->GetClientLayer().SetLayerProperties(lp.value());
@@ -677,14 +682,12 @@ static int32_t SetOutputBuffer(hwc2_device_t *device, hwc2_display_t display,
         std::make_shared<Hwc2DeviceLayer>());
   }
 
-  auto [lp, not_a_swapchain] = h2l->HandleNextBuffer(buffer, release_fence);
+  auto [lp, not_a_swapchain] = h2l->HandleNextBuffer(buffer, release_fence,
+                                                    *idisplay->GetPipe()
+                                                         .importer);
   if (!lp) {
     ALOGE("Failed to process output buffer");
     return static_cast<int32_t>(HWC2::Error::BadLayer);
-  }
-
-  if (not_a_swapchain) {
-    writeback_layer->ClearSlots();
   }
 
   writeback_layer->SetLayerProperties(lp.value());
@@ -1136,15 +1139,18 @@ static int32_t SetLayerBuffer(hwc2_device_t *device, hwc2_display_t display,
 
   auto h2l = GetHwc2DeviceLayer(*ilayer);
 
-  auto [lp, not_a_swapchain] = h2l->HandleNextBuffer(buffer, acquire_fence);
+  auto [lp, not_a_swapchain] = h2l->HandleNextBuffer(buffer, acquire_fence,
+                                                    *idisplay->GetPipe()
+                                                         .importer);
   if (!lp) {
     ALOGV("Failed to process layer buffer");
     return static_cast<int32_t>(HWC2::Error::BadLayer);
   }
 
-  if (not_a_swapchain) {
-    ilayer->ClearSlots();
-  }
+  /* Whether this was one buffer of a swapchain or a one-off used to decide
+   * what the layer forgot; there is nothing kept in the layer to forget now,
+   * so the answer is only read to keep the reading honest. */
+  (void)not_a_swapchain;
 
   ilayer->SetLayerProperties(lp.value());
 

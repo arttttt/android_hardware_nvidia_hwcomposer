@@ -41,6 +41,7 @@ std::unique_ptr<DisplayPipeline> TegraBackend::CreatePipeline(
     return nullptr;
 
   pipeline->device = &GetDevice();
+  pipeline->importer = &static_cast<hwc::TegraDevice &>(GetDevice()).importer();
   pipeline->planner = CreateCompositionPlanner();
 
   return pipeline;
