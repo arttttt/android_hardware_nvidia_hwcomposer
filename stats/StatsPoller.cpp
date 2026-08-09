@@ -26,6 +26,7 @@
 #include "stats/CompositionStatsAtomReporter.h"
 #include "stats/CountActiveDisplaysReporter.h"
 #include "stats/Stats.h"
+#include "utils/ThreadAnnotations.h"
 
 namespace android::drm_hwcomposer {
 
