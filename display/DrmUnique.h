@@ -16,10 +16,14 @@
 
 #pragma once
 
-#include <drm/drm_mode.h>
+/* Before the display headers, which name the fixed-width types without
+ * asking for them. See the note in display/DrmMode.h. */
+#include <cstdint>
+
 #include <xf86drmMode.h>
 
-#include <cstdint>
+#include "drm/drm_mode.h"
+
 #include <functional>
 #include <memory>
 

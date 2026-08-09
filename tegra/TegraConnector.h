@@ -72,8 +72,9 @@ public:
 private:
     const uint32_t mIndex;
 
-    /* Held rather than referenced: the modes below point into it. */
-    const PanelTiming mTiming;
+    /* Held rather than referenced: the modes below are built from it. Not
+     * const, because a mode is built from a pointer to it. */
+    PanelTiming mTiming;
 
     /* Exactly one. The panel has a single timing; the framework still wants
      * a list, so it gets one of length one. */
