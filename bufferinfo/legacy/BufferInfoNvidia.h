@@ -36,6 +36,23 @@ class BufferInfoNvidia : public LegacyBufferInfoGetter {
   using LegacyBufferInfoGetter::LegacyBufferInfoGetter;
 
   auto GetBoInfo(buffer_handle_t handle) -> std::optional<BufferInfo> override;
+
+  /* Which buffer this is, told apart from every other one.
+   *
+   * Answered here because the general way of answering it does not work on
+   * this allocator's handles. It takes the handle's first descriptor to be
+   * the memory the pixels live in and identifies the buffer by which file
+   * that is; here the first descriptor is something else, and the question
+   * comes back unanswered for every buffer of every frame.
+   *
+   * What is lost by that is the recognition of a buffer already seen. A layer
+   * draws into a small ring of them in turn, and everything read out of one
+   * -- its size, its arrangement, the identifier the display knows it by --
+   * holds for as long as the buffer does. Unrecognised, all of it is read
+   * again on every frame for every layer.
+   */
+  auto GetUniqueId(buffer_handle_t handle)
+      -> std::optional<BufferUniqueId> override;
 };
 
 }  // namespace android::drm_hwcomposer

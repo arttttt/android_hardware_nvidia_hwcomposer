@@ -17,6 +17,7 @@
 #include "bufferinfo/legacy/BufferInfoNvidia.h"
 
 #include <cutils/native_handle.h>
+#include <sys/stat.h>
 #include <drm/drm_fourcc.h>
 
 #include <optional>
@@ -134,6 +135,27 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
   bi.fds_shared = Import(handle);
 
   return bi;
+}
+
+auto BufferInfoNvidia::GetUniqueId(buffer_handle_t handle)
+    -> std::optional<BufferUniqueId> {
+  auto *gralloc = NvGralloc::GetInstance();
+  if (gralloc == nullptr || !gralloc->IsValid(handle))
+    return {};
+
+  /* Asked of the allocator rather than read off the handle. The descriptor
+   * it hands back is the memory the pixels live in, and two handles naming
+   * the same memory are the same buffer -- which is what the caller is
+   * asking. Borrowed, so nothing is closed here. */
+  const int fd = gralloc->GetMemFd(handle);
+  if (fd < 0)
+    return {};
+
+  struct stat sb = {};
+  if (fstat(fd, &sb) != 0)
+    return {};
+
+  return static_cast<BufferUniqueId>(sb.st_ino);
 }
 
 }  // namespace android::drm_hwcomposer
