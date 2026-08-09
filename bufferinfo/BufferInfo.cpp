@@ -16,6 +16,7 @@
 
 #include "BufferInfo.h"
 
+#include <dlfcn.h>
 #include <errno.h>
 
 #include <hardware/hardware.h>
@@ -28,27 +29,75 @@
 #undef  LOG_TAG
 #define LOG_TAG "hwc-buffer"
 
-/* The allocator's own interface, declared here rather than taken from its
- * header.
- *
- * The header that ships with the leaked sources describes a build older than
- * the library on this device -- it does not even declare nvgr_get_stride,
- * which the library exports. Including it would drag in that build's idea of
- * the surface structure and of the handle, and those are exactly the things
- * that have changed. Four functions with a plain C signature are all this
- * needs, and their names have survived every version seen so far.
- */
-extern "C" {
-int nvgr_is_valid(buffer_handle_t handle);
-int nvgr_get_memfd(buffer_handle_t handle);
-int nvgr_get_format(buffer_handle_t handle);
-int nvgr_get_stride(buffer_handle_t handle);
-}
-
 namespace android {
 namespace hwc {
 
 namespace {
+
+/* The allocator's own interface, resolved at run time.
+ *
+ * Not linked against, for two reasons. The library is declared in the vendor
+ * blob repository by installation path rather than as a vendor module, so the
+ * build has nothing to link a vendor module against; and that repository is
+ * shared with the branch that already works, which is not a thing to change
+ * for our convenience.
+ *
+ * Not taken from its header either. The header shipped with the leaked
+ * sources describes a build older than the library on this device -- it does
+ * not even declare nvgr_get_stride, which the library exports -- so its idea
+ * of the handle and of the surface structure is exactly what cannot be
+ * trusted. Four functions with a plain C signature are all this needs, and
+ * their names have outlived every version seen.
+ */
+struct Allocator {
+    int (*isValid)(buffer_handle_t) = nullptr;
+    int (*memFd)(buffer_handle_t) = nullptr;
+    int (*format)(buffer_handle_t) = nullptr;
+    int (*stride)(buffer_handle_t) = nullptr;
+
+    bool resolved = false;
+    bool failed = false;
+};
+
+Allocator gAllocator;
+
+template <typename Fn>
+bool resolveOne(void *library, const char *name, Fn *slot) {
+    *slot = reinterpret_cast<Fn>(dlsym(library, name));
+    if (*slot == nullptr) {
+        HWC_LOGE("libnvgr has no %s", name);
+        return false;
+    }
+    return true;
+}
+
+/* Resolved once. A second attempt after a failure would fail the same way
+ * and log the same lines on every frame. */
+const Allocator *allocator() {
+    if (gAllocator.resolved)
+        return gAllocator.failed ? nullptr : &gAllocator;
+
+    gAllocator.resolved = true;
+
+    void *library = dlopen("libnvgr.so", RTLD_NOW);
+    if (library == nullptr) {
+        HWC_LOGE("libnvgr.so: %s", dlerror());
+        gAllocator.failed = true;
+        return nullptr;
+    }
+
+    const bool ok = resolveOne(library, "nvgr_is_valid", &gAllocator.isValid) &&
+                    resolveOne(library, "nvgr_get_memfd", &gAllocator.memFd) &&
+                    resolveOne(library, "nvgr_get_format", &gAllocator.format) &&
+                    resolveOne(library, "nvgr_get_stride", &gAllocator.stride);
+    if (!ok) {
+        gAllocator.failed = true;
+        return nullptr;
+    }
+
+    HWC_LOGI("libnvgr resolved");
+    return &gAllocator;
+}
 
 /* Bytes each pixel occupies, for the formats a display can scan out. Zero
  * for anything else, which is how the caller learns it cannot. */
@@ -92,25 +141,29 @@ int describeBuffer(buffer_handle_t handle, uint32_t width, BufferInfo *outInfo) 
     if (handle == nullptr)
         return -EINVAL;
 
-    if (!nvgr_is_valid(handle)) {
+    const Allocator *nvgr = allocator();
+    if (nvgr == nullptr)
+        return -ENOSYS;
+
+    if (!nvgr->isValid(handle)) {
         HWC_LOGE("buffer %p is not one of the allocator's", handle);
         return -EINVAL;
     }
 
-    const int halFormat = nvgr_get_format(handle);
+    const int halFormat = nvgr->format(handle);
     const uint32_t bpp = bytesPerPixel(halFormat);
     if (bpp == 0) {
         HWC_LOGE("format 0x%x cannot be scanned out", halFormat);
         return -EINVAL;
     }
 
-    const int fd = nvgr_get_memfd(handle);
+    const int fd = nvgr->memFd(handle);
     if (fd < 0) {
         HWC_LOGE("buffer %p has no memory descriptor", handle);
         return -EINVAL;
     }
 
-    const int stride = nvgr_get_stride(handle);
+    const int stride = nvgr->stride(handle);
     if (stride <= 0) {
         HWC_LOGE("buffer %p reports a stride of %d", handle, stride);
         return -EINVAL;

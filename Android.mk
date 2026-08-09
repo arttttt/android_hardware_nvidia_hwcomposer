@@ -51,7 +51,7 @@ LOCAL_SHARED_LIBRARIES := \
     liblog \
     libcutils \
     libhardware \
-    libnvgr
+    libdl
 
 LOCAL_SRC_FILES := \
     bufferinfo/BufferInfo.cpp \
