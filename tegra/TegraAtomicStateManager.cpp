@@ -41,6 +41,7 @@
 #include "display/PipelineBinding.h"
 #include "tegra/FbDevice.h"
 #include "tegra/TegraFormat.h"
+#include "utils/Logging.h"
 #include "utils/log.h"
 
 namespace android::drm_hwcomposer {
