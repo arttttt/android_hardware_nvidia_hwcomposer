@@ -26,7 +26,7 @@
 namespace android::drm_hwcomposer {
 
 class Plane;
-class DisplayPipeline;
+struct DisplayPipeline;
 template <typename T>
 class BindingOwner;
 

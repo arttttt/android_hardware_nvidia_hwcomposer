@@ -16,9 +16,13 @@
 
 #pragma once
 
+/* Before the display headers, which name the fixed-width types without
+ * asking for them. Upstream is built with an include path where something
+ * else has already brought them in; here nothing has. */
+#include <cstdint>
+
 #include <xf86drmMode.h>
 
-#include <cstdint>
 #include <string>
 
 namespace android::drm_hwcomposer {

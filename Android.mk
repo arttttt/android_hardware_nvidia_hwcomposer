@@ -62,6 +62,7 @@ LOCAL_C_INCLUDES += \
 
 LOCAL_SHARED_LIBRARIES := \
     liblog \
+    libbase \
     libcutils \
     libhardware \
     libui \

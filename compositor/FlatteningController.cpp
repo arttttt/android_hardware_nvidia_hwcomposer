@@ -40,6 +40,7 @@
 
 #include "compositor/DisplayInfo.h"
 #include "compositor/FlatteningEventAtomReporter.h"
+#include "utils/ThreadAnnotations.h"
 #include "utils/log.h"
 
 namespace android::drm_hwcomposer {

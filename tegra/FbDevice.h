@@ -17,9 +17,10 @@
 #ifndef TEGRA_FB_DEVICE_H
 #define TEGRA_FB_DEVICE_H
 
-#include <xf86drmMode.h>
-
+/* Before the display headers; see the note in display/DrmMode.h. */
 #include <cstdint>
+
+#include <xf86drmMode.h>
 
 namespace android {
 namespace hwc {
