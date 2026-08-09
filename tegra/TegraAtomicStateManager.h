@@ -18,6 +18,7 @@
 
 #include <cutils/native_handle.h>
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -139,6 +140,15 @@ class TegraAtomicStateManager : public AtomicStateManager {
   const std::vector<DrmMode> &modes_;
 
   bool active_ = true;
+
+  /* What each window was last given, and so what has already been flattened.
+   *
+   * A buffer stays flat until something draws into it again, and a window
+   * handed the same buffer as last time is showing pixels that were flattened
+   * then. Keyed by window rather than by buffer because that is the question
+   * being asked -- what is on this window now against what was on it before.
+   */
+  std::map<int32_t, buffer_handle_t> last_flattened_;
 
   /* The fence the previous flip returned. What the driver hands back comes
    * due one flip later, so this is what a present is answered with. */

@@ -362,9 +362,31 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
     if (handles[i] == nullptr || windows[i].bufferFd == 0)
       continue;
 
+    /* Only what has been drawn again since it was last flattened.
+     *
+     * Flattening is not a property of showing a buffer, it is a property of
+     * the buffer: once undone it stays undone until something draws into it
+     * again. A window given the same buffer as last time is showing the same
+     * pixels, and those pixels are already flat.
+     *
+     * Most of a frame is like that. The wallpaper is drawn once and stands
+     * still; the status bar changes when the clock does. Flattening them on
+     * every frame is a full pass over the screen, each, for a picture that
+     * did not change -- and there are as many of those passes as there are
+     * windows, on a GPU the application needs for its own drawing.
+     *
+     * The buffer is recognised by the handle the allocator gave it. An
+     * application draws into a chain of them in turn, so a handle coming back
+     * unchanged from one frame to the next means that layer stood still.
+     */
+    if (last_flattened_[windows[i].index] == handles[i])
+      continue;
+
     SharedFd ready;
     NvGralloc::GetInstance()->PrepareForScanout(handles[i],
                                                 windows[i].preFence, &ready);
+
+    last_flattened_[windows[i].index] = handles[i];
 
     /* Nothing handed back means nothing to wait for beyond what was already
      * being waited for, so the window keeps the fence it came with. */
