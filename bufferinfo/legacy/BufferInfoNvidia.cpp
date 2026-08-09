@@ -23,6 +23,7 @@
 
 #include "bufferinfo/BufferInfo.h"
 #include "bufferinfo/BufferInfoGetter.h"
+#include "bufferinfo/GrallocBufferHandle.h"
 #include "bufferinfo/NvGralloc.h"
 #include "utils/log.h"
 
