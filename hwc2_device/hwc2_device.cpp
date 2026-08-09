@@ -39,6 +39,7 @@
 #include "utils/FrameworkTraits.h"
 #include "utils/GraphicsCompat.h"
 #include "utils/Time.h"
+#include "utils/Logging.h"
 #include "utils/log.h"
 #include "utils/properties.h"
 
@@ -81,6 +82,44 @@ class Hwc2DeviceDisplay : public FrontendDisplayBase {
   std::vector<HwcDisplay::ChangedLayer> changed_layers;
 
   int64_t next_layer_id = 1;
+};
+
+/* Says how long a call took, if it took long enough to matter.
+ *
+ * The client wakes on a blank, draws, asks for the frame to be validated and
+ * then shown, and the whole of that has to fit into one refresh. Whatever is
+ * spent in here comes out of the client's share of it -- so when frames come
+ * out at half the rate, the first thing worth establishing is whether this is
+ * where the time went. From outside, a slow composer and a slow client look
+ * exactly the same.
+ *
+ * Only the calls that did not fit are reported. A frame that fits leaves
+ * nothing to look into, and a line for each of those would be a cost of its
+ * own on a device this size.
+ */
+class SayIfSlow {
+ public:
+  explicit SayIfSlow(const char *what)
+      : what_(what), entered_ns_(GetTimeMonotonicNs()) {
+  }
+
+  ~SayIfSlow() {
+    /* A quarter of a refresh. Below that a call is a rounding error against
+     * the frame it belongs to; above it, it is a share worth naming. */
+    constexpr int64_t kWorthSaying = 4000000;
+
+    const int64_t spent = GetTimeMonotonicNs() - entered_ns_;
+    if (spent > kWorthSaying) {
+      HWC_LOGD("%s took %" PRId64 "us", what_, spent / 1000);
+    }
+  }
+
+  SayIfSlow(const SayIfSlow &) = delete;
+  SayIfSlow &operator=(const SayIfSlow &) = delete;
+
+ private:
+  const char *const what_;
+  const int64_t entered_ns_;
 };
 
 static auto GetHwc2DeviceDisplay(HwcDisplay &display)
@@ -911,6 +950,12 @@ static int32_t ValidateDisplay(hwc2_device_t *device, hwc2_display_t display,
                                uint32_t *out_num_types,
                                uint32_t *out_num_requests) {
   ALOGV("ValidateDisplay");
+
+  /* The other half of what the composer costs the frame; see PresentDisplay.
+   * Timed by an object rather than by a line before each return, because the
+   * checks below leave through several of them. */
+  const SayIfSlow timed("validate");
+
   LOCK_COMPOSER(device);
   GET_DISPLAY(display);
 
@@ -970,6 +1015,21 @@ static int32_t GetChangedCompositionTypes(hwc2_device_t *device,
 static int32_t PresentDisplay(hwc2_device_t *device, hwc2_display_t display,
                               int32_t *out_release_fence) {
   ALOGV("PresentDisplay");
+
+  /* What the composer costs the frame it is part of.
+   *
+   * The client wakes on a blank, draws, asks this to be validated and then
+   * shown, and the whole of that has to fit in one refresh. Everything spent
+   * in here is taken out of the client's share of it, so when frames come out
+   * at half the rate the first thing worth establishing is whether this is
+   * where the time went -- and that cannot be read off the outside, because
+   * from there a slow composer and a slow client look the same.
+   *
+   * Said only when it is worth saying. A frame that fits leaves nothing to
+   * investigate, and a line per frame would itself be part of the cost.
+   */
+  const SayIfSlow timed("present");
+
   LOCK_COMPOSER(device);
   GET_DISPLAY(display);
 
