@@ -17,31 +17,57 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "display/AtomicStateManager.h"
+#include "display/DrmMode.h"
 #include "tegra/DcHead.h"
 
 namespace android::drm_hwcomposer {
 
-/* A frame, described in the terms the display controller takes.
+/* One commit, described in the terms this hardware takes.
  *
- * Built from a plan and then handed back to be carried out, so that deciding
- * what to show and telling the hardware to show it stay two steps -- the
- * first can be asked "would this work" without the second happening.
+ * Built from the arguments and then handed back to be carried out, so that
+ * deciding what to do and doing it stay two steps -- the first can be asked
+ * "would this work" without the second happening.
+ *
+ * A commit is not always a frame. Upstream puts the frame, the timing and
+ * whether the display is lit into one atomic request, because on a DRM
+ * display all three are properties of the same objects. Here they are three
+ * different devices, so the request carries them separately and the order
+ * they are applied in is decided when it is executed.
  */
 class TegraAtomicRequest : public AtomicRequest {
  public:
-  explicit TegraAtomicRequest(std::vector<hwc::DcHead::Window> windows)
-      : windows_(std::move(windows)) {
+  TegraAtomicRequest(std::vector<hwc::DcHead::Window> windows,
+                     bool has_composition,
+                     std::optional<PowerMode> power_mode)
+      : windows_(std::move(windows)),
+        has_composition_(has_composition),
+        power_mode_(power_mode) {
   }
 
   const std::vector<hwc::DcHead::Window> &GetWindows() const {
     return windows_;
   }
 
+  /* Whether anything is to be shown. A commit that only changes the power
+   * state must not post a frame: every window of the head goes into a flip,
+   * so flipping without a composition would blank the display as a side
+   * effect of turning it on. */
+  bool HasComposition() const {
+    return has_composition_;
+  }
+
+  const std::optional<PowerMode> &GetPowerMode() const {
+    return power_mode_;
+  }
+
  private:
   const std::vector<hwc::DcHead::Window> windows_;
+  const bool has_composition_;
+  const std::optional<PowerMode> power_mode_;
 };
 
 /* Turns plans into frames on this controller.
@@ -52,7 +78,10 @@ class TegraAtomicRequest : public AtomicRequest {
  */
 class TegraAtomicStateManager : public AtomicStateManager {
  public:
-  explicit TegraAtomicStateManager(hwc::DcHead &head) : head_(head) {
+  /* Both `head` and `modes` belong to the pipeline and outlive this. */
+  TegraAtomicStateManager(hwc::DcHead &head,
+                          const std::vector<DrmMode> &modes)
+      : head_(head), modes_(modes) {
   }
 
   std::unique_ptr<AtomicRequest> GetAtomicModeReqForArgs(
@@ -78,7 +107,19 @@ class TegraAtomicStateManager : public AtomicStateManager {
   int Execute(const AtomicRequest &request, AtomicCommitResult *out_result);
 
  private:
+  /* Lights the panel or puts it out, and remembers which. Not the head's
+   * job: the controller posts frames and has no say over whether the display
+   * is lit, so this goes to the framebuffer device on the same hardware. */
+  int SetPowered(bool powered);
+
   hwc::DcHead &head_;
+
+  /* The timings this panel runs, to check a requested one against. A fixed
+   * panel has one, so the only mode that ever arrives here is the one already
+   * in use -- but a request for another is a mistake worth refusing rather
+   * than accepting and not carrying out. */
+  const std::vector<DrmMode> &modes_;
+
   bool active_ = true;
 
   /* The fence the previous flip returned. What the driver hands back comes

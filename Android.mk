@@ -47,15 +47,24 @@ LOCAL_C_INCLUDES := $(LOCAL_PATH)
 # `new`). Nothing in include/video collides with a libc header name.
 LOCAL_C_INCLUDES += $(TARGET_KERNEL_SOURCE)/include/video
 
-# Format codes and layout modifiers. Only the header is wanted -- nothing here
-# talks to a display through DRM, because this kernel has no such driver for
-# the display controller. It is the vocabulary that is shared, not the path.
-LOCAL_C_INCLUDES += external/libdrm/include
+# Format codes, layout modifiers and the way a display timing is written down.
+# Only headers are wanted -- nothing here talks to a display through DRM,
+# because this kernel has no such driver for the display controller. It is the
+# vocabulary that is shared, not the path, and no libdrm function is called.
+#
+# Three directories rather than one: `include` for <drm/drm_fourcc.h> as this
+# tree writes it, the top level for <xf86drmMode.h>, and `include/drm` because
+# that header includes <drm.h> and <drm_mode.h> unqualified.
+LOCAL_C_INCLUDES += \
+    external/libdrm \
+    external/libdrm/include \
+    external/libdrm/include/drm
 
 LOCAL_SHARED_LIBRARIES := \
     liblog \
     libcutils \
     libhardware \
+    libui \
     libdl
 
 LOCAL_SRC_FILES := \
@@ -63,14 +72,30 @@ LOCAL_SRC_FILES := \
     bufferinfo/GrallocBufferHandle.cpp \
     bufferinfo/NvGralloc.cpp \
     bufferinfo/legacy/BufferInfoNvidia.cpp \
+    compositor/CompositionPlanner.cpp \
+    compositor/FlatteningController.cpp \
     compositor/FrameTimeHistory.cpp \
+    compositor/GenericCompositionPlanner.cpp \
+    compositor/GenericLayerMapperCompositionPlanner.cpp \
+    compositor/LayerToPlaneJoiningPlan.cpp \
+    compositor/PresentedCompositionCache.cpp \
+    compositor/ShortCircuitor.cpp \
+    compositor/mapper/CursorLayerMapper.cpp \
+    compositor/mapper/ForceClientCompositionLayerMapper.cpp \
+    compositor/mapper/LayerCachingMapper.cpp \
+    compositor/mapper/LeftoverLayerMapper.cpp \
+    compositor/mapper/MapperUtils.cpp \
+    compositor/mapper/UnderlayMapper.cpp \
+    display/DrmMode.cpp \
     utils/fd.cpp \
     hwc/HwcDevice.cpp \
     hwc/HwcDisplay.cpp \
+    hwc/HwcDisplayConfigs.cpp \
     hwc/HwcLayer.cpp \
     hwc/HwcModule.cpp \
     tegra/DcControl.cpp \
     tegra/DcHead.cpp \
+    tegra/TegraAtomicStateManager.cpp \
     tegra/TegraFormat.cpp \
     tegra/TegraPlane.cpp \
     tegra/TegraCompositor.cpp \

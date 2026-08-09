@@ -18,6 +18,7 @@
 
 #include <errno.h>
 
+#include <algorithm>
 #include <utility>
 
 #include <tegra_dc_ext.h>
@@ -28,6 +29,7 @@
 #include "display/FbIdHandle.h"
 #include "display/Plane.h"
 #include "display/PipelineBinding.h"
+#include "tegra/FbDevice.h"
 #include "tegra/TegraFormat.h"
 #include "utils/log.h"
 
@@ -125,6 +127,25 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
     return nullptr;
   }
 
+  /* A timing is accepted only if it is one the panel runs. On this board
+   * that means the one it is already running, so honouring the request is
+   * doing nothing -- but a request for a timing this panel does not have must
+   * not be answered with silence, or the framework will believe a mode change
+   * happened that did not. */
+  if (args.display_mode) {
+    const drmModeModeInfo &wanted = args.display_mode->GetRawMode();
+
+    const bool known = std::any_of(modes_.begin(), modes_.end(),
+                                   [&wanted](const DrmMode &mode) {
+                                     return mode == wanted;
+                                   });
+    if (!known) {
+      ALOGE("asked for mode %s, which this panel does not run",
+            args.display_mode->GetName().c_str());
+      return nullptr;
+    }
+  }
+
   /* Every window of the head, whether or not a layer claimed it.
    *
    * A window keeps what it was last given until told otherwise, and a frame
@@ -158,7 +179,9 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
     }
   }
 
-  return std::make_unique<TegraAtomicRequest>(std::move(windows));
+  return std::make_unique<TegraAtomicRequest>(std::move(windows),
+                                              args.composition != nullptr,
+                                              args.power_mode);
 }
 
 bool TegraAtomicStateManager::Test(const AtomicRequest &request) {
@@ -169,6 +192,22 @@ bool TegraAtomicStateManager::Test(const AtomicRequest &request) {
 int TegraAtomicStateManager::Execute(const AtomicRequest &request,
                                      AtomicCommitResult *out_result) {
   const auto &tegra = static_cast<const TegraAtomicRequest &>(request);
+
+  /* Lighting the panel comes before showing anything on it: a frame posted
+   * to a display that is not scanning out never appears, and nothing later
+   * repeats it. Going dark is the other way round for the same reason -- the
+   * last frame asked for should be on screen when the light goes out. */
+  if (tegra.GetPowerMode() && *tegra.GetPowerMode() == PowerMode::kOn) {
+    int err = SetPowered(true);
+    if (err)
+      return err;
+  }
+
+  if (!tegra.HasComposition()) {
+    if (tegra.GetPowerMode() && *tegra.GetPowerMode() != PowerMode::kOn)
+      return SetPowered(false);
+    return 0;
+  }
 
   hwc::UniqueFd post_fence;
   int err = head_.flip(tegra.GetWindows(), &post_fence);
@@ -198,6 +237,18 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   previous_post_fence_ = post_fence ? MakeSharedFd(post_fence.release())
                                     : SharedFd{};
 
+  return 0;
+}
+
+int TegraAtomicStateManager::SetPowered(bool powered) {
+  if (active_ == powered)
+    return 0;
+
+  int err = hwc::setPanelPowered(head_.index(), powered);
+  if (err)
+    return err;
+
+  active_ = powered;
   return 0;
 }
 

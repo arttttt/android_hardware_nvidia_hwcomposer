@@ -127,6 +127,13 @@ public:
 
     ~DcHead();
 
+    /* Which head this is.
+     *
+     * Not needed to post a frame -- the descriptor already says which head --
+     * but the same number names this display's other two devices, and whoever
+     * has the head is who ends up needing them. */
+    int index() const { return mIndex; }
+
     DcHead(const DcHead &) = delete;
     DcHead &operator=(const DcHead &) = delete;
 

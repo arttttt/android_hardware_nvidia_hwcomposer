@@ -33,8 +33,8 @@ namespace android {
 namespace hwc {
 
 std::unique_ptr<TegraDisplayPipeline> TegraDisplayPipeline::create(int index) {
-    DisplayMode mode;
-    int err = readDisplayMode(index, &mode);
+    PanelTiming timing;
+    int err = readPanelTiming(index, &timing);
     if (err)
         return nullptr;
 
@@ -50,25 +50,30 @@ std::unique_ptr<TegraDisplayPipeline> TegraDisplayPipeline::create(int index) {
         return nullptr;
 
     return std::unique_ptr<TegraDisplayPipeline>(new TegraDisplayPipeline(
-        index, std::move(head), std::move(vsync), mode));
+        index, std::move(head), std::move(vsync), timing));
 }
 
 TegraDisplayPipeline::TegraDisplayPipeline(int index,
                                            std::unique_ptr<DcHead> head,
                                            std::unique_ptr<TegraVSyncSource> vsync,
-                                           const DisplayMode &mode)
+                                           const PanelTiming &timing)
     : mIndex(index),
       mHead(std::move(head)),
       mVSync(std::move(vsync)),
       mCompositor(new TegraCompositor(*mHead)),
-      mModes{mode} {}
+      mTiming(timing),
+      mModes{drm_hwcomposer::DrmMode(&mTiming.mode)},
+      mStateManager(
+          new drm_hwcomposer::TegraAtomicStateManager(*mHead, mModes)),
+      mPlanner(new drm_hwcomposer::GenericLayerMapperCompositionPlanner()) {}
 
 TegraDisplayPipeline::~TegraDisplayPipeline() {
     /* Ordered: the vertical blank reader must stop before the devices it
-     * reads from go away. Destroying members in reverse declaration order
-     * would take the head first, which is harmless today and would not stay
-     * harmless once the compositor holds it. */
+     * reads from go away, and whatever posts frames must stop before the head
+     * it posts them through does. Destroying members in reverse declaration
+     * order would take the head first. */
     mVSync.reset();
+    mStateManager.reset();
     mCompositor.reset();
     mHead.reset();
 }
@@ -111,17 +116,6 @@ std::string TegraDisplayPipeline::name() const {
     char buffer[32];
     snprintf(buffer, sizeof(buffer), "tegra-dc-%d", mIndex);
     return buffer;
-}
-
-int TegraDisplayPipeline::setActiveMode(size_t index) {
-    /* A fixed panel has one timing, so the only valid choice is the one
-     * already in use. Refusing anything else is more useful than silently
-     * accepting a change that will not happen. */
-    return index == 0 ? 0 : -EINVAL;
-}
-
-int TegraDisplayPipeline::setPowerMode(PowerMode mode) {
-    return setPanelPowered(mIndex, mode == PowerMode::On);
 }
 
 void TegraDisplayPipeline::setCompositor(std::unique_ptr<Compositor> compositor) {
