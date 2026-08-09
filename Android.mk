@@ -103,6 +103,7 @@ LOCAL_SRC_FILES := \
     hwc/HwcModule.cpp \
     tegra/DcControl.cpp \
     tegra/DcHead.cpp \
+    tegra/TegraAtomicCommitSink.cpp \
     tegra/TegraAtomicStateManager.cpp \
     tegra/TegraFormat.cpp \
     tegra/TegraPlane.cpp \
