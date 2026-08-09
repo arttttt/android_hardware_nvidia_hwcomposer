@@ -34,7 +34,7 @@ namespace hwc {
 
 namespace {
 
-/* How long to wait for a blank before giving up on this one.
+/* How long to wait for a blank before deciding they have stopped.
  *
  * A wait with no limit is what the hardware invites: a panel that has been
  * powered down reports nothing and would hold the thread for ever. Ten
@@ -54,26 +54,41 @@ int64_t now() {
 
 }  // namespace
 
-std::unique_ptr<TegraVSyncSource> TegraVSyncSource::create(uint32_t headHandle) {
+std::unique_ptr<TegraVSyncSource> TegraVSyncSource::create(DcHead &head,
+                                                           uint32_t headHandle) {
     std::unique_ptr<DcControl> control = DcControl::open();
     if (!control)
         return nullptr;
 
-    /* Subscribed once and left subscribed. Whether blanks are passed on to
-     * the framework is decided above this; here they are only read. */
+    /* Subscribed once and left subscribed. This says which of the events the
+     * driver produces are to be handed to this reader; it does not make the
+     * driver produce any. Whether blanks are passed on to the framework is
+     * decided above this; here they are only read. */
     int err = control->setEventMask(TEGRA_DC_EXT_EVENT_VBLANK);
     if (err)
         return nullptr;
 
     return std::unique_ptr<TegraVSyncSource>(
-        new TegraVSyncSource(std::move(control), headHandle));
+        new TegraVSyncSource(std::move(control), head, headHandle));
 }
 
 TegraVSyncSource::~TegraVSyncSource() {
+    /* Both halves let go, and in this order. Reporting first, so that the
+     * controller stops producing blanks before the only reader of them goes
+     * away, and its interrupt is not left unmasked for nobody. */
+    mHead.setVBlankReporting(false);
     mControl->setEventMask(0);
 }
 
 int TegraVSyncSource::waitForVSync(int64_t *outTimestampNs) {
+    /* Asked for again whenever they are not arriving, rather than once and
+     * assumed to hold. The driver drops the request when the head is turned
+     * off and says nothing about having done so, so the only honest reading
+     * of a silent stream is that the request may no longer be in force. When
+     * it is, this costs one call the driver answers from a flag. */
+    if (!mReporting)
+        mHead.setVBlankReporting(true);
+
     struct pollfd fd = {};
     fd.fd = mControl->fd();
     fd.events = POLLIN;
@@ -85,19 +100,6 @@ int TegraVSyncSource::waitForVSync(int64_t *outTimestampNs) {
 
         int ready = poll(&fd, 1, kWaitTimeoutMs);
 
-        /* Says once, and only once, which of the two ways this is going: the
-         * controller reporting blanks, or nothing arriving and the caller
-         * timing them itself. The difference is the panel's rate against a
-         * fraction of it, and from the outside the two look the same except
-         * that everything is slow. */
-        if (!mReported) {
-            mReported = true;
-            HWC_LOGI("first wait for a blank: %s",
-                     ready > 0 ? "the controller reported one"
-                               : ready == 0 ? "nothing arrived, timed out"
-                                            : strerror(errno));
-        }
-
         if (ready < 0) {
             /* Handed straight back rather than retried: a wait interrupted
              * by a signal is how the caller's thread is asked to look at
@@ -105,8 +107,14 @@ int TegraVSyncSource::waitForVSync(int64_t *outTimestampNs) {
             return -errno;
         }
 
-        if (ready == 0)
+        if (ready == 0) {
+            if (mReporting) {
+                mReporting = false;
+                HWC_LOGW("head %u stopped reporting blanks; asking again on "
+                         "every wait from here", mHeadHandle);
+            }
             return -ETIMEDOUT;
+        }
 
         if (!(fd.revents & POLLIN))
             continue;
@@ -123,10 +131,17 @@ int TegraVSyncSource::waitForVSync(int64_t *outTimestampNs) {
         if (event.handle != mHeadHandle)
             continue;
 
-        /* The controller reports that a blank happened, not when. Read now,
-         * which is within one wakeup of it -- and the same clock everything
-         * else is scheduled against. */
-        *outTimestampNs = now();
+        if (!mReporting) {
+            mReporting = true;
+            HWC_LOGI("head %u is reporting blanks", mHeadHandle);
+        }
+
+        /* The driver stamps the event in the interrupt that saw the blank,
+         * against the clock everything else here is scheduled by, so the
+         * blank is dated when it happened rather than when this thread got
+         * round to it. A zero means it did not say, and then the best that
+         * can be claimed is now, within one wakeup of the truth. */
+        *outTimestampNs = event.timestampNs != 0 ? event.timestampNs : now();
         return 0;
     }
 }

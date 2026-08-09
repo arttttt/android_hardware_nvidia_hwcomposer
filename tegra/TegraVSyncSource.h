@@ -22,11 +22,19 @@
 
 #include "display/VSyncSource.h"
 #include "tegra/DcControl.h"
+#include "tegra/DcHead.h"
 
 namespace android {
 namespace hwc {
 
 /* Vertical blank, read from the display controller's event stream.
+ *
+ * Two devices, because receiving blanks takes both. The head is asked to
+ * report them at all -- that is what unmasks the controller's interrupt --
+ * and the control device is where the events come out. Subscribing to the
+ * stream without asking the head produces a reader waiting on a stream
+ * nobody writes to, which is silent, indistinguishable from a panel that has
+ * simply stopped, and costs a full timeout on every wait.
  *
  * Holds its own open of the control node rather than sharing one. Event
  * subscription is a property of the open file and a read consumes an event
@@ -44,25 +52,38 @@ namespace hwc {
  */
 class TegraVSyncSource : public VSyncSource {
 public:
-    /* `headHandle` selects which display's blanks are reported; events for
-     * any other are dropped. Returns null if the control node will not open,
-     * or if the controller refuses to report blanks. */
-    static std::unique_ptr<TegraVSyncSource> create(uint32_t headHandle);
+    /* `head` is asked to report blanks and must outlive this. `headHandle`
+     * selects which display's blanks are taken from the stream; events for
+     * any other are dropped. Returns null if the control node will not open.
+     *
+     * Reporting is not turned on here. Whether the head will take the request
+     * depends on the display being on, which it need not be at the moment a
+     * composer starts, so the request is made from the wait -- where the
+     * answer to it is what the wait is about anyway. */
+    static std::unique_ptr<TegraVSyncSource> create(DcHead &head,
+                                                    uint32_t headHandle);
 
     ~TegraVSyncSource() override;
 
     int waitForVSync(int64_t *outTimestampNs) override;
 
 private:
-    TegraVSyncSource(std::unique_ptr<DcControl> control, uint32_t headHandle)
-        : mControl(std::move(control)), mHeadHandle(headHandle) {}
+    TegraVSyncSource(std::unique_ptr<DcControl> control, DcHead &head,
+                     uint32_t headHandle)
+        : mControl(std::move(control)), mHead(head), mHeadHandle(headHandle) {}
 
     std::unique_ptr<DcControl> mControl;
+    DcHead &mHead;
     const uint32_t mHeadHandle;
 
-    /* Whether the first wait has been reported. Only the reading thread
-     * touches it, and only ever sets it. */
-    bool mReported = false;
+    /* Whether the controller was reporting blanks as of the last wait.
+     *
+     * What it decides is whether the request has to be made again: while
+     * blanks are arriving it plainly still holds, and while they are not
+     * there is no telling it from a request the driver has quietly dropped.
+     *
+     * Only the reading thread touches it. */
+    bool mReporting = false;
 };
 
 }  // namespace hwc

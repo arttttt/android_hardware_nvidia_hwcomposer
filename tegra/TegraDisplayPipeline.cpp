@@ -42,10 +42,12 @@ std::unique_ptr<TegraDisplayPipeline> TegraDisplayPipeline::create(
     if (!head)
         return nullptr;
 
-    /* The head index doubles as the event handle: the controller reports
-     * blanks against the same numbering the device nodes use. */
+    /* Both devices, because a blank takes both: the head is what is asked to
+     * report them, the control device is where they come out. The head index
+     * doubles as the event handle -- the controller reports blanks against
+     * the same numbering the device nodes use. */
     std::unique_ptr<TegraVSyncSource> vsync =
-        TegraVSyncSource::create(static_cast<uint32_t>(index));
+        TegraVSyncSource::create(*head, static_cast<uint32_t>(index));
     if (!vsync)
         return nullptr;
 

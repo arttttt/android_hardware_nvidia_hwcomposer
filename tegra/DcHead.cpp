@@ -260,6 +260,28 @@ void DcHead::releaseWindow(uint32_t index) {
         HWC_LOGE("head %d: PUT_WINDOW(%u): %s", mIndex, index, strerror(errno));
 }
 
+int DcHead::setVBlankReporting(bool enabled) {
+    struct tegra_dc_ext_set_vblank request;
+    memset(&request, 0, sizeof(request));
+    request.enable = enabled ? 1 : 0;
+
+    /* Checked against zero rather than against a negative, and that is not
+     * pedantry: this call answers its own refusal in the return value. The
+     * driver hands back 1 when it will not take the request because the head
+     * is off, and 1 is a success as far as the C library is concerned -- a
+     * caller looking for -1 would read a refusal as a request granted, and
+     * then wait for events that were never turned on. */
+    const int ret = ioctl(mFd.get(), TEGRA_DC_EXT_SET_VBLANK, &request);
+    if (ret < 0) {
+        const int err = -errno;
+        HWC_LOGE("head %d: SET_VBLANK(%d): %s", mIndex, request.enable,
+                 strerror(-err));
+        return err;
+    }
+
+    return ret;
+}
+
 /* Turns windows into what the controller's calls expect.
  *
  * Shared between asking whether a frame would go up and putting it up,

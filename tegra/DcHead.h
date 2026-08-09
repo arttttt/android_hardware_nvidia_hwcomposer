@@ -158,6 +158,28 @@ public:
      */
     const WindowCapabilities *capabilities(uint32_t index);
 
+    /* Asks the controller to report vertical blanks, or to stop.
+     *
+     * Subscribing to the event stream on the control device is only half of
+     * receiving blanks and is the half that changes nothing in the hardware:
+     * it says which events this reader wants to be handed, out of those the
+     * driver produces. Producing them at all is this call. Until it is made
+     * the controller's vertical blank interrupt stays masked, the driver
+     * never reaches the code that queues the event, and a reader subscribed
+     * to a stream nobody writes to waits for ever.
+     *
+     * The request is not counted and not remembered across the display being
+     * turned off: the driver drops it when the head is disabled, without
+     * telling anyone, so whoever wants blanks has to be prepared to ask
+     * again. Asking twice is free -- the driver answers from a flag when the
+     * request already holds.
+     *
+     * Returns 0 if the request was taken. A positive result is the driver
+     * refusing it because the display is off, which is an answer rather than
+     * a fault; negative is errno.
+     */
+    int setVBlankReporting(bool enabled);
+
     /* Posts one frame.
      *
      * Returns 0 and, in `outPostFence`, a fence that fires once the frame is
