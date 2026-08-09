@@ -21,6 +21,8 @@
 
 #include <cutils/native_handle.h>
 
+#include "utils/UniqueFd.h"
+
 namespace android {
 namespace hwc {
 
@@ -56,6 +58,21 @@ struct BufferInfo {
 /* Describes `handle` for scanout. Returns 0, or a negative errno with the
  * reason logged. */
 int describeBuffer(buffer_handle_t handle, BufferInfo *outInfo);
+
+/* Puts `handle` into a state the display can read.
+ *
+ * The GPU on this hardware writes colour compressed, and the allocator only
+ * undoes that when someone locks the buffer to read it. Scanout does not lock
+ * anything, so nothing would ever undo it and the controller would be handed
+ * memory it cannot interpret.
+ *
+ * `acquireFence` is borrowed; the fence handed back in `outFence` is owned by
+ * the caller and is the one to wait on before reading, whether or not any
+ * work turned out to be needed. It carries the acquire fence's meaning
+ * forward, so the caller should stop using its own once this returns.
+ */
+void prepareForScanout(buffer_handle_t handle, int acquireFence,
+                       UniqueFd *outFence);
 
 }  // namespace hwc
 }  // namespace android

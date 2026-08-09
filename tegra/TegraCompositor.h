@@ -40,9 +40,10 @@ public:
     int present(const FramePlan &plan, UniqueFd *outPresentFence) override;
 
 private:
-    /* Fills a window from one planned layer. */
+    /* Fills a window from one planned layer. The window borrows the fence it
+     * is to wait on; `outFence` owns it and must outlive the flip. */
     int describeWindow(const PlannedLayer &layer, uint32_t index, uint32_t z,
-                       DcHead::Window *outWindow);
+                       DcHead::Window *outWindow, UniqueFd *outFence);
 
     DcHead &mHead;
 

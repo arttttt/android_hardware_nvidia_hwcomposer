@@ -50,7 +50,8 @@ uint32_t blendFor(BlendMode mode) {
 TegraCompositor::TegraCompositor(DcHead &head): mHead(head) {}
 
 int TegraCompositor::describeWindow(const PlannedLayer &layer, uint32_t index,
-                                    uint32_t z, DcHead::Window *outWindow) {
+                                    uint32_t z, DcHead::Window *outWindow,
+                                    UniqueFd *outFence) {
     BufferInfo info;
     int err = describeBuffer(layer.buffer, &info);
     if (err)
@@ -79,9 +80,15 @@ int TegraCompositor::describeWindow(const PlannedLayer &layer, uint32_t index,
     outWindow->z = z;
     outWindow->blend = blendFor(layer.blend);
 
-    /* Borrowed. The plan does not own it and neither does the window: the
-     * kernel waits on it during the flip and the layer closes it later. */
-    outWindow->preFence = layer.acquireFence;
+    /* The fence to wait on is not the layer's own once the allocator has had
+     * its say: undoing the GPU's compression is work in its own right, and
+     * the fence it hands back stands for that work as well as the drawing.
+     *
+     * The window only borrows it. Ownership stays with the caller, whose copy
+     * has to outlive the flip -- the kernel takes its own reference during
+     * the call and not a moment sooner. */
+    prepareForScanout(layer.buffer, layer.acquireFence, outFence);
+    outWindow->preFence = outFence->get();
 
     return 0;
 }
@@ -151,6 +158,10 @@ int TegraCompositor::present(const FramePlan &plan, UniqueFd *outPresentFence) {
      */
     std::vector<DcHead::Window> windows(available.size());
 
+    /* The windows only borrow their fences; these hold them, and outlive the
+     * flip by being declared before it. */
+    std::vector<UniqueFd> fences(available.size());
+
     for (size_t i = 0; i < available.size(); ++i) {
         windows[i].index = static_cast<int32_t>(available[i]);
 
@@ -158,7 +169,8 @@ int TegraCompositor::present(const FramePlan &plan, UniqueFd *outPresentFence) {
             continue;
 
         int err = describeWindow(plan.layers()[i], available[i],
-                                 static_cast<uint32_t>(i), &windows[i]);
+                                 static_cast<uint32_t>(i), &windows[i],
+                                 &fences[i]);
         if (err) {
             HWC_LOGE("layer %zu cannot be shown: %d", i, err);
             return err;

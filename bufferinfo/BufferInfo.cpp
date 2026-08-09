@@ -56,6 +56,12 @@ struct Allocator {
      * nothing else reports it. */
     void (*surfaces)(buffer_handle_t, const void **, size_t *) = nullptr;
 
+    /* Whether the buffer's colour is still compressed, and the undoing of it.
+     * The second takes the fence it is given and returns the one to wait on
+     * instead. */
+    int (*compressed)(buffer_handle_t) = nullptr;
+    int (*decompress)(buffer_handle_t, int, int *) = nullptr;
+
     bool resolved = false;
     bool failed = false;
 };
@@ -90,7 +96,9 @@ const Allocator *allocator() {
     const bool ok = resolveOne(library, "nvgr_is_valid", &gAllocator.isValid) &&
                     resolveOne(library, "nvgr_get_memfd", &gAllocator.memFd) &&
                     resolveOne(library, "nvgr_get_format", &gAllocator.format) &&
-                    resolveOne(library, "nvgr_get_surfaces", &gAllocator.surfaces);
+                    resolveOne(library, "nvgr_get_surfaces", &gAllocator.surfaces) &&
+                    resolveOne(library, "nvgr_get_compressed", &gAllocator.compressed) &&
+                    resolveOne(library, "nvgr_decompress", &gAllocator.decompress);
     if (!ok) {
         gAllocator.failed = true;
         return nullptr;
@@ -269,12 +277,46 @@ int describeBuffer(buffer_handle_t handle, BufferInfo *outInfo) {
     }
 
     HWC_LOGD("buffer %p: fd=%d %ux%u fmt=0x%x -> 0x%x pitch=%u offset=%u "
-             "layout=%u kind=0x%x blockh=%u", handle, fd, word[kWidth],
-             word[kHeight], halFormat, outInfo->format, word[kPitch],
-             word[kOffset], word[kLayout], word[kKind],
-             word[kBlockHeightLog2]);
+             "layout=%u kind=0x%x blockh=%u compressed=%d", handle, fd,
+             word[kWidth], word[kHeight], halFormat, outInfo->format,
+             word[kPitch], word[kOffset], word[kLayout], word[kKind],
+             word[kBlockHeightLog2], nvgr->compressed(handle));
 
     return 0;
+}
+
+void prepareForScanout(buffer_handle_t handle, int acquireFence,
+                       UniqueFd *outFence) {
+    const Allocator *nvgr = allocator();
+    if (nvgr == nullptr) {
+        outFence->reset();
+        return;
+    }
+
+    /* A copy, because the allocator takes what it is given: it either hands
+     * the same descriptor straight back, or closes it once it has merged the
+     * wait into a new one. The layer still owns the original and closes it in
+     * its own time. */
+    UniqueFd handed(acquireFence >= 0 ? ::dup(acquireFence) : -1);
+
+    int produced = -1;
+    const int err = nvgr->decompress(handle, handed.get(), &produced);
+
+    /* Given away either way. On failure the allocator has left the
+     * descriptor in a state only it knows, and letting go of one descriptor
+     * on a path that should not be taken is better than closing one it is
+     * still holding. */
+    handed.release();
+
+    if (err) {
+        /* The frame goes up as it is. That is what happened before any of
+         * this was asked for, so it is a worse picture rather than none. */
+        HWC_LOGE("buffer %p could not be decompressed: %d", handle, err);
+        outFence->reset();
+        return;
+    }
+
+    outFence->reset(produced);
 }
 
 }  // namespace hwc
