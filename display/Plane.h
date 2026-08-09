@@ -52,6 +52,13 @@ class Plane : public PipelineBindable<Plane> {
    * which case the framework will have to draw it instead. */
   virtual bool IsValidForLayer(const LayerData *layer) = 0;
 
+  /* Whether this plane can correct colour on its own -- its own matrix, its
+   * own lookup tables -- rather than taking whatever the display applies to
+   * everything. Windows here cannot, so the default says so. */
+  virtual bool HasColorPipeline() const {
+    return false;
+  }
+
   /* Which plane this is, for the log. Numbering is the hardware's own. */
   virtual uint32_t GetId() const = 0;
 };

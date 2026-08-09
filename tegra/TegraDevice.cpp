@@ -52,7 +52,8 @@ std::unique_ptr<TegraDevice> TegraDevice::create() {
             continue;
 
         device->mConnectors.push_back(
-            std::make_unique<TegraConnector>(static_cast<uint32_t>(index),
+            std::make_unique<TegraConnector>(*device,
+                                             static_cast<uint32_t>(index),
                                              timing));
     }
 

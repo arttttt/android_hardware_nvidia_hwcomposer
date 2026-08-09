@@ -41,12 +41,20 @@ namespace hwc {
  */
 class TegraConnector : public drm_hwcomposer::Connector {
 public:
-    TegraConnector(uint32_t index, const PanelTiming &timing)
-        : mIndex(index),
+    TegraConnector(drm_hwcomposer::Device &device, uint32_t index,
+                   const PanelTiming &timing)
+        : mDevice(device),
+          mIndex(index),
           mTiming(timing),
           mModes{drm_hwcomposer::DrmMode(&mTiming.mode)} {}
 
     uint32_t GetId() const override { return mIndex; }
+
+    drm_hwcomposer::Device &GetDev() const override { return mDevice; }
+
+    /* The head number, which is also its position: the heads are found in
+     * order and none of them goes away. */
+    uint32_t GetIndexInResArray() const override { return mIndex; }
 
     std::string GetName() const override {
         return "DSI-" + std::to_string(mIndex);
@@ -70,6 +78,7 @@ public:
     uint32_t GetMmHeight() const override { return mTiming.mmHeight; }
 
 private:
+    drm_hwcomposer::Device &mDevice;
     const uint32_t mIndex;
 
     /* Held rather than referenced: the modes below are built from it. Not

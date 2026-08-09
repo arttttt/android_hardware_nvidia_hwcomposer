@@ -74,6 +74,7 @@
 #include "utils/ColorUtil.h"
 #include "utils/EdidWrapper.h"
 #include "utils/Time.h"
+#include "utils/Tracing.h"
 #include "utils/SysfsBacklightController.h"
 #include "utils/fd.h"
 #include "utils/log.h"
@@ -862,8 +863,7 @@ void HwcDisplay::InitHdrSupported() {
 
   const bool hdr_sysprop_enabled = GetPipe().connector->Get()->IsExternal()
                                        ? hwc_->ExternalHdrEnabled()
-                                       : hwc_->GetResMan()
-                                             .PersistentHdrEnabled();
+                                       : hwc_->PersistentHdrEnabled();
 
   // TODO check for HDR types
   has_hdr_support_ = use_color_pipeline_ && crtc_gamma && has_wcg_support_ &&

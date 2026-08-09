@@ -105,6 +105,14 @@ class Connector : public PipelineBindable<Connector> {
 
   virtual const std::vector<DrmMode> &GetModes() const = 0;
 
+  /* Asks the display again what timings it runs, after something happened
+   * that might have changed the answer. A panel that is part of the machine
+   * has nothing new to say, so the default succeeds without doing anything.
+   * Returns 0 on success. */
+  virtual int UpdateModes() {
+    return 0;
+  }
+
   /* Physical size of the visible area in millimetres. Zero where it is not
    * known, which consumers read as "no information". */
   virtual uint32_t GetMmWidth() const = 0;
