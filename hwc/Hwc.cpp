@@ -113,14 +113,30 @@ const std::set<std::string> &Hwc::GetInternalDisplayNames() {
 }
 
 bool Hwc::Init() {
-  /* Let go before taking hold again.
+  /* Let go before taking hold again, and let go of all of it.
    *
    * Which windows a display head has is decided per open file: the driver
    * hands them to whoever asks first and refuses everyone after. Building the
    * new device before releasing the old one means asking a head that is still
    * owned, and it answers by giving nothing -- so the displays come up with
-   * no planes to put anything on. */
-  DeinitDisplays();
+   * no planes to put anything on.
+   *
+   * Taking a display apart is not enough to release it. A pipeline is held
+   * twice: by the display it drives and by the record of which display it was
+   * given to. Only unbinding drops both, which is why this is written as an
+   * unbind of everything rather than a deinitialisation. */
+  std::vector<std::shared_ptr<DisplayPipeline>> bound;
+  bound.reserve(display_handles_.size());
+  for (const auto &[pipeline, _] : display_handles_)
+    bound.push_back(pipeline);
+
+  for (auto &pipeline : bound)
+    UnbindDisplay(pipeline);
+
+  /* Retires the displays that unbinding put up for removal. */
+  FinalizeDisplayBinding();
+
+  bound.clear();
   device_.reset();
 
   device_ = CreateDevice();
