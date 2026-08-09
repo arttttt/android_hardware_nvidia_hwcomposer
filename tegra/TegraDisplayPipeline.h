@@ -68,8 +68,6 @@ private:
                          std::unique_ptr<TegraVSyncSource> vsync,
                          const PanelTiming &timing);
 
-    const int mIndex;
-
     std::unique_ptr<DcHead> mHead;
     std::unique_ptr<TegraVSyncSource> mVSync;
     std::unique_ptr<Compositor> mCompositor;
