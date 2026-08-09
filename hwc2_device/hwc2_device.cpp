@@ -1253,10 +1253,14 @@ static int32_t SetLayerDisplayFrame(hwc2_device_t *device,
   GET_LAYER(layer);
 
   HwcLayer::LayerProperties layer_properties;
-  layer_properties.display_frame = {.i_rect = IRect{.left = frame.left,
-                                                    .top = frame.top,
-                                                    .right = frame.right,
-                                                    .bottom = frame.bottom}};
+  /* The type is named rather than left to be worked out: this release's
+   * standard library will not deduce it through an optional from a list of
+   * named fields. */
+  layer_properties.display_frame = DstRectInfo{
+      .i_rect = IRect{.left = frame.left,
+                      .top = frame.top,
+                      .right = frame.right,
+                      .bottom = frame.bottom}};
   ilayer->SetLayerProperties(layer_properties);
 
   return 0;
@@ -1292,10 +1296,12 @@ static int32_t SetLayerSourceCrop(hwc2_device_t *device, hwc2_display_t display,
   GET_LAYER(layer);
 
   HwcLayer::LayerProperties layer_properties;
-  layer_properties.source_crop = {.f_rect = FRect{.left = crop.left,
-                                                  .top = crop.top,
-                                                  .right = crop.right,
-                                                  .bottom = crop.bottom}};
+  /* Named for the same reason as the frame above. */
+  layer_properties.source_crop = SrcRectInfo{
+      .f_rect = FRect{.left = crop.left,
+                      .top = crop.top,
+                      .right = crop.right,
+                      .bottom = crop.bottom}};
   ilayer->SetLayerProperties(layer_properties);
 
   return 0;
