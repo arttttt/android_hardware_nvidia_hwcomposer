@@ -144,8 +144,29 @@ struct LayerData {
   std::shared_ptr<FbIdHandle> fb;
   PresentInfo pi;
   SharedFd acquire_fence;
-  HwcColorspace colorspace;
-  TransferFunction transfer_func;
+
+  /* Given values of their own, and it matters.
+   *
+   * Every other member here builds itself. These two are plain enumerations,
+   * so a LayerData that is default-initialised -- which is what a layer's
+   * copy is, being a member of HwcLayer with no initialiser -- leaves them
+   * holding whatever the memory held before.
+   *
+   * Nothing sets the colourspace on this platform: the entry point never
+   * fills it in, so the layer keeps whatever it was born with, and the
+   * planner asks on every frame whether the layers agree on one. Compared
+   * across layers, unset memory disagrees. The planner concluded that the
+   * display was being asked to show layers in different colourspaces with no
+   * colour pipeline to reconcile them, and sent every frame of every scene to
+   * the GPU -- so no frame ever reached a window of the controller, and the
+   * whole point of hardware composition was lost to a comparison of nothing
+   * against nothing.
+   *
+   * Upstream has the same declaration; there the field is set, so it does not
+   * show. Worth sending back.
+   */
+  HwcColorspace colorspace{};
+  TransferFunction transfer_func{};
   FrameTimeHistory frame_time_history;
   std::optional<float> brightness;
 };
