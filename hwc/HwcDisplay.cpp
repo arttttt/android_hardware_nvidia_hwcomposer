@@ -1506,8 +1506,19 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
     return CommitStatus::InternalFailure();
   }
 
+  /* Between the lock and the controller there are three steps, and the frame
+   * is known to lose several milliseconds somewhere among them: the composer's
+   * own work at the bottom -- undoing the compression and posting the flip --
+   * has been timed at about one, and the lock is never waited on. Timed apart
+   * so the answer names a step rather than a range. */
+  const int64_t t0 = GetTimeMonotonicNs();
+
   PrepareCompositionForCommit(validated_composition_.value());
+  const int64_t t1 = GetTimeMonotonicNs();
+
   auto a_args = CreateFrameUpdateCommit(validated_composition_.value());
+  const int64_t t2 = GetTimeMonotonicNs();
+
   if (a_args) {
     last_presented_composition_.SetValidatedComposition(
         *validated_composition_);
@@ -1532,8 +1543,19 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
     return status_or_result.GetStatus();
   }
 
+  const int64_t t3 = GetTimeMonotonicNs();
+
   out_present_fence = result->present_fence;
   ApplyCommitChanges(*a_args, result.value());
+
+  const int64_t t4 = GetTimeMonotonicNs();
+  if (t4 - t0 > 3000000) {
+    HWC_LOGD("slow commit: prepare %" PRId64 "us, describe %" PRId64
+             "us, execute %" PRId64 "us, apply %" PRId64 "us",
+             (t1 - t0) / 1000, (t2 - t1) / 1000, (t3 - t2) / 1000,
+             (t4 - t3) / 1000);
+  }
+
   return CommitStatus::Success();
 }
 
