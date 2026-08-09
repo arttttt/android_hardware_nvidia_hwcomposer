@@ -88,6 +88,13 @@ class Connector : public PipelineBindable<Connector> {
     return true;
   }
 
+  /* Whether content protection has been negotiated and is in force. There is
+   * nothing to negotiate with over a link that is not a link, so the default
+   * is that it is not. */
+  virtual bool IsContentProtectionEnabled() const {
+    return false;
+  }
+
   virtual const std::vector<DrmMode> &GetModes() const = 0;
 
   /* Physical size of the visible area in millimetres. Zero where it is not

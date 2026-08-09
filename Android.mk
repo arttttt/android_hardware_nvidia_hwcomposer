@@ -86,6 +86,7 @@ LOCAL_SRC_FILES := \
     compositor/FrameTimeHistory.cpp \
     compositor/GenericCompositionPlanner.cpp \
     compositor/GenericLayerMapperCompositionPlanner.cpp \
+    compositor/HdcpController.cpp \
     compositor/LayerToPlaneJoiningPlan.cpp \
     compositor/PresentedCompositionCache.cpp \
     compositor/ShortCircuitor.cpp \
@@ -97,6 +98,16 @@ LOCAL_SRC_FILES := \
     compositor/mapper/UnderlayMapper.cpp \
     display/DrmMode.cpp \
     display/DrmProperty.cpp \
+    stats/CompositionStatsAtomReporter.cpp \
+    stats/CountActiveDisplaysReporter.cpp \
+    stats/DisplayConfigurationResultReporter.cpp \
+    stats/DisplayHotplugConnectModeDetectedAtomReporter.cpp \
+    stats/DisplayRefreshRatesChangedAtomReporter.cpp \
+    stats/Stats.cpp \
+    stats/StatsPoller.cpp \
+    utils/BacklightController.cpp \
+    utils/ColorUtil.cpp \
+    utils/SysfsBacklightController.cpp \
     utils/fd.cpp \
     utils/properties.cpp \
     hwc/HwcDevice.cpp \
