@@ -84,6 +84,10 @@ public:
         uint32_t blend = 0;
         uint32_t flags = 0;
 
+        /* How tall a block is, where the flags say the memory is arranged in
+         * blocks rather than rows. Ignored otherwise. */
+        uint8_t blockHeightLog2 = 0;
+
         /* Waited on by the hardware before this window is read. Borrowed;
          * ownership stays with the caller. -1 for a buffer already ready. */
         int preFence = -1;

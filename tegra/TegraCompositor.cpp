@@ -17,12 +17,8 @@
 #include "TegraCompositor.h"
 
 #include <errno.h>
-#include <inttypes.h>
-#include <time.h>
 
 #include <vector>
-
-#include <android/sync.h>
 
 #include <tegra_dc_ext.h>
 
@@ -36,18 +32,6 @@ namespace android {
 namespace hwc {
 
 namespace {
-
-/* How long to wait for a buffer before giving up. Matches what the driver
- * allows itself, so a comparison between the two is like for like. */
-constexpr int kAcquireWaitMs = 5000;
-
-/* Read straight from the clock rather than through libutils: one timestamp
- * is not worth a library. */
-int64_t monotonicUs() {
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return static_cast<int64_t>(now.tv_sec) * 1000000 + now.tv_nsec / 1000;
-}
 
 uint32_t blendFor(BlendMode mode) {
     switch (mode) {
@@ -63,13 +47,12 @@ uint32_t blendFor(BlendMode mode) {
 
 }  // namespace
 
-TegraCompositor::TegraCompositor(DcHead &head, uint32_t panelWidth)
-    : mHead(head), mPanelWidth(panelWidth) {}
+TegraCompositor::TegraCompositor(DcHead &head): mHead(head) {}
 
 int TegraCompositor::describeWindow(const PlannedLayer &layer, uint32_t index,
                                     uint32_t z, DcHead::Window *outWindow) {
     BufferInfo info;
-    int err = describeBuffer(layer.buffer, mPanelWidth, &info);
+    int err = describeBuffer(layer.buffer, &info);
     if (err)
         return err;
 
@@ -81,6 +64,7 @@ int TegraCompositor::describeWindow(const PlannedLayer &layer, uint32_t index,
     outWindow->stride = info.strideBytes;
     outWindow->pixelFormat = info.format;
     outWindow->flags = info.flags;
+    outWindow->blockHeightLog2 = info.blockHeightLog2;
 
     outWindow->sourceX = layer.sourceCrop.left;
     outWindow->sourceY = layer.sourceCrop.top;
@@ -95,37 +79,9 @@ int TegraCompositor::describeWindow(const PlannedLayer &layer, uint32_t index,
     outWindow->z = z;
     outWindow->blend = blendFor(layer.blend);
 
-    if (HWC_WAIT_ACQUIRE_IN_USERSPACE && layer.acquireFence >= 0) {
-        /* Wait here instead of handing the fence down.
-         *
-         * The driver waits on it for five seconds and gives up, every frame,
-         * which stalls everything behind it -- buffers come back late and the
-         * screen advances once per timeout. Waiting here answers whether the
-         * fence signals at all: if this returns quickly the fence is sound
-         * and the driver's wait is the problem, and if it times out too then
-         * nothing is ever signalling it and the fault is further up.
-         *
-         * The cost of keeping this is real -- it puts the GPU and the display
-         * in lockstep instead of letting the hardware overlap them -- so it
-         * is a measurement, not a fix.
-         */
-        const int64_t before = monotonicUs();
-        const int waited = sync_wait(layer.acquireFence, kAcquireWaitMs);
-        const int64_t elapsedUs = monotonicUs() - before;
-
-        if (waited < 0)
-            HWC_LOGE("acquire fence %d did not signal in %d ms",
-                     layer.acquireFence, kAcquireWaitMs);
-        else
-            HWC_LOGD("acquire fence %d signalled after %" PRId64 " us",
-                     layer.acquireFence, elapsedUs);
-
-        outWindow->preFence = -1;
-    } else {
-        /* Borrowed. The plan does not own it and neither does the window: the
-         * kernel waits on it during the flip and the layer closes it later. */
-        outWindow->preFence = layer.acquireFence;
-    }
+    /* Borrowed. The plan does not own it and neither does the window: the
+     * kernel waits on it during the flip and the layer closes it later. */
+    outWindow->preFence = layer.acquireFence;
 
     return 0;
 }
@@ -154,7 +110,7 @@ int TegraCompositor::test(const FramePlan &plan) {
      * and making it now rather than mid-flip is the point of asking. */
     for (const PlannedLayer &layer : plan.layers()) {
         BufferInfo info;
-        int err = describeBuffer(layer.buffer, mPanelWidth, &info);
+        int err = describeBuffer(layer.buffer, &info);
         if (err)
             return err;
     }
@@ -209,41 +165,36 @@ int TegraCompositor::present(const FramePlan &plan, UniqueFd *outPresentFence) {
         }
     }
 
-    int err = mHead.flip(windows, outPresentFence);
+    UniqueFd postFence;
+    int err = mHead.flip(windows, &postFence);
     if (err)
         return err;
 
-    traceFrameLanded(*outPresentFence);
-    return 0;
-}
-
-void TegraCompositor::traceFrameLanded(const UniqueFd &postFence) {
-    if (!HWC_TRACE_ENABLED)
-        return;
-
-    /* Do the frames actually reach the panel?
+    /* The fence handed out is the one the flip before this got, not this
+     * flip's.
      *
-     * The fence a flip hands back says nothing about that flip. It is built
-     * one step beyond the counter the flip advances, so it fires when the
-     * *next* flip finishes -- which is precisely the moment the buffer just
-     * posted stops being read and becomes free to draw into again. That makes
-     * it the right answer to hand the framework, and a useless one to wait on
-     * here: a frame's own fence cannot report on that frame.
+     * The driver builds a flip's fence one step past the counter that flip
+     * advances, so it does not come due until the following flip finishes.
+     * Read literally that is a fence for a frame that has not been asked for
+     * yet, and handing it over as this frame's is a deadlock rather than a
+     * pessimism: the framework attaches it to the buffer it drew the previous
+     * frame into, then waits on it before drawing the next one -- into that
+     * same buffer, there being only two. The frame that would release it is
+     * the frame that cannot start.
      *
-     * Two flips back it can. That fence was due when the flip before this one
-     * finished, which was a frame ago, so asking now without waiting
-     * separates a display that is quietly taking every frame from one that is
-     * accepting flips and doing nothing with them.
+     * Shifting by one says what the framework is actually asking. The
+     * previous flip's fence comes due exactly when this flip finishes, which
+     * is the moment this frame is on the panel and the one before it is no
+     * longer being read.
+     *
+     * The first frame has no predecessor and so hands back nothing, which is
+     * read as already presented. It is: there was no earlier frame to wait
+     * for.
      */
-    if (mPostFences[1]) {
-        if (sync_wait(mPostFences[1].get(), 0) == 0)
-            HWC_LOGD("the frame before last is on the panel");
-        else
-            HWC_LOGE("the frame before last never reached the panel");
-    }
+    *outPresentFence = std::move(mPreviousPostFence);
+    mPreviousPostFence = std::move(postFence);
 
-    mPostFences[1] = std::move(mPostFences[0]);
-    mPostFences[0] = postFence.dup();
+    return 0;
 }
 
 }  // namespace hwc

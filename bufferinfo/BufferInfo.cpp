@@ -42,30 +42,18 @@ namespace {
  * shared with the branch that already works, which is not a thing to change
  * for our convenience.
  *
- * Not taken from its header either. The header shipped with the leaked
- * sources describes a build older than the library on this device -- it does
- * not even declare nvgr_get_stride, which the library exports -- so its idea
- * of the handle and of the surface structure is exactly what cannot be
- * trusted. Four functions with a plain C signature are all this needs, and
- * their names have outlived every version seen.
+ * Three functions, all of them plain C, and their names have outlived every
+ * version of the library seen on this hardware.
  */
 struct Allocator {
     int (*isValid)(buffer_handle_t) = nullptr;
     int (*memFd)(buffer_handle_t) = nullptr;
     int (*format)(buffer_handle_t) = nullptr;
-    int (*stride)(buffer_handle_t) = nullptr;
 
-    /* Hands back the surface descriptors the allocator keeps for the buffer:
-     * where the image starts, how long a row is, and how the memory is laid
-     * out. Everything the controller needs beyond the descriptor is in
-     * there, and nothing else reports it.
-     *
-     * Kept apart from the four above because it is the one whose answer is a
-     * structure rather than a number, and a structure has a layout that
-     * belongs to whichever build of the allocator this device carries. Until
-     * that layout is confirmed against the device, it is read for the log and
-     * not acted on, and its absence is not a reason to refuse a buffer.
-     */
+    /* Hands back the surface descriptors the allocator keeps for a buffer.
+     * Everything the display controller needs about the memory -- where the
+     * image starts, how long a row is, how it is arranged -- is in there, and
+     * nothing else reports it. */
     void (*surfaces)(buffer_handle_t, const void **, size_t *) = nullptr;
 
     bool resolved = false;
@@ -102,68 +90,54 @@ const Allocator *allocator() {
     const bool ok = resolveOne(library, "nvgr_is_valid", &gAllocator.isValid) &&
                     resolveOne(library, "nvgr_get_memfd", &gAllocator.memFd) &&
                     resolveOne(library, "nvgr_get_format", &gAllocator.format) &&
-                    resolveOne(library, "nvgr_get_stride", &gAllocator.stride);
+                    resolveOne(library, "nvgr_get_surfaces", &gAllocator.surfaces);
     if (!ok) {
         gAllocator.failed = true;
         return nullptr;
     }
 
-    /* Optional, so its own failure is not the group's. */
-    resolveOne(library, "nvgr_get_surfaces", &gAllocator.surfaces);
-
     HWC_LOGI("libnvgr resolved");
     return &gAllocator;
 }
 
-/* Reports what the allocator says about a buffer's memory, once.
+/* The surface descriptor, as words.
  *
- * The controller needs three things this code does not yet ask for: where the
- * image starts inside the buffer, how long a row really is, and whether the
- * memory is arranged in rows at all or in the blocks the GPU prefers. All
- * three live in the allocator's surface descriptor, which is a plain
- * structure of thirty-two bit fields in a documented order:
+ * It is a flat run of thirty-two bit fields, and reading it by index rather
+ * than through a declared structure is deliberate: the structure belongs to
+ * the allocator and has gained a field since the last version of it published
+ * with source, so a header copied from there would put every field after the
+ * fourth word at the wrong offset. Indices instead, each one established
+ * against the library and the buffers on this device:
  *
- *     width, height, colour format, layout, pitch, memory handle, offset,
- *     base pointer, kind, block height log2, scan format, second field offset
+ *   - Colour format and pitch are the two the library itself reveals:
+ *     nvgr_get_stride reads the third and the sixth word and divides one by
+ *     the bytes-per-pixel packed into the other.
+ *   - Width and height are self-evident in a dump -- they are the panel's.
+ *   - Kind reads as the memory kind for compressible thirty-two bit colour,
+ *     which no other field of this buffer could plausibly be, and it fixes
+ *     everything around it: layout says blocklinear in the word before the
+ *     pitch, and the block height beside the kind is a sane four.
  *
- * That order comes from a version of the allocator older than the one this
- * device carries, so it is printed rather than trusted: the raw words are
- * logged beside the reading, and the reading is only worth acting on if the
- * two agree with what the buffer is known to be. Width and height are the
- * anchor -- they are the one pair whose correct value is known in advance.
+ * Anything that disagrees with itself is refused rather than guessed at --
+ * see checkSurface below.
  */
-void reportSurface(buffer_handle_t handle, const Allocator *nvgr) {
-    if (!HWC_TRACE_ENABLED || nvgr->surfaces == nullptr)
-        return;
+enum SurfaceWord {
+    kWidth = 0,
+    kHeight = 1,
+    kColorFormat = 2,
+    kLayout = 4,
+    kPitch = 5,
+    kOffset = 7,
+    kKind = 8,
+    kBlockHeightLog2 = 9,
+};
 
-    static bool reported = false;
-    if (reported)
-        return;
-    reported = true;
-
-    const void *surfaces = nullptr;
-    size_t count = 0;
-    nvgr->surfaces(handle, &surfaces, &count);
-
-    if (surfaces == nullptr || count == 0) {
-        HWC_LOGD("buffer %p has no surfaces", handle);
-        return;
-    }
-
-    const uint32_t *word = static_cast<const uint32_t *>(surfaces);
-
-    HWC_LOGD("surface[0] of %zu, as read: %ux%u fmt=%u layout=%u pitch=%u "
-             "offset=%u kind=%u blockh=%u",
-             count, word[0], word[1], word[2], word[3], word[4], word[6],
-             word[8], word[9]);
-
-    /* Twelve for the structure as documented, four past it: if the reading
-     * above is off, the shift shows up as the anchor appearing late, and
-     * anything after the first surface is another one just like it. */
-    for (size_t i = 0; i < 16; i += 4)
-        HWC_LOGD("surface words %2zu: %08x %08x %08x %08x", i, word[i],
-                 word[i + 1], word[i + 2], word[i + 3]);
-}
+/* The allocator's own names for how memory is arranged. */
+enum SurfaceLayout {
+    kLayoutPitch = 1,
+    kLayoutTiled = 2,
+    kLayoutBlocklinear = 3,
+};
 
 /* Bytes each pixel occupies, for the formats a display can scan out. Zero
  * for anything else, which is how the caller learns it cannot. */
@@ -201,9 +175,41 @@ uint32_t tegraFormat(int halFormat) {
     }
 }
 
+/* Does the descriptor read as one?
+ *
+ * The word indices above were established against one build of the allocator,
+ * and a different one would shift them. A shifted reading does not look like
+ * an error, it looks like a plausible buffer of the wrong shape, and scanning
+ * that out shows the user a broken picture with nothing in the log. So the
+ * reading is asked to agree with itself first: a row cannot be shorter than
+ * the pixels it holds, dimensions cannot be absent, and the layout has to be
+ * one the allocator has a name for. Under a shift each of those lands on a
+ * field that means something else entirely, and the odds of all three still
+ * holding are slim.
+ */
+bool checkSurface(const uint32_t *word, uint32_t bpp) {
+    if (word[kWidth] == 0 || word[kHeight] == 0) {
+        HWC_LOGE("surface reads as %ux%u", word[kWidth], word[kHeight]);
+        return false;
+    }
+
+    if (word[kPitch] < word[kWidth] * bpp) {
+        HWC_LOGE("surface row of %u bytes cannot hold %u pixels at %u bytes "
+                 "each", word[kPitch], word[kWidth], bpp);
+        return false;
+    }
+
+    if (word[kLayout] < kLayoutPitch || word[kLayout] > kLayoutBlocklinear) {
+        HWC_LOGE("surface layout reads as %u", word[kLayout]);
+        return false;
+    }
+
+    return true;
+}
+
 }  // namespace
 
-int describeBuffer(buffer_handle_t handle, uint32_t width, BufferInfo *outInfo) {
+int describeBuffer(buffer_handle_t handle, BufferInfo *outInfo) {
     if (handle == nullptr)
         return -EINVAL;
 
@@ -215,8 +221,6 @@ int describeBuffer(buffer_handle_t handle, uint32_t width, BufferInfo *outInfo) 
         HWC_LOGE("buffer %p is not one of the allocator's", handle);
         return -EINVAL;
     }
-
-    reportSurface(handle, nvgr);
 
     const int halFormat = nvgr->format(handle);
     const uint32_t bpp = bytesPerPixel(halFormat);
@@ -231,42 +235,44 @@ int describeBuffer(buffer_handle_t handle, uint32_t width, BufferInfo *outInfo) 
         return -EINVAL;
     }
 
-    const int stride = nvgr->stride(handle);
-    if (stride <= 0) {
-        HWC_LOGE("buffer %p reports a stride of %d", handle, stride);
+    const void *surfaces = nullptr;
+    size_t count = 0;
+    nvgr->surfaces(handle, &surfaces, &count);
+
+    if (surfaces == nullptr || count == 0) {
+        HWC_LOGE("buffer %p has no surfaces", handle);
         return -EINVAL;
     }
 
-    /* The allocator counts a row in pixels, as the framework does; the
-     * controller counts it in bytes. A row cannot be narrower than the image
-     * it holds, so a value already at least that wide in bytes is taken as
-     * bytes and anything smaller as pixels. Both cases are logged, because
-     * this is the one number here that is inferred rather than asked for. */
-    uint32_t strideBytes;
-    if (static_cast<uint32_t>(stride) >= width * bpp) {
-        strideBytes = static_cast<uint32_t>(stride);
-        HWC_LOGD("buffer %p: stride %d read as bytes", handle, stride);
-    } else {
-        strideBytes = static_cast<uint32_t>(stride) * bpp;
-        HWC_LOGD("buffer %p: stride %d pixels, %u bytes", handle, stride,
-                 strideBytes);
-    }
-
-    if (strideBytes < width * bpp) {
-        HWC_LOGE("buffer %p: a row of %u bytes cannot hold %u pixels at %u "
-                 "bytes each", handle, strideBytes, width, bpp);
+    /* The first surface only. A second one would carry chroma for a planar
+     * format, and those are not scanned out here yet. */
+    const uint32_t *word = static_cast<const uint32_t *>(surfaces);
+    if (!checkSurface(word, bpp))
         return -EINVAL;
-    }
+
+    *outInfo = BufferInfo{};
 
     outInfo->fd = fd;
-    outInfo->offset = 0;
-    outInfo->strideBytes = strideBytes;
+    outInfo->offset = word[kOffset];
+    outInfo->strideBytes = word[kPitch];
     outInfo->format = tegraFormat(halFormat);
-    outInfo->flags = 0;
-    outInfo->blockHeightLog2 = 0;
 
-    HWC_LOGD("buffer %p: fd=%d fmt=0x%x -> 0x%x stride=%u", handle, fd,
-             halFormat, outInfo->format, strideBytes);
+    /* Blocklinear is what the GPU renders into by default on this hardware,
+     * so this is the ordinary case rather than the exotic one. Told to read
+     * such memory row by row the controller shows an orderly scramble, which
+     * is the least helpful way for this to go wrong. */
+    if (word[kLayout] == kLayoutBlocklinear) {
+        outInfo->flags |= TEGRA_DC_EXT_FLIP_FLAG_BLOCKLINEAR;
+        outInfo->blockHeightLog2 = static_cast<uint8_t>(word[kBlockHeightLog2]);
+    } else if (word[kLayout] == kLayoutTiled) {
+        outInfo->flags |= TEGRA_DC_EXT_FLIP_FLAG_TILED;
+    }
+
+    HWC_LOGD("buffer %p: fd=%d %ux%u fmt=0x%x -> 0x%x pitch=%u offset=%u "
+             "layout=%u kind=0x%x blockh=%u", handle, fd, word[kWidth],
+             word[kHeight], halFormat, outInfo->format, word[kPitch],
+             word[kOffset], word[kLayout], word[kKind],
+             word[kBlockHeightLog2]);
 
     return 0;
 }

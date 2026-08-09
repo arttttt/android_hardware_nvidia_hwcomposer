@@ -143,6 +143,7 @@ int DcHead::flip(const std::vector<Window> &windows, UniqueFd *outPostFence) {
         dst.pixformat = src.pixelFormat;
         dst.blend = src.blend;
         dst.flags = src.flags;
+        dst.block_height_log2 = src.blockHeightLog2;
         dst.z = src.z;
 
         dst.x = toFixed(src.sourceX);
@@ -176,10 +177,12 @@ int DcHead::flip(const std::vector<Window> &windows, UniqueFd *outPostFence) {
     flip.flags = 0;
 
     for (const Window &window : windows) {
-        HWC_LOGD("head %d: win %d buf=%d off=%u stride=%u fmt=0x%x "
-                 "src=%.1fx%.1f+%.1f+%.1f dst=%dx%d+%d+%d z=%u pre=%d",
+        HWC_LOGD("head %d: win %d buf=%d off=%u stride=%u fmt=0x%x flags=0x%x "
+                 "blockh=%u src=%.1fx%.1f+%.1f+%.1f dst=%dx%d+%d+%d z=%u "
+                 "pre=%d",
                  mIndex, window.index, window.bufferFd, window.offset,
-                 window.stride, window.pixelFormat, window.sourceWidth,
+                 window.stride, window.pixelFormat, window.flags,
+                 window.blockHeightLog2, window.sourceWidth,
                  window.sourceHeight, window.sourceX, window.sourceY,
                  window.outWidth, window.outHeight, window.outX, window.outY,
                  window.z, window.preFence);

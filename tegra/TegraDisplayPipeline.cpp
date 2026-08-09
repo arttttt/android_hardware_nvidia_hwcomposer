@@ -60,8 +60,7 @@ TegraDisplayPipeline::TegraDisplayPipeline(int index,
     : mIndex(index),
       mHead(std::move(head)),
       mVSync(std::move(vsync)),
-      mCompositor(new TegraCompositor(*mHead,
-                                      static_cast<uint32_t>(mode.width))),
+      mCompositor(new TegraCompositor(*mHead)),
       mModes{mode} {}
 
 TegraDisplayPipeline::~TegraDisplayPipeline() {

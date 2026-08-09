@@ -33,10 +33,8 @@ namespace hwc {
  */
 class TegraCompositor : public Compositor {
 public:
-    /* `head` outlives this object; the pipeline owns both. `panelWidth` is
-     * needed to read a buffer's row length, which the allocator reports in
-     * units that only make sense against the image it holds. */
-    TegraCompositor(DcHead &head, uint32_t panelWidth);
+    /* `head` outlives this object; the pipeline owns both. */
+    explicit TegraCompositor(DcHead &head);
 
     int test(const FramePlan &plan) override;
     int present(const FramePlan &plan, UniqueFd *outPresentFence) override;
@@ -46,18 +44,12 @@ private:
     int describeWindow(const PlannedLayer &layer, uint32_t index, uint32_t z,
                        DcHead::Window *outWindow);
 
-    /* Says in the log whether an earlier frame made it to the panel, and
-     * keeps `postFence` to answer the same question later. */
-    void traceFrameLanded(const UniqueFd &postFence);
-
     DcHead &mHead;
-    const uint32_t mPanelWidth;
 
-    /* The fences of the last two flips, newest first. Held only to be asked
-     * about, and only while tracing is on. Two of them because a flip's fence
-     * comes due one flip later, and the flip that would settle it is posted
-     * at the very end of the present that fills this in. */
-    UniqueFd mPostFences[2];
+    /* The fence the previous flip handed back, which is the one that comes
+     * due when the next flip lands. Held so the next present can pass it on
+     * as its own; see present for why that shift is the whole point. */
+    UniqueFd mPreviousPostFence;
 };
 
 }  // namespace hwc

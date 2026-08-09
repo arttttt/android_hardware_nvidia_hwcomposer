@@ -55,7 +55,7 @@ struct BufferInfo {
 
 /* Describes `handle` for scanout. Returns 0, or a negative errno with the
  * reason logged. */
-int describeBuffer(buffer_handle_t handle, uint32_t width, BufferInfo *outInfo);
+int describeBuffer(buffer_handle_t handle, BufferInfo *outInfo);
 
 }  // namespace hwc
 }  // namespace android

@@ -32,11 +32,6 @@ else
 LOCAL_CFLAGS += -DHWC_TRACE_ENABLED=0
 endif
 
-# Waiting on a fence in userspace is a diagnostic, not the intended path:
-# it puts the GPU and the display in lockstep instead of letting the hardware
-# overlap them. Set to 0 once the driver-side wait is understood.
-LOCAL_CFLAGS += -DHWC_WAIT_ACQUIRE_IN_USERSPACE=1
-
 LOCAL_C_INCLUDES := $(LOCAL_PATH)
 
 # The display controller interface is declared in the kernel's own
@@ -56,8 +51,7 @@ LOCAL_SHARED_LIBRARIES := \
     liblog \
     libcutils \
     libhardware \
-    libdl \
-    libsync
+    libdl
 
 LOCAL_SRC_FILES := \
     bufferinfo/BufferInfo.cpp \
