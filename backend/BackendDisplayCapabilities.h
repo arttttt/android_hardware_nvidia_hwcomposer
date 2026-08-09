@@ -14,6 +14,10 @@
  * limitations under the License.
  */
 
+/* Upstream has no guard here: the file is included from exactly one place
+ * there, and from more than one here. */
+#pragma once
+
 #include <optional>
 #include <vector>
 
