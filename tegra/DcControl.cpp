@@ -73,8 +73,15 @@ int DcControl::outputCount(uint32_t *outCount) const {
 }
 
 int DcControl::setEventMask(uint32_t mask) {
-    __u32 value = mask;
-    if (ioctl(mFd.get(), TEGRA_DC_EXT_CONTROL_SET_EVENT_MASK, &value) < 0) {
+    /* The mask goes by value, not by address.
+     *
+     * The ioctl is declared _IOW with a __u32, which says a pointer to one,
+     * and every other call on this node does take a pointer. This one does
+     * not: the driver reads the argument itself as the mask and rejects
+     * anything outside the valid bits. Passing an address gave it a pointer
+     * to validate, and it answered EINVAL -- correctly.
+     */
+    if (ioctl(mFd.get(), TEGRA_DC_EXT_CONTROL_SET_EVENT_MASK, mask) < 0) {
         int err = -errno;
         ALOGE("SET_EVENT_MASK(0x%x): %s", mask, strerror(-err));
         return err;
