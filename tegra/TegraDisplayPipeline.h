@@ -23,6 +23,7 @@
 
 #include "display/DisplayPipeline.h"
 #include "tegra/DcHead.h"
+#include "tegra/TegraPlane.h"
 #include "tegra/TegraVSyncSource.h"
 
 namespace android {
@@ -43,6 +44,8 @@ public:
     static std::unique_ptr<TegraDisplayPipeline> create(int index);
 
     ~TegraDisplayPipeline() override;
+
+    drm_hwcomposer::UsablePlanes usablePlanes() const override;
 
     std::string name() const override;
     const std::vector<DisplayMode> &modes() const override { return mModes; }
@@ -74,6 +77,12 @@ private:
     /* Exactly one. The panel is fixed and has a single timing; the framework
      * still wants a list, so it gets one of length one. */
     std::vector<DisplayMode> mModes;
+
+    /* One per window the head owns, made the first time anyone asks which
+     * planes this display has. Held here because a plane belongs to the
+     * display rather than to a frame, and what a planner is handed points at
+     * these. Mutable because being asked is not a change worth calling one. */
+    mutable std::vector<std::unique_ptr<drm_hwcomposer::TegraPlane>> mPlanes;
 };
 
 }  // namespace hwc

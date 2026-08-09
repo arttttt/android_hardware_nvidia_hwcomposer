@@ -73,6 +73,40 @@ TegraDisplayPipeline::~TegraDisplayPipeline() {
     mHead.reset();
 }
 
+drm_hwcomposer::UsablePlanes TegraDisplayPipeline::usablePlanes() const {
+    /* Made once, on the first asking. The head decides which windows are its
+     * at the same moment, and what each can do does not change after. */
+    if (mPlanes.empty()) {
+        for (uint32_t index : mHead->windows()) {
+            const DcHead::WindowCapabilities *caps = mHead->capabilities(index);
+            if (caps == nullptr)
+                continue;
+
+            mPlanes.push_back(
+                std::make_unique<drm_hwcomposer::TegraPlane>(index, *caps));
+        }
+    }
+
+    drm_hwcomposer::UsablePlanes usable;
+
+    for (const auto &plane : mPlanes) {
+        auto binding = plane->BindPipeline(this, true);
+        if (!binding)
+            continue;
+
+        /* A window that reads neither blocks nor anything resized is no use
+         * for an ordinary layer -- everything the GPU draws is arranged in
+         * blocks -- but it is exactly what a cursor wants, and the planner
+         * looks for one. Offered as that rather than left idle. */
+        if (!plane->IsCursorCandidate())
+            usable.first.push_back(std::move(binding));
+        else if (!usable.second)
+            usable.second = std::move(binding);
+    }
+
+    return usable;
+}
+
 std::string TegraDisplayPipeline::name() const {
     char buffer[32];
     snprintf(buffer, sizeof(buffer), "tegra-dc-%d", mIndex);

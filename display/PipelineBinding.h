@@ -28,6 +28,8 @@
 #pragma once
 
 #include <memory>
+#include <utility>
+#include <vector>
 
 namespace android::drm_hwcomposer {
 
@@ -68,6 +70,13 @@ class PipelineBindable {
   const DisplayPipeline *bound_pipeline_{};
   std::weak_ptr<BindingOwner<O>> owner_object_;
 };
+
+class Plane;
+
+/* What a display is given when it asks which planes are its: the ones it may
+ * put layers on, and the one meant for a cursor if there is one. */
+using UsablePlanes = std::pair<std::vector<std::shared_ptr<BindingOwner<Plane>>>,
+                               std::shared_ptr<BindingOwner<Plane>>>;
 
 template <class B>
 class BindingOwner {

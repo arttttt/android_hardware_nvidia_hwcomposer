@@ -43,6 +43,17 @@ class TegraPlane : public Plane {
     return index_;
   }
 
+  /* Is this the one to offer as a cursor plane?
+   *
+   * A window that reads neither memory arranged in blocks nor anything
+   * resized will decline every layer the GPU drew, which is all of them. It
+   * is not broken and it is not spare -- it is the narrow window this
+   * controller has, and a cursor is exactly the small unscaled thing it can
+   * show. Offering it as that puts it to the only use it has. */
+  bool IsCursorCandidate() const {
+    return !caps_.blocklinearLayout && !caps_.scaling;
+  }
+
  private:
   const uint32_t index_;
   const hwc::DcHead::WindowCapabilities &caps_;

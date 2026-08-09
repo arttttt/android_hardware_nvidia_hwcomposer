@@ -23,6 +23,7 @@
 
 #include "Compositor.h"
 #include "DisplayMode.h"
+#include "PipelineBinding.h"
 #include "VSyncSource.h"
 
 namespace android {
@@ -47,6 +48,16 @@ enum class PowerMode {
 class DisplayPipeline {
 public:
     virtual ~DisplayPipeline() = default;
+
+    /* The planes this display may put layers on, and the one meant for a
+     * cursor if it has one.
+     *
+     * Handed out as bindings rather than plainly, so that a plane cannot end
+     * up claimed by two displays at once: holding the binding is what says it
+     * is this one's, and letting go is what gives it back. The shape of the
+     * pair is what the planner expects to be given.
+     */
+    virtual drm_hwcomposer::UsablePlanes usablePlanes() const = 0;
 
     /* Human-readable, for logs and for the framework's display name. */
     virtual std::string name() const = 0;
