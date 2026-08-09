@@ -77,6 +77,7 @@
 #include "utils/Tracing.h"
 #include "utils/SysfsBacklightController.h"
 #include "utils/fd.h"
+#include "utils/Logging.h"
 #include "utils/log.h"
 #include "utils/properties.h"
 
@@ -358,6 +359,22 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
   if (validated_composition_.has_value()) {
     ALOGE("%s: Previously validated composition was not presented", __func__);
     validated_composition_.reset();
+  }
+
+  /* How many layers the client offered, said when the number changes.
+   *
+   * The first question to ask of a composer that never uses its hardware is
+   * whether it was ever given anything to put there. Both ways out below
+   * return before the planner is reached, so nothing further downstream can
+   * report on a frame that ends here. */
+  {
+    static size_t last_offered = SIZE_MAX;
+    if (layers_.size() != last_offered) {
+      last_offered = layers_.size();
+      HWC_LOGD("client offered %zu layer(s)%s", layers_.size(),
+               IsInHeadlessMode() ? " (headless, nothing to show them on)"
+                                  : "");
+    }
   }
 
   if (IsInHeadlessMode()) {
