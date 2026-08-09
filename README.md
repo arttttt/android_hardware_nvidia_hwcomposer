@@ -31,14 +31,6 @@ Parts are adapted from
 [drm-hwcomposer](https://gitlab.freedesktop.org/drm-hwcomposer/drm-hwcomposer);
 those files keep their original copyright headers.
 
-## Design documents
-
-Analysis and plans live under `docs/graphics/hwc/` in
-[SmokeR24.1-kernel](https://github.com/arttttt/SmokeR24.1-kernel): anatomy of the
-existing HWC1 module, the HWC1/HWC2 API and fence-semantics comparison, the
-display controller ioctl reference, the composition engines, and the
-implementation plan.
-
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).
