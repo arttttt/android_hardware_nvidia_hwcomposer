@@ -44,6 +44,7 @@
 #include <vector>
 
 #include "compositor/DisplayInfo.h"
+#include "display/Device.h"
 #include "display/DrmColorspace.h"
 #include "display/DrmMode.h"
 #include "display/DrmProperty.h"
@@ -68,6 +69,13 @@ class Connector : public PipelineBindable<Connector> {
 
   virtual uint32_t GetId() const = 0;
   virtual std::string GetName() const = 0;
+
+  /* Which display device this one hangs off, and which of that device's
+   * displays it is. Together they make the port a display reports to the
+   * framework, which has to stay the same across restarts -- so both are
+   * positions rather than identifiers handed out at run time. */
+  virtual Device &GetDev() const = 0;
+  virtual uint32_t GetIndexInResArray() const = 0;
 
   /* One of the DRM_MODE_CONNECTOR_* values. It says how a display is
    * attached, which the framework and the logs both want to know. */

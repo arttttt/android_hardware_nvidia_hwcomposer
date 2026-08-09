@@ -622,7 +622,7 @@ auto HwcDisplay::GetDisplayType() const -> DisplayType {
     return kInternal;
   }
 
-  auto displays = hwc_->GetResMan().GetInternalDisplayNames();
+  auto displays = hwc_->GetInternalDisplayNames();
   if (!displays.empty()) {
     std::string name = GetPipe().connector->Get()->GetName();
     const bool is_internal = (displays.find(name) != displays.end());
@@ -790,12 +790,12 @@ void HwcDisplay::InitForcedColorMode() {
     return;
   }
 
-  if (hwc_->GetResMan().ForceColorMode() < 0) {
+  if (hwc_->ForceColorMode() < 0) {
     return;
   }
 
   auto force_color_mode = static_cast<ColorMode>(
-      hwc_->GetResMan().ForceColorMode());
+      hwc_->ForceColorMode());
   if (force_color_mode < ColorMode::kNative ||
       force_color_mode > ColorMode::kDisplayBt2020) {
     return;
@@ -810,7 +810,7 @@ void HwcDisplay::InitUseColorPipeline() {
     return;
   }
 
-  use_color_pipeline_ = hwc_->GetResMan().UseColorPipeline() &&
+  use_color_pipeline_ = hwc_->UseColorPipeline() &&
                         GetPipe().primary_plane &&
                         GetPipe().primary_plane->Get() &&
                         GetPipe().primary_plane->Get()->HasColorPipeline();
@@ -861,7 +861,7 @@ void HwcDisplay::InitHdrSupported() {
   }
 
   const bool hdr_sysprop_enabled = GetPipe().connector->Get()->IsExternal()
-                                       ? hwc_->GetResMan().ExternalHdrEnabled()
+                                       ? hwc_->ExternalHdrEnabled()
                                        : hwc_->GetResMan()
                                              .PersistentHdrEnabled();
 
@@ -1378,7 +1378,7 @@ std::optional<AtomicCommitArgs> HwcDisplay::CreateFrameUpdateCommit(
   // When client CTM will be applied by the GPU, only apply render intent CTM
   // via DRM.
   if (all_client_layers &&
-      hwc_->GetResMan().GetCtmHandling() == CtmHandling::kDrmOrGpu) {
+      hwc_->GetCtmHandling() == CtmHandling::kDrmOrGpu) {
     a_args.color_matrix = render_intent_matrix_;
   }
 
@@ -1573,14 +1573,14 @@ bool HwcDisplay::CtmByGpu() const {
   if (GetPipe().crtc->Get()->GetCtmProperty() && !client_ctm_has_offset_)
     return false;
 
-  if (hwc_->GetResMan().GetCtmHandling() == CtmHandling::kDrmOrIgnore)
+  if (hwc_->GetCtmHandling() == CtmHandling::kDrmOrIgnore)
     return false;
 
   return true;
 }
 
 bool HwcDisplay::ForcedScalingWithGpu() const {
-  return hwc_->GetResMan().ForcedScalingWithGpu();
+  return hwc_->ForcedScalingWithGpu();
 }
 
 bool HwcDisplay::IsWritebackSupported() const {

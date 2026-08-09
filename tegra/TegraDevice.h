@@ -66,7 +66,7 @@ public:
      * The panels here run one timing each and never leave it, so there is no
      * crossing to cover.
      */
-    std::optional<drm_hwcomposer::LayerData> CreateBufferForModeset(
+    std::optional<drm_hwcomposer::BufferInfo> CreateBufferForModeset(
         uint32_t /*width*/, uint32_t /*height*/) override {
         return std::nullopt;
     }

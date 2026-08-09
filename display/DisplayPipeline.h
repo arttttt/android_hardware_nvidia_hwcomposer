@@ -84,6 +84,14 @@ struct DisplayPipeline {
    */
   virtual hwc::VSyncSource &GetVSyncSource() = 0;
 
+  /* A display of this hardware's that writes into memory instead of out to a
+   * panel, if it has one. That is what a virtual display is made of, and this
+   * controller has no such thing -- so the default is that there is none, and
+   * everything built on it declines. */
+  virtual Connector *FindWritebackConnectorForPipeline() const {
+    return nullptr;
+  }
+
   /* Not owned, and outliving the pipeline. */
   Device *device{};
   FbImporter *importer{};

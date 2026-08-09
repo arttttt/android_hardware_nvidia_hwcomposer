@@ -30,6 +30,8 @@
 #include <vector>
 
 #include "compositor/DisplayInfo.h"
+#include "backend/Backend.h"
+#include "bufferinfo/BufferInfoGetter.h"
 #include "display/Connector.h"
 #include "display/Device.h"
 #include "display/DisplayPipeline.h"
@@ -87,11 +89,48 @@ Hwc::Hwc()
       hdcp_on_hotplug_enabled_(Properties::EnableHdcpOnHotplug()) {
 }
 
+const std::set<std::string> &Hwc::GetInternalDisplayNames() {
+  if (!internal_display_names_read_) {
+    internal_display_names_read_ = true;
+
+    /* One property, comma-separated. Upstream splits it with a helper this
+     * platform's base library does not have yet. */
+    const std::string names = Properties::InternalDisplayNames();
+    for (size_t start = 0; start <= names.size();) {
+      const size_t comma = names.find(',', start);
+      const size_t end = comma == std::string::npos ? names.size() : comma;
+
+      if (end > start)
+        internal_display_names_.insert(names.substr(start, end - start));
+
+      if (comma == std::string::npos)
+        break;
+      start = comma + 1;
+    }
+  }
+
+  return internal_display_names_;
+}
+
 bool Hwc::Init() {
   device_ = CreateDevice();
   if (!device_) {
     ALOGE("No display hardware to drive");
     return false;
+  }
+
+  /* Before any display is built, because building one reads buffers.
+   *
+   * Upstream does this in the resource manager for the same reason, and it is
+   * easy to miss: nothing complains if it is skipped, every buffer simply
+   * fails to be described and the screen stays black. */
+  if (BufferInfoGetter::GetInstance() == nullptr) {
+    auto getter = device_->GetBackend().CreateBufferInfoGetter();
+    if (!getter) {
+      ALOGE("Backend has no way to read a buffer");
+      return false;
+    }
+    BufferInfoGetter::Init(std::move(getter));
   }
 
   /* What upstream's resource manager does once it has finished looking. The

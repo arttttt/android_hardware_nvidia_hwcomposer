@@ -21,6 +21,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -116,6 +117,38 @@ class Hwc : public PipelineToFrontendBindingInterface, public StatsProvider {
     return ctm_handling_;
   }
 
+  /* Whether anything that needs resizing goes to the client rather than to a
+   * plane. Also a setting, and also not about resources -- it was on the
+   * resource manager upstream only because that is where the settings were
+   * read. */
+  bool ForcedScalingWithGpu() const {
+    return forced_scaling_with_gpu_;
+  }
+
+  /* The rest of what upstream's resource manager held: settings, read once
+   * and kept. None of them is about resources; they sat there because that is
+   * where the properties were read, and here that is the composer. */
+
+  bool UseColorPipeline() const {
+    return color_pipeline_enabled_;
+  }
+
+  bool PersistentHdrEnabled() const {
+    return persistent_hdr_enabled_;
+  }
+
+  bool ExternalHdrEnabled() const {
+    return external_hdr_enabled_;
+  }
+
+  int ForceColorMode() const {
+    return force_color_mode_;
+  }
+
+  /* Displays named here are treated as built into the machine whatever they
+   * say they are. */
+  const std::set<std::string> &GetInternalDisplayNames();
+
   void ScheduleHotplugEvent(DisplayHandle display_handle,
                             enum DisplayStatus display_status) {
     hotplug_event_queue_.Add(display_handle, display_status);
@@ -164,6 +197,14 @@ class Hwc : public PipelineToFrontendBindingInterface, public StatsProvider {
 
   std::mutex main_lock_;
   const CtmHandling ctm_handling_ = Properties::GetCtmHandling();
+  const bool forced_scaling_with_gpu_ = Properties::ScaleWithGpu();
+  const bool color_pipeline_enabled_ = Properties::UseColorPipeline();
+  const bool persistent_hdr_enabled_ = Properties::PersistentHdrEnabled();
+  const bool external_hdr_enabled_ = Properties::ExternalHdrEnabled();
+  const int force_color_mode_ = Properties::ForceColorMode();
+
+  std::set<std::string> internal_display_names_;
+  bool internal_display_names_read_ = false;
   std::map<DisplayHandle, std::unique_ptr<HwcDisplay>> displays_;
   std::map<std::shared_ptr<DisplayPipeline>, DisplayHandle> display_handles_;
 

@@ -33,7 +33,7 @@
 
 /* A complete type, not a declaration: an optional of it is returned by value
  * and so has to know how large it is and how to take it apart. */
-#include "compositor/LayerData.h"
+#include "bufferinfo/BufferInfo.h"
 
 namespace android::drm_hwcomposer {
 
@@ -75,8 +75,16 @@ class Device {
    * black buffer for the crossing; whether one is needed at all is a
    * property of the hardware, so this may answer with nothing.
    */
-  virtual std::optional<LayerData> CreateBufferForModeset(uint32_t width,
-                                                          uint32_t height) = 0;
+  virtual std::optional<BufferInfo> CreateBufferForModeset(uint32_t width,
+                                                           uint32_t height) = 0;
+
+  /* Which of the machine's display devices this is. One here, and one is all
+   * this composer opens; upstream numbers them because a machine can have
+   * several cards. It goes into the port a display reports, so it has to be
+   * stable rather than merely unique. */
+  virtual uint32_t GetIndexInDevArray() const {
+    return 0;
+  }
 };
 
 /* Opens the display hardware of the machine this was built for.
