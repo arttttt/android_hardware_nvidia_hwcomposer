@@ -33,13 +33,12 @@ extern "C" {
 
 #include "compositor/DisplayInfo.h"
 
-namespace aidl::android::hardware::graphics::common {
-enum class Hdr;
-}  // namespace aidl::android::hardware::graphics::common
-
-namespace android::ui {
-using aidl::android::hardware::graphics::common::Hdr;
-}  // namespace android::ui
+/* Upstream declares the high-dynamic-range list through a package this
+ * platform predates and aliases it into ui:: itself. This platform already
+ * has ui::Hdr, and a second alias of the same name is an error rather than a
+ * repetition -- so the block is gone and <ui/GraphicTypes.h> stands in for
+ * it. The same substitution is made in hwc/HwcDisplay.h. */
+#include <ui/GraphicTypes.h>
 
 namespace android::drm_hwcomposer {
 
