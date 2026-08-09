@@ -50,11 +50,37 @@ uint32_t BlendFor(BufferBlendMode mode) {
   }
 }
 
+/* Where a plan puts a layer, said the way this controller reads it.
+ *
+ * The two count in opposite directions. A plan says how high a layer sits,
+ * from the bottom up, which is the order the framework hands layers over and
+ * the order everything above this is written against. The controller takes a
+ * depth: the smallest number is the window nearest the viewer, and 0xff is as
+ * far back as it goes -- which is what the driver gives the single window it
+ * puts up on its own, and so is the hardware's own word for the bottom.
+ *
+ * Handing a plan's height over unchanged puts the bottom layer in front of
+ * everything, which on a display showing a wallpaper is a wallpaper over the
+ * whole screen and the entire user interface behind it. It stayed hidden for
+ * as long as only one window was ever used, because one window has no order
+ * to get wrong.
+ *
+ * Turned round here, at the single point where the plan's vocabulary becomes
+ * the controller's, rather than by teaching the planner this hardware's
+ * dialect.
+ */
+uint32_t DepthForZPos(int z_pos) {
+  constexpr uint32_t kFurthestBack = 0xff;
+
+  const auto height = static_cast<uint32_t>(std::max(z_pos, 0));
+  return height >= kFurthestBack ? 0 : kFurthestBack - height;
+}
+
 /* Fills one window from one layer of a plan. False if the layer cannot be
  * described to this controller at all, which the planner should already have
  * ruled out by asking the plane -- so it is a fault worth logging rather than
  * an ordinary refusal. */
-bool DescribeWindow(const LayerData &layer, uint32_t plane_id, uint32_t z,
+bool DescribeWindow(const LayerData &layer, uint32_t plane_id, uint32_t depth,
                     hwc::DcHead::Window *out) {
   if (!layer.bi || !layer.fb) {
     ALOGE("layer for plane %u has no buffer", plane_id);
@@ -82,7 +108,7 @@ bool DescribeWindow(const LayerData &layer, uint32_t plane_id, uint32_t z,
   out->pixelFormat = format;
   out->flags = flags;
   out->blockHeightLog2 = block_height_log2;
-  out->z = z;
+  out->z = depth;
   out->blend = BlendFor(bi.blend_mode);
 
   /* A source region left unsaid means the whole buffer, and a destination
@@ -173,8 +199,7 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
 
       const size_t slot = static_cast<size_t>(it - available.begin());
       if (!DescribeWindow(joining.layer, plane_id,
-                          static_cast<uint32_t>(joining.z_pos),
-                          &windows[slot]))
+                          DepthForZPos(joining.z_pos), &windows[slot]))
         return nullptr;
     }
   }

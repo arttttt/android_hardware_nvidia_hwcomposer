@@ -78,7 +78,11 @@ public:
         int32_t outWidth = 0;
         int32_t outHeight = 0;
 
-        /* Bottom-most first. */
+        /* How far back this window sits, not how high: zero is nearest the
+         * viewer and 0xff is the furthest back the controller goes. It is
+         * the opposite of the order layers are usually counted in, and the
+         * driver's own choice for the single window it raises by itself is
+         * 0xff -- the hardware's word for the bottom. */
         uint32_t z = 0;
 
         /* Blending and layout, as the controller's own flags. */
