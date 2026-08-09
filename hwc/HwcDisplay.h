@@ -60,12 +60,20 @@ public:
      * fence telling us when that drawing is finished. */
     void setClientTarget(buffer_handle_t buffer, int acquireFence);
 
+    /* One layer whose composition was decided differently from the request. */
+    struct CompositionChange {
+        uint64_t layer;
+        HwcLayer::Composition composition;
+    };
+
     /* Decides where every layer will be composited.
      *
-     * Reports how many layers were given an answer differing from the
-     * request; the framework then asks which, accepts, and presents.
+     * Fills `outChanges` with the layers given an answer differing from what
+     * was asked for. The framework reads that list, accepts it, and only
+     * then draws -- so a layer missing from it is a layer the framework
+     * believes the display will show, and which nothing will.
      */
-    int validate(uint32_t *outNumTypeChanges);
+    int validate(std::vector<CompositionChange> *outChanges);
 
     /* Agrees to the answer validate gave. */
     int acceptChanges();

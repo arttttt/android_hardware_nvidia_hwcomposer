@@ -575,19 +575,24 @@ int32_t HwcDevice::validateDisplay(hwc2_display_t displayId,
     if (!disp)
         return HWC2_ERROR_BAD_DISPLAY;
 
-    uint32_t changes = 0;
+    std::vector<HwcDisplay::CompositionChange> changes;
     int err = disp->validate(&changes);
     if (err)
         return HWC2_ERROR_BAD_DISPLAY;
 
     /* Recorded here so that the two calls that follow, counting then
-     * filling, answer from one decision. */
+     * filling, answer from one decision rather than two. */
     mChangedLayers.clear();
     mChangedTypes.clear();
+    for (const auto &change : changes) {
+        mChangedLayers.push_back(change.layer);
+        mChangedTypes.push_back(fromComposition(change.composition));
+    }
 
-    *outNumTypes = 0;
+    *outNumTypes = static_cast<uint32_t>(mChangedLayers.size());
+
+    /* No display requests are ever made, so nothing follows from them. */
     *outNumRequests = 0;
-    (void)changes;
 
     return HWC2_ERROR_NONE;
 }

@@ -53,8 +53,8 @@ void HwcDisplay::setClientTarget(buffer_handle_t buffer, int acquireFence) {
     mClientTarget.setBuffer(buffer, acquireFence);
 }
 
-int HwcDisplay::validate(uint32_t *outNumTypeChanges) {
-    uint32_t changes = 0;
+int HwcDisplay::validate(std::vector<CompositionChange> *outChanges) {
+    outChanges->clear();
 
     /* Every layer goes to client composition.
      *
@@ -67,13 +67,17 @@ int HwcDisplay::validate(uint32_t *outNumTypeChanges) {
      */
     for (auto &entry : mLayers) {
         HwcLayer &layer = entry.second;
-        if (layer.requestedComposition() != HwcLayer::Composition::Client)
-            ++changes;
         layer.setActualComposition(HwcLayer::Composition::Client);
+
+        /* Reported only where the answer differs from the request. A layer
+         * left out of this list is one the framework believes the display
+         * will show by itself, so it will not draw it -- and nothing else
+         * would either. */
+        if (layer.requestedComposition() != HwcLayer::Composition::Client)
+            outChanges->push_back({entry.first, layer.actualComposition()});
     }
 
     mValidated = true;
-    *outNumTypeChanges = changes;
     return 0;
 }
 
