@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "DrmHwc.h"
+#include "Hwc.h"
 
 #include <algorithm>
 #include <cinttypes>
@@ -81,15 +81,45 @@ std::string DumpDisplayStats(const HwcDisplay *display,
 }
 }  // namespace
 
-DrmHwc::DrmHwc()
-    : resource_manager_(this),
-      dump_stats_tracker_(this),
+Hwc::Hwc()
+    : dump_stats_tracker_(this),
       refresh_rates_reporter_(DisplayRefreshRatesChangedAtomReporter::Create()),
       hdcp_on_hotplug_enabled_(Properties::EnableHdcpOnHotplug()) {
 }
 
+bool Hwc::Init() {
+  device_ = CreateDevice();
+  if (!device_) {
+    ALOGE("No display hardware to drive");
+    return false;
+  }
+
+  /* What upstream's resource manager does once it has finished looking. The
+   * looking is what is missing here, not this. */
+  for (const auto &connector : device_->GetConnectors()) {
+    auto pipeline = device_->GetBackend().CreatePipeline(*connector);
+    if (!pipeline) {
+      ALOGE("Failed to build a display for '%s'",
+            connector->GetName().c_str());
+      continue;
+    }
+
+    pipeline->device = device_.get();
+
+    if (!BindDisplay(std::shared_ptr<DisplayPipeline>(std::move(pipeline))))
+      ALOGE("Failed to attach '%s'", connector->GetName().c_str());
+  }
+
+  /* Called whether or not anything was attached: it is also what puts the
+   * composer into headless mode, which is what keeps the framework alive when
+   * there is no display at all. */
+  FinalizeDisplayBinding();
+
+  return true;
+}
+
 /* Must be called after every display attach/detach cycle */
-void DrmHwc::FinalizeDisplayBinding() {
+void Hwc::FinalizeDisplayBinding() {
   if (displays_.count(kPrimaryDisplay) == 0) {
     /* Primary display MUST always exist */
     ALOGI("No pipelines available. Creating null-display for headless mode");
@@ -115,14 +145,14 @@ void DrmHwc::FinalizeDisplayBinding() {
   displays_for_removal_list_.clear();
 }
 
-void DrmHwc::FlushHotplugEvents() {
+void Hwc::FlushHotplugEvents() {
   auto events = hotplug_event_queue_.RetrieveAndFlush();
   for (const auto &[handle, status] : events) {
     SendHotplugEventToClient(handle, status);
   }
 }
 
-bool DrmHwc::BindDisplay(std::shared_ptr<DrmDisplayPipeline> pipeline) {
+bool Hwc::BindDisplay(std::shared_ptr<DisplayPipeline> pipeline) {
   if (display_handles_.count(pipeline) != 0) {
     ALOGE("%s, pipeline is already used by another display, FIXME!!!: %p",
           __func__, pipeline.get());
@@ -154,7 +184,7 @@ bool DrmHwc::BindDisplay(std::shared_ptr<DrmDisplayPipeline> pipeline) {
   return true;
 }
 
-bool DrmHwc::UnbindDisplay(std::shared_ptr<DrmDisplayPipeline> pipeline) {
+bool Hwc::UnbindDisplay(std::shared_ptr<DisplayPipeline> pipeline) {
   if (display_handles_.count(pipeline) == 0) {
     ALOGE("%s, can't find the display, pipeline: %p", __func__, pipeline.get());
     return false;
@@ -179,8 +209,8 @@ bool DrmHwc::UnbindDisplay(std::shared_ptr<DrmDisplayPipeline> pipeline) {
   return true;
 }
 
-void DrmHwc::NotifyDisplayLinkStatus(
-    std::shared_ptr<DrmDisplayPipeline> pipeline) {
+void Hwc::NotifyDisplayLinkStatus(
+    std::shared_ptr<DisplayPipeline> pipeline) {
   if (display_handles_.count(pipeline) == 0) {
     ALOGE("%s, can't find the display, pipeline: %p", __func__, pipeline.get());
     return;
@@ -189,8 +219,8 @@ void DrmHwc::NotifyDisplayLinkStatus(
                        DisplayStatus::kLinkTrainingFailed);
 }
 
-void DrmHwc::NotifyHdcpTermination(
-    std::shared_ptr<DrmDisplayPipeline> pipeline) {
+void Hwc::NotifyHdcpTermination(
+    std::shared_ptr<DisplayPipeline> pipeline) {
   if (display_handles_.count(pipeline) == 0) {
     ALOGE("%s, can't find the display, pipeline: %p", __func__, pipeline.get());
     return;
@@ -210,7 +240,7 @@ void DrmHwc::NotifyHdcpTermination(
   }
 }
 
-void DrmHwc::RequestHdcpNegotiation(DisplayHandle display_handle) {
+void Hwc::RequestHdcpNegotiation(DisplayHandle display_handle) {
   auto *display = GetDisplay(display_handle);
   if (display == nullptr) {
     ALOGE("%s, display is null for handle: %" PRIu64, __func__, display_handle);
@@ -241,11 +271,14 @@ void DrmHwc::RequestHdcpNegotiation(DisplayHandle display_handle) {
   }
 }
 
-std::optional<DisplayHandle> DrmHwc::CreateVirtualDisplay(uint32_t width,
+std::optional<DisplayHandle> Hwc::CreateVirtualDisplay(uint32_t width,
                                                           uint32_t height) {
   ALOGI("Creating virtual display %dx%d", width, height);
 
-  auto virtual_pipeline = resource_manager_.GetVirtualDisplayPipeline();
+  /* Nothing to write a virtual display into. Upstream builds one out of a
+   * writeback connector -- a display the controller feeds into memory rather
+   * than out to a panel -- and this controller has no such thing. */
+  std::shared_ptr<DisplayPipeline> virtual_pipeline;
   if (!virtual_pipeline)
     return std::nullopt;
 
@@ -259,7 +292,7 @@ std::optional<DisplayHandle> DrmHwc::CreateVirtualDisplay(uint32_t width,
   return new_display_handle;
 }
 
-bool DrmHwc::DestroyVirtualDisplay(DisplayHandle display) {
+bool Hwc::DestroyVirtualDisplay(DisplayHandle display) {
   ALOGI("Destroying virtual display %" PRIu64, display);
 
   if (displays_.count(display) == 0) {
@@ -278,7 +311,7 @@ bool DrmHwc::DestroyVirtualDisplay(DisplayHandle display) {
   return true;
 }
 
-auto DrmHwc::PullCompositionStats()
+auto Hwc::PullCompositionStats()
     -> std::map<CompositionAttributes, CompositionStats> {
   std::map<CompositionAttributes, CompositionStats> stats;
   for (const auto &[display_handle, display] : displays_) {
@@ -287,7 +320,7 @@ auto DrmHwc::PullCompositionStats()
   return stats;
 }
 
-auto DrmHwc::PullActiveDisplayCounts() -> ActiveDisplayCounts {
+auto Hwc::PullActiveDisplayCounts() -> ActiveDisplayCounts {
   ActiveDisplayCounts counts;
   for (const auto &[_, display] : displays_) {
     if (!display->GetDisplayEnabled()) {
@@ -307,7 +340,7 @@ auto DrmHwc::PullActiveDisplayCounts() -> ActiveDisplayCounts {
   return counts;
 }
 
-std::string DrmHwc::DumpState() {
+std::string Hwc::DumpState() {
   std::stringstream output;
 
   output << "-- drm_hwcomposer --\n\n";
@@ -342,7 +375,7 @@ std::string DrmHwc::DumpState() {
   return output.str();
 }
 
-uint32_t DrmHwc::GetMaxVirtualDisplayCount() {
+uint32_t Hwc::GetMaxVirtualDisplayCount() {
   /* Virtual display is an experimental feature.
    * Unless explicitly set to true, return 0 for no support.
    */
@@ -350,20 +383,23 @@ uint32_t DrmHwc::GetMaxVirtualDisplayCount() {
     return 0;
   }
 
-  auto writeback_count = resource_manager_.GetWritebackConnectorsCount();
+  /* See CreateVirtualDisplay: no writeback, so none can be made. Kept as an
+   * arithmetic rather than a plain zero, because the property above is what
+   * decides whether any of this is asked for. */
+  uint32_t writeback_count = 0;
   writeback_count = std::min(writeback_count, 1U);
   /* Currently, only 1 virtual display is supported. Other cases need testing */
   ALOGI("Max virtual display count: %d", writeback_count);
   return writeback_count;
 }
 
-void DrmHwc::DeinitDisplays() {
+void Hwc::DeinitDisplays() {
   for (auto &pair : Displays()) {
     pair.second->SetPipeline(nullptr);
   }
 }
 
-void DrmHwc::LogRefreshRateChanges() {
+void Hwc::LogRefreshRateChanges() {
   std::vector<int32_t> refresh_rates;
   refresh_rates.reserve(displays_.size());
   for (const auto &[_, display] : displays_) {
@@ -377,13 +413,13 @@ void DrmHwc::LogRefreshRateChanges() {
     refresh_rates_reporter_->UpdateRefreshRates(refresh_rates);
 }
 
-void DrmHwc::HotplugEventQueue::Add(DisplayHandle display_handle,
+void Hwc::HotplugEventQueue::Add(DisplayHandle display_handle,
                                     DisplayStatus display_status) {
   std::scoped_lock lock(mutex_);
   events_[display_handle] = display_status;
 }
 
-DrmHwc::HotplugEventQueue::Events DrmHwc::HotplugEventQueue::RetrieveAndFlush() {
+Hwc::HotplugEventQueue::Events Hwc::HotplugEventQueue::RetrieveAndFlush() {
   Events events;
   {
     std::scoped_lock lock(mutex_);

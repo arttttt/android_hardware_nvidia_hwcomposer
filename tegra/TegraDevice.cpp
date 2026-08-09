@@ -84,6 +84,7 @@ std::unique_ptr<TegraDevice> TegraDevice::create() {
 }
 
 TegraDevice::~TegraDevice() {
+
     /* Ordered: the sink was made by the backend and the connectors outlive
      * whatever bound to them, so both go before the backend does. */
     mSink.reset();
@@ -92,4 +93,14 @@ TegraDevice::~TegraDevice() {
 }
 
 }  // namespace hwc
+
+namespace drm_hwcomposer {
+
+/* This image drives a Tegra display controller and nothing else. Which one it
+ * is was decided when the image was assembled; see display/Device.h. */
+std::unique_ptr<Device> CreateDevice() {
+    return hwc::TegraDevice::create();
+}
+
+}  // namespace drm_hwcomposer
 }  // namespace android

@@ -112,11 +112,12 @@ LOCAL_SRC_FILES := \
     utils/SysfsBacklightController.cpp \
     utils/fd.cpp \
     utils/properties.cpp \
-    hwc/HwcDevice.cpp \
+    hwc/Hwc.cpp \
     hwc/HwcDisplay.cpp \
     hwc/HwcDisplayConfigs.cpp \
     hwc/HwcLayer.cpp \
-    hwc/HwcModule.cpp \
+    hwc2_device/DrmHwcTwo.cpp \
+    hwc2_device/hwc2_device.cpp \
     tegra/DcControl.cpp \
     tegra/DcHead.cpp \
     tegra/TegraAtomicCommitSink.cpp \

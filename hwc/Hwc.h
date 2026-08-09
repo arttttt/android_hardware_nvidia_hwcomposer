@@ -25,19 +25,21 @@
 #include <vector>
 
 #include "compositor/DisplayInfo.h"
-#include "drm/ResourceManager.h"
+#include "display/Device.h"
+#include "display/PipelineToFrontendBinding.h"
 #include "hwc/HwcDisplay.h"
+#include "utils/properties.h"
 #include "stats/DisplayRefreshRatesChangedAtomReporter.h"
 #include "stats/Stats.h"
 
 namespace android::drm_hwcomposer {
 
-struct DrmDisplayPipeline;
+struct DisplayPipeline;
 
-class DrmHwc : public PipelineToFrontendBindingInterface, public StatsProvider {
+class Hwc : public PipelineToFrontendBindingInterface, public StatsProvider {
  public:
-  DrmHwc();
-  ~DrmHwc() override = default;
+  Hwc();
+  ~Hwc() override = default;
 
   // Enum for Display status: Connected, Disconnected, Link Training Failed
   enum DisplayStatus {
@@ -78,8 +80,40 @@ class DrmHwc : public PipelineToFrontendBindingInterface, public StatsProvider {
                : nullptr;
   }
 
-  auto &GetResMan() {
-    return resource_manager_;
+  /* Opens the display hardware and builds a display for everything on it.
+   *
+   * Upstream has a resource manager do this, watching the kernel and calling
+   * back as cards and monitors appear. Nothing here appears or disappears, so
+   * what is left of that is the part that was never about watching: build a
+   * pipeline for each display the hardware has, hand it over, and say when
+   * there are no more coming.
+   *
+   * Returns false if there is nothing to drive. A composer with no primary
+   * display still answers the framework -- see the headless note below -- so
+   * this failing is not the end of it.
+   */
+  bool Init();
+
+  Device *GetDevice() {
+    return device_.get();
+  }
+
+  /* The one lock the framework's calls are serialised on.
+   *
+   * Upstream keeps it on the resource manager, because that is what a hotplug
+   * arrives at and a hotplug must not land in the middle of a frame. There is
+   * no hotplug here and no resource manager, but the lock is still what stops
+   * the framework's several threads from reaching one display at once, so it
+   * lives on the composer instead. */
+  std::mutex &GetMainLock() {
+    return main_lock_;
+  }
+
+  /* Whether a colour matrix the framework asks for may be quietly dropped
+   * when the hardware cannot apply it, or must fall to the client. A setting,
+   * read once. */
+  CtmHandling GetCtmHandling() const {
+    return ctm_handling_;
   }
 
   void ScheduleHotplugEvent(DisplayHandle display_handle,
@@ -90,18 +124,18 @@ class DrmHwc : public PipelineToFrontendBindingInterface, public StatsProvider {
   void DeinitDisplays();
 
   // PipelineToFrontendBindingInterface
-  bool BindDisplay(std::shared_ptr<DrmDisplayPipeline> pipeline) override;
-  bool UnbindDisplay(std::shared_ptr<DrmDisplayPipeline> pipeline) override;
+  bool BindDisplay(std::shared_ptr<DisplayPipeline> pipeline) override;
+  bool UnbindDisplay(std::shared_ptr<DisplayPipeline> pipeline) override;
   void FinalizeDisplayBinding() override;
   void FlushHotplugEvents() override;
 
   // Notify Display Link Status
   void NotifyDisplayLinkStatus(
-      std::shared_ptr<DrmDisplayPipeline> pipeline) override;
+      std::shared_ptr<DisplayPipeline> pipeline) override;
 
   // Notify HDCP Termination from kernel Uevents
   void NotifyHdcpTermination(
-      std::shared_ptr<DrmDisplayPipeline> pipeline) override;
+      std::shared_ptr<DisplayPipeline> pipeline) override;
 
   // Should be done for all successful modesets (full and seamless).
   void LogRefreshRateChanges();
@@ -126,9 +160,12 @@ class DrmHwc : public PipelineToFrontendBindingInterface, public StatsProvider {
     std::mutex mutex_;
   };
 
-  ResourceManager resource_manager_;
+  std::unique_ptr<Device> device_;
+
+  std::mutex main_lock_;
+  const CtmHandling ctm_handling_ = Properties::GetCtmHandling();
   std::map<DisplayHandle, std::unique_ptr<HwcDisplay>> displays_;
-  std::map<std::shared_ptr<DrmDisplayPipeline>, DisplayHandle> display_handles_;
+  std::map<std::shared_ptr<DisplayPipeline>, DisplayHandle> display_handles_;
 
   HotplugEventQueue hotplug_event_queue_;
   std::vector<DisplayHandle> displays_for_removal_list_;

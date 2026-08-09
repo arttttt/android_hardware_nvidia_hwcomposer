@@ -79,4 +79,16 @@ class Device {
                                                           uint32_t height) = 0;
 };
 
+/* Opens the display hardware of the machine this was built for.
+ *
+ * Declared here and defined by whichever backend is in the build -- one per
+ * image, chosen when it is put together rather than when it runs. It is the
+ * one place above the backends that has to name a particular kind of
+ * hardware, and it names it by not naming it.
+ *
+ * Returns null if there is nothing to drive, which is not a state worth
+ * carrying on from.
+ */
+std::unique_ptr<Device> CreateDevice();
+
 }  // namespace android::drm_hwcomposer
