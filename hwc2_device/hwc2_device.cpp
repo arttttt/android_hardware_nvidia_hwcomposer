@@ -30,6 +30,7 @@
 #include <ui/GraphicTypes.h>
 
 #include "bufferinfo/BufferInfoGetter.h"
+#include "bufferinfo/NvGralloc.h"
 #include "compositor/DisplayInfo.h"
 #include "hwc/HwcDisplay.h"
 #include "hwc/HwcLayer.h"
@@ -128,11 +129,29 @@ class Hwc2DeviceLayer : public FrontendLayerBase {
       swchain_slots_[slot_id] = bo_info.value();
     }
 
+    /* Undone here because this is the only place that has both of the two
+     * things undoing it needs: the buffer as the allocator knows it, and the
+     * fence saying when what was drawn into it is finished.
+     *
+     * What the GPU draws is compressed -- it keeps a second, smaller record
+     * of each tile beside the pixels and writes only that where it can. A
+     * display that understands the arrangement reads both. This one does not,
+     * and reads the record as though it were pixels, which is the regular
+     * grid laid over a recognisable picture. So it is flattened back before
+     * the frame is described, every frame, because every frame is drawn
+     * again.
+     *
+     * The fence handed back carries the acquire fence's meaning forward,
+     * whether or not any flattening turned out to be needed. */
+    SharedFd ready;
+    NvGralloc::GetInstance()->PrepareForScanout(buffer_handle, fence_fd,
+                                                &ready);
+
     HwcLayer::LayerProperties lp;
     lp.buffer = HwcLayer::Buffer{
         .bi = swchain_slots_[slot_id],
         .fb = importer.GetOrCreateFbId(&swchain_slots_[slot_id]),
-        .fence = MakeSharedFd(fence_fd),
+        .fence = std::move(ready),
     };
 
     return std::make_pair(lp, not_a_swapchain);
