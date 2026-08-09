@@ -23,30 +23,30 @@
 namespace android {
 namespace hwc {
 
-/* The panel's vertical blank, as a stream of timestamps.
+/* One wait for the panel's next vertical blank.
  *
- * The framework schedules everything it does off this signal, so two
- * properties matter more than the mechanism behind them. The timestamp must
- * come from the same clock the rest of the system uses, CLOCK_MONOTONIC, or
- * frame pacing drifts against every other timer. And delivery must stop
- * promptly on `disable`: a callback arriving after the framework asked for
- * silence reaches an observer that no longer expects it.
+ * Deliberately no more than that. Everything else a composer does with
+ * blanks -- tracking the period, predicting when the next one falls,
+ * correcting the estimate against the fence of the frame just shown,
+ * starting and stopping delivery -- is the same whatever the hardware, and
+ * upstream has all of it in VSyncWorker. This is the one step of that which
+ * cannot be written once for everybody, so it is the only step here.
+ *
+ * The timestamp must come from the same clock the rest of the system uses,
+ * CLOCK_MONOTONIC, or frame pacing drifts against every other timer.
+ *
+ * Called on the worker's thread and expected to block. Returning an error is
+ * a normal outcome rather than a fault -- a panel that has been powered down
+ * reports nothing -- and the caller answers it by falling back to a timer,
+ * so an implementation must return rather than block for ever.
  */
 class VSyncSource {
 public:
-    /* Called once per vertical blank with the time it happened. Runs on the
-     * source's own thread, not the caller's. */
-    using Callback = std::function<void(int64_t timestampNs)>;
-
     virtual ~VSyncSource() = default;
 
-    /* Starts delivery. Replaces any previously registered callback.
-     * Returns 0 on success or a negative errno. */
-    virtual int enable(Callback callback) = 0;
-
-    /* Stops delivery and guarantees that no callback is running or will run
-     * once it returns. */
-    virtual int disable() = 0;
+    /* Waits for the next vertical blank and reports when it happened.
+     * Returns 0, or a negative errno if no blank was seen. */
+    virtual int waitForVSync(int64_t *outTimestampNs) = 0;
 };
 
 }  // namespace hwc

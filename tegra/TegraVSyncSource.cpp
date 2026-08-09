@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <tegra_dc_ext.h>
@@ -31,9 +32,37 @@
 namespace android {
 namespace hwc {
 
+namespace {
+
+/* How long to wait for a blank before giving up on this one.
+ *
+ * A wait with no limit is what the hardware invites: a panel that has been
+ * powered down reports nothing and would hold the thread for ever. Ten
+ * blanks at sixty hertz is long enough that a running panel never reaches
+ * it, and short enough that a stopped one is noticed. Giving up is not a
+ * failure -- the caller answers it by timing the blanks itself.
+ */
+constexpr int kWaitTimeoutMs = 166;
+
+constexpr int64_t kOneSecondNs = 1'000'000'000;
+
+int64_t now() {
+    struct timespec ts = {};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<int64_t>(ts.tv_sec) * kOneSecondNs + ts.tv_nsec;
+}
+
+}  // namespace
+
 std::unique_ptr<TegraVSyncSource> TegraVSyncSource::create(uint32_t headHandle) {
     std::unique_ptr<DcControl> control = DcControl::open();
     if (!control)
+        return nullptr;
+
+    /* Subscribed once and left subscribed. Whether blanks are passed on to
+     * the framework is decided above this; here they are only read. */
+    int err = control->setEventMask(TEGRA_DC_EXT_EVENT_VBLANK);
+    if (err)
         return nullptr;
 
     return std::unique_ptr<TegraVSyncSource>(
@@ -41,120 +70,38 @@ std::unique_ptr<TegraVSyncSource> TegraVSyncSource::create(uint32_t headHandle) 
 }
 
 TegraVSyncSource::~TegraVSyncSource() {
-    disable();
-}
-
-int TegraVSyncSource::enable(Callback callback) {
-    if (!callback)
-        return -EINVAL;
-
-    /* Replacing the callback while running would leave the reader thread
-     * calling whichever it happened to read, so restart instead. */
-    disable();
-
-    int pipeFds[2];
-    if (pipe2(pipeFds, O_CLOEXEC) < 0) {
-        int err = -errno;
-        HWC_LOGE("stop pipe: %s", strerror(-err));
-        return err;
-    }
-    mStopReadFd.reset(pipeFds[0]);
-    mStopWriteFd.reset(pipeFds[1]);
-
-    int err = mControl->setEventMask(TEGRA_DC_EXT_EVENT_VBLANK);
-    if (err) {
-        mStopReadFd.reset();
-        mStopWriteFd.reset();
-        return err;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(mMutex);
-        mCallback = std::move(callback);
-        mRunning = true;
-    }
-
-    mThread = std::thread(&TegraVSyncSource::run, this);
-    return 0;
-}
-
-int TegraVSyncSource::disable() {
-    {
-        std::lock_guard<std::mutex> lock(mMutex);
-        if (!mRunning)
-            return 0;
-        mRunning = false;
-    }
-
-    signalStop();
-
-    if (mThread.joinable())
-        mThread.join();
-
-    /* Only now, with the reader stopped for certain, is it safe to say that
-     * no callback is in flight -- which is what the interface promises. */
-    {
-        std::lock_guard<std::mutex> lock(mMutex);
-        mCallback = nullptr;
-    }
-
     mControl->setEventMask(0);
-
-    mStopReadFd.reset();
-    mStopWriteFd.reset();
-    return 0;
 }
 
-int TegraVSyncSource::signalStop() {
-    if (!mStopWriteFd)
-        return 0;
+int TegraVSyncSource::waitForVSync(int64_t *outTimestampNs) {
+    struct pollfd fd = {};
+    fd.fd = mControl->fd();
+    fd.events = POLLIN;
 
-    const char byte = 1;
-    ssize_t written = TEMP_FAILURE_RETRY(write(mStopWriteFd.get(), &byte, 1));
-    if (written < 0) {
-        int err = -errno;
-        HWC_LOGE("stop write: %s", strerror(-err));
-        return err;
-    }
-    return 0;
-}
-
-void TegraVSyncSource::run() {
-    struct pollfd fds[2];
-    fds[0].fd = mControl->fd();
-    fds[0].events = POLLIN;
-    fds[1].fd = mStopReadFd.get();
-    fds[1].events = POLLIN;
-
+    /* Loops because the stream carries more than this display's blanks, and
+     * an event that is not the one waited for is not an answer. */
     while (true) {
-        {
-            std::lock_guard<std::mutex> lock(mMutex);
-            if (!mRunning)
-                return;
-        }
+        fd.revents = 0;
 
-        fds[0].revents = 0;
-        fds[1].revents = 0;
-
-        int ready = TEMP_FAILURE_RETRY(poll(fds, 2, -1));
+        int ready = poll(&fd, 1, kWaitTimeoutMs);
         if (ready < 0) {
-            HWC_LOGE("poll: %s", strerror(errno));
-            return;
+            /* Handed straight back rather than retried: a wait interrupted
+             * by a signal is how the caller's thread is asked to look at
+             * whether it should still be running. */
+            return -errno;
         }
 
-        /* Checked before the event stream: asked to stop, stop, even if a
-         * blank arrived in the same wakeup. */
-        if (fds[1].revents & POLLIN)
-            return;
+        if (ready == 0)
+            return -ETIMEDOUT;
 
-        if (!(fds[0].revents & POLLIN))
+        if (!(fd.revents & POLLIN))
             continue;
 
         DcControl::Event event;
         int err = mControl->readEvent(&event);
         if (err) {
             HWC_LOGE("readEvent: %s", strerror(-err));
-            return;
+            return err;
         }
 
         if (event.type != DcControl::EventType::VBlank)
@@ -162,19 +109,11 @@ void TegraVSyncSource::run() {
         if (event.handle != mHeadHandle)
             continue;
 
-        /* Copied under the lock and called outside it. Holding a lock across
-         * a callback into the composer invites a deadlock the first time
-         * that callback wants to touch this object. */
-        Callback callback;
-        {
-            std::lock_guard<std::mutex> lock(mMutex);
-            if (!mRunning)
-                return;
-            callback = mCallback;
-        }
-
-        if (callback)
-            callback(event.timestampNs);
+        /* The controller reports that a blank happened, not when. Read now,
+         * which is within one wakeup of it -- and the same clock everything
+         * else is scheduled against. */
+        *outTimestampNs = now();
+        return 0;
     }
 }
 

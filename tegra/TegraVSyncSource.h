@@ -17,13 +17,11 @@
 #ifndef TEGRA_VSYNC_SOURCE_H
 #define TEGRA_VSYNC_SOURCE_H
 
+#include <cstdint>
 #include <memory>
-#include <mutex>
-#include <thread>
 
 #include "display/VSyncSource.h"
 #include "tegra/DcControl.h"
-#include "utils/UniqueFd.h"
 
 namespace android {
 namespace hwc {
@@ -38,43 +36,29 @@ namespace hwc {
  * Only vertical blank is subscribed to. Hotplug exists in the same stream and
  * is ignored: the panel on this board is soldered down, and a display that
  * cannot leave has nothing to report.
+ *
+ * No thread of its own, and nothing to start or stop. Whoever waits here is
+ * the thread that wanted the blank, and everything built on top of blanks --
+ * when to deliver them, what the period is, when the next one falls -- is
+ * upstream's and lives above this.
  */
 class TegraVSyncSource : public VSyncSource {
 public:
-    /* `headHandle` selects which display's blanks are passed on; events for
-     * any other are dropped. Returns null if the control node will not open. */
+    /* `headHandle` selects which display's blanks are reported; events for
+     * any other are dropped. Returns null if the control node will not open,
+     * or if the controller refuses to report blanks. */
     static std::unique_ptr<TegraVSyncSource> create(uint32_t headHandle);
 
     ~TegraVSyncSource() override;
 
-    int enable(Callback callback) override;
-    int disable() override;
+    int waitForVSync(int64_t *outTimestampNs) override;
 
 private:
     TegraVSyncSource(std::unique_ptr<DcControl> control, uint32_t headHandle)
         : mControl(std::move(control)), mHeadHandle(headHandle) {}
 
-    void run();
-
-    /* Wakes the reader out of poll() so it can notice that it should stop.
-     * Needed because a read already in progress cannot be cancelled, and
-     * closing the descriptor underneath it is not a way to find out. */
-    int signalStop();
-
     std::unique_ptr<DcControl> mControl;
     const uint32_t mHeadHandle;
-
-    std::thread mThread;
-
-    /* Read end polled alongside the event stream, write end used to wake it. */
-    UniqueFd mStopReadFd;
-    UniqueFd mStopWriteFd;
-
-    /* Guards mCallback and mRunning against enable and disable racing the
-     * reader thread. Never held while the callback is invoked. */
-    std::mutex mMutex;
-    Callback mCallback;
-    bool mRunning = false;
 };
 
 }  // namespace hwc

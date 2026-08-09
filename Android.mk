@@ -69,6 +69,7 @@ LOCAL_SHARED_LIBRARIES := \
     libcutils \
     libdrm \
     libhardware \
+    libsync \
     libui \
     libdl
 
@@ -98,6 +99,7 @@ LOCAL_SRC_FILES := \
     compositor/mapper/UnderlayMapper.cpp \
     display/DrmMode.cpp \
     display/DrmProperty.cpp \
+    display/VSyncWorker.cpp \
     stats/CompositionStatsAtomReporter.cpp \
     stats/CountActiveDisplaysReporter.cpp \
     stats/DisplayConfigurationResultReporter.cpp \

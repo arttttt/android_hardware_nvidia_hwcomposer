@@ -1,0 +1,278 @@
+/*
+ * Copyright (C) 2015 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "VSyncWorker.h"
+
+#include <linux/sync_file.h>
+#include <linux/time.h>
+#include <ndk/sync.h>
+#include <utils/Trace.h>
+
+#include <algorithm>
+#include <cerrno>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <utility>
+
+#include "display/DisplayPipeline.h"
+#include "display/VSyncSource.h"
+#include "utils/ThreadAnnotations.h"
+#include "utils/fd.h"
+#include "utils/log.h"
+
+namespace android::drm_hwcomposer {
+namespace {
+std::optional<uint64_t> GetPresentTime(const SharedFd &fence_fd) {
+  if (!fence_fd) {
+    return std::nullopt;
+  }
+
+  struct sync_file_info *file_info = sync_file_info(*fence_fd);
+  if (file_info == nullptr) {
+    return std::nullopt;
+  }
+
+  if (file_info->status != 1) {
+    sync_file_info_free(file_info);
+    return std::nullopt;
+  }
+
+  uint64_t timestamp = 0;
+  struct sync_fence_info *fence_info = sync_get_fence_info(file_info);
+  for (size_t i = 0; i < file_info->num_fences; i++) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
+    const uint64_t fence_timestamp = fence_info[i].timestamp_ns;
+    if (std::max(fence_timestamp, timestamp) == fence_timestamp) {
+      timestamp = fence_timestamp;
+    }
+  }
+
+  sync_file_info_free(file_info);
+  return timestamp;
+}
+}  // namespace
+
+auto VSyncWorker::CreateInstance(std::shared_ptr<DisplayPipeline> &pipe)
+    -> std::unique_ptr<VSyncWorker> {
+  auto vsw = std::unique_ptr<VSyncWorker>(new VSyncWorker());
+
+  if (pipe) {
+    vsw->source_ = &pipe->GetVSyncSource();
+  }
+
+  vsw->vswt_ = std::thread(&VSyncWorker::ThreadFn, vsw.get());
+
+  return vsw;
+}
+
+VSyncWorker::~VSyncWorker() {
+  StopThread();
+
+  vswt_.join();
+}
+
+void VSyncWorker::UpdateVSyncControl() {
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    enabled_ = ShouldEnable();
+  }
+
+  cv_.notify_all();
+}
+
+void VSyncWorker::SetVsyncPeriodNs(uint32_t vsync_period_ns) {
+  const std::lock_guard<std::mutex> lock(mutex_);
+  vsync_period_ns_ = vsync_period_ns;
+  last_timestamp_ = std::nullopt;
+  last_present_fence_.reset();
+}
+
+void VSyncWorker::SetVsyncTimestampTracking(bool enabled) {
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    enable_vsync_timestamps_ = enabled;
+    if (enabled) {
+      // Reset the freshness flag to ensure that only a fresh timestamp is
+      // returned from GetLastVsyncTimestamp.
+      last_timestamp_is_fresh_ = false;
+    }
+  }
+  UpdateVSyncControl();
+}
+
+uint32_t VSyncWorker::GetLastVsyncTimestamp() {
+  const std::lock_guard<std::mutex> lock(mutex_);
+  return last_timestamp_is_fresh_ ? last_timestamp_.value_or(0) : 0;
+}
+
+void VSyncWorker::UpdateLastVsyncTimeWithPresentTime() {
+  if (enabled_) {
+    last_present_fence_.reset();
+    return;
+  }
+
+  ATRACE_CALL();
+  std::optional<int64_t> fence_time = GetPresentTime(last_present_fence_);
+  last_present_fence_.reset();
+
+  if (last_timestamp_.value_or(0) < fence_time.value_or(0)) {
+    last_timestamp_ = fence_time;
+  }
+}
+
+void VSyncWorker::AddLastPresentFence(SharedFd &fence) {
+  const std::lock_guard<std::mutex> lock(mutex_);
+  last_present_fence_ = fence;
+}
+
+int64_t VSyncWorker::GetNextVsyncTimestamp(int64_t time) {
+  const std::lock_guard<std::mutex> lock(mutex_);
+  return GetPhasedVSync(vsync_period_ns_, time);
+}
+
+void VSyncWorker::SetTimestampCallback(
+    std::optional<VsyncTimestampCallback> &&callback) {
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    callback_ = std::move(callback);
+  }
+  UpdateVSyncControl();
+}
+
+void VSyncWorker::StopThread() {
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    thread_exit_ = true;
+    enabled_ = false;
+  }
+
+  cv_.notify_all();
+}
+
+bool VSyncWorker::ShouldEnable() const {
+  return enable_vsync_timestamps_ || callback_.has_value();
+};
+
+/*
+ * Returns the timestamp of the next vsync in phase with last_timestamp_.
+ * For example:
+ *  last_timestamp_ = 137
+ *  frame_ns = 50
+ *  current = 683
+ *
+ *  ret = (50 * ((683 - 137)/50 + 1)) + 137
+ *  ret = 687
+ *
+ *  Thus, we must sleep until timestamp 687 to maintain phase with the last
+ *  timestamp.
+ */
+int64_t VSyncWorker::GetPhasedVSync(int64_t frame_ns, int64_t current) {
+  UpdateLastVsyncTimeWithPresentTime();
+
+  if (!last_timestamp_.has_value())
+    return current + frame_ns;
+
+  return (frame_ns * ((current - *last_timestamp_) / frame_ns + 1)) +
+         *last_timestamp_;
+}
+
+static const int64_t kOneSecondNs = 1LL * 1000 * 1000 * 1000;
+
+int VSyncWorker::SyntheticWaitVBlank(int64_t *timestamp) {
+  int64_t phased_timestamp = 0;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    int64_t time_now = ResourceManager::GetTimeMonotonicNs();
+    phased_timestamp = GetPhasedVSync(vsync_period_ns_, time_now);
+  }
+
+  struct timespec vsync {};
+  vsync.tv_sec = int(phased_timestamp / kOneSecondNs);
+  vsync.tv_nsec = int(phased_timestamp - (vsync.tv_sec * kOneSecondNs));
+
+  int ret = 0;
+  do {
+    // NOLINTNEXTLINE(misc-include-cleaner)
+    ret = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &vsync, nullptr);
+  } while (ret == EINTR);
+  if (ret != 0)
+    return ret;
+
+  *timestamp = phased_timestamp;
+  return 0;
+}
+
+void VSyncWorker::ThreadFn() {
+  int ret = 0;
+
+  for (;;) {
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      base::ScopedLockAssertion thread_assertion(mutex_);
+      if (thread_exit_)
+        break;
+
+      if (!enabled_)
+        cv_.wait(lock);
+
+      if (!enabled_)
+        continue;
+    }
+
+    ret = -EAGAIN;
+    int64_t timestamp = 0;
+
+    if (source_ != nullptr) {
+      ret = source_->waitForVSync(&timestamp);
+      if (ret == -EINTR)
+        continue;
+    }
+
+    if (ret != 0) {
+      ret = SyntheticWaitVBlank(&timestamp);
+      if (ret != 0)
+        continue;
+    }
+
+    std::optional<VsyncTimestampCallback> vsync_callback;
+    int64_t vsync_period_ns = 0;
+
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      if (!enabled_)
+        continue;
+      if (enable_vsync_timestamps_) {
+        last_timestamp_is_fresh_ = true;
+      }
+      vsync_callback = callback_;
+      vsync_period_ns = vsync_period_ns_;
+      last_timestamp_ = timestamp;
+    }
+
+    if (vsync_callback) {
+      vsync_callback.value()(timestamp, vsync_period_ns);
+    }
+  }
+
+  ALOGI("VSyncWorker thread exit");
+}
+
+}  // namespace android::drm_hwcomposer
