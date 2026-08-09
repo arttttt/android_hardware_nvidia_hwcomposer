@@ -54,3 +54,30 @@ sides.
       which this function is not given; and the import is not needed here,
       because the handle arrives over the interface into the process this
       runs in and what reaches the display is one of its own descriptors.
+
+  display/DrmMode.h
+  display/DrmMode.cpp
+      From drm/DrmMode.{h,cpp}.
+      Changed: CreateModeBlob is not here. It registers a timing as a
+      property object on a DRM device, and there is no such device on this
+      board -- nothing to register against and nothing that would read it.
+      Standing something in for it would mean writing a mock of an interface
+      this hardware does not have, which is worse than the absence: the
+      absence is true. Everything else in the file is unchanged.
+
+  backend/BackendDisplayCapabilities.h
+      Changed twice, both because of the platform rather than the board.
+      The list of high-dynamic-range types is named through a package this
+      release predates, so it is named the way the rest of upstream names it
+      -- ui::Hdr, which this release does have. And a guard was added: the
+      file has none upstream, where it is included from exactly one place.
+
+  compositor/FlatteningController.cpp
+      Changed: one added include. The lock-assertion helper it uses arrived
+      in the platform's thread annotations after this release; every macro
+      it is written in terms of is here, so the class is declared where the
+      platform would declare it, in utils/ThreadAnnotations.h.
+
+  compositor/LayerToPlaneJoiningPlan.h
+      Changed: the pipeline is forward-declared as a struct, which is what
+      it is. Upstream says class and its own build only warns.
