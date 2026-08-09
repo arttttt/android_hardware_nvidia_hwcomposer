@@ -74,6 +74,7 @@ LOCAL_SRC_FILES := \
     bufferinfo/legacy/BufferInfoNvidia.cpp \
     compositor/CompositionPlanner.cpp \
     compositor/FlatteningController.cpp \
+    compositor/FlatteningEventAtomReporter.cpp \
     compositor/FrameTimeHistory.cpp \
     compositor/GenericCompositionPlanner.cpp \
     compositor/GenericLayerMapperCompositionPlanner.cpp \
@@ -88,6 +89,7 @@ LOCAL_SRC_FILES := \
     compositor/mapper/UnderlayMapper.cpp \
     display/DrmMode.cpp \
     utils/fd.cpp \
+    utils/properties.cpp \
     hwc/HwcDevice.cpp \
     hwc/HwcDisplay.cpp \
     hwc/HwcDisplayConfigs.cpp \

@@ -23,7 +23,9 @@
 
 #include "utils/Logging.h"
 
+#include "compositor/GenericLayerMapperCompositionPlanner.h"
 #include "tegra/FbDevice.h"
+#include "tegra/TegraAtomicStateManager.h"
 #include "tegra/TegraCompositor.h"
 
 #undef  LOG_TAG
@@ -62,23 +64,31 @@ TegraDisplayPipeline::TegraDisplayPipeline(int index,
       mVSync(std::move(vsync)),
       mCompositor(new TegraCompositor(*mHead)),
       mTiming(timing),
-      mModes{drm_hwcomposer::DrmMode(&mTiming.mode)},
-      mStateManager(
-          new drm_hwcomposer::TegraAtomicStateManager(*mHead, mModes)),
-      mPlanner(new drm_hwcomposer::GenericLayerMapperCompositionPlanner()) {}
+      mModes{drm_hwcomposer::DrmMode(&mTiming.mode)} {
+    atomic_state_manager =
+        std::make_unique<drm_hwcomposer::TegraAtomicStateManager>(*mHead,
+                                                                 mModes);
+    planner =
+        std::make_unique<drm_hwcomposer::GenericLayerMapperCompositionPlanner>();
+}
 
 TegraDisplayPipeline::~TegraDisplayPipeline() {
-    /* Ordered: the vertical blank reader must stop before the devices it
-     * reads from go away, and whatever posts frames must stop before the head
-     * it posts them through does. Destroying members in reverse declaration
-     * order would take the head first. */
+    /* Ordered, and it has to be. What a pipeline owns is declared in the base
+     * class and so outlives everything declared here, while what it owns is
+     * built on top of what is here: the state manager holds the head and the
+     * modes. Left to the ordinary order it would be reading both after they
+     * were gone.
+     *
+     * The vertical blank reader goes first for the same reason -- it must
+     * stop before the devices it reads from do. */
     mVSync.reset();
-    mStateManager.reset();
+    atomic_state_manager.reset();
+    planner.reset();
     mCompositor.reset();
     mHead.reset();
 }
 
-drm_hwcomposer::UsablePlanes TegraDisplayPipeline::usablePlanes() const {
+drm_hwcomposer::UsablePlanes TegraDisplayPipeline::GetUsablePlanes() const {
     /* Made once, on the first asking. The head decides which windows are its
      * at the same moment, and what each can do does not change after. */
     if (mPlanes.empty()) {
@@ -112,7 +122,7 @@ drm_hwcomposer::UsablePlanes TegraDisplayPipeline::usablePlanes() const {
     return usable;
 }
 
-std::string TegraDisplayPipeline::name() const {
+std::string TegraDisplayPipeline::GetName() const {
     char buffer[32];
     snprintf(buffer, sizeof(buffer), "tegra-dc-%d", mIndex);
     return buffer;

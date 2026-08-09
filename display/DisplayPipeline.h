@@ -1,4 +1,5 @@
 /*
+ * Copyright (C) 2022 The Android Open Source Project
  * Copyright (C) 2026 Artem Bambalov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,104 +15,98 @@
  * limitations under the License.
  */
 
-#ifndef DISPLAY_DISPLAY_PIPELINE_H
-#define DISPLAY_DISPLAY_PIPELINE_H
+/* Adapted from drm-hwcomposer's drm/DrmDisplayPipeline.h.
+ *
+ * Upstream splits a display in two. A pipeline is the chain of DRM objects a
+ * frame travels down -- connector, encoder, controller, planes -- and the
+ * things built on that chain: a state manager, a planner, a statement of what
+ * the backend can do. A connector, separately, answers what is on the far end
+ * of the cable: which timings it runs, how large it is, whether it is built
+ * into the machine or plugged into it.
+ *
+ * There is no cable here and nothing to enumerate, so both roles land on one
+ * object. What was a chain of DRM objects becomes whatever a backend needs to
+ * drive its display, which is why this is something to implement rather than
+ * something to fill in.
+ *
+ * The fields upstream reads directly are kept as fields with their names, and
+ * what it reached for through the connector is kept as the connector's own
+ * method names. Their code above this line therefore reads the same as it
+ * does upstream, which is the point.
+ */
+
+#pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
-#include "DrmMode.h"
-#include "PipelineBinding.h"
-#include "VSyncSource.h"
+#include "display/DrmMode.h"
+#include "display/PipelineBinding.h"
 
 namespace android {
+
+namespace hwc {
+class VSyncSource;
+}  // namespace hwc
+
 namespace drm_hwcomposer {
 
 class AtomicStateManager;
 class BackendDisplayCapabilities;
 class CompositionPlanner;
 
-}  // namespace drm_hwcomposer
+struct DisplayPipeline {
+  virtual ~DisplayPipeline() = default;
 
-namespace hwc {
+  /* The planes this display may put layers on, and the one meant for a
+   * cursor if it has one.
+   *
+   * Handed out as bindings rather than plainly, so that a plane cannot end up
+   * claimed by two displays at once: holding the binding is what says it is
+   * this one's, and letting go is what gives it back.
+   */
+  virtual UsablePlanes GetUsablePlanes() const = 0;
 
-/* One display, and everything the composer core may ask of it.
- *
- * This is the seam the hardware lives behind. Above it nothing knows what
- * kind of display controller is present or how a frame reaches the panel;
- * below it nothing knows that HWC2 exists. A second implementation, for a
- * different controller or for testing, is a matter of implementing this and
- * nothing else.
- *
- * Upstream splits this in two. A pipeline there is the chain of DRM objects a
- * frame travels down -- connector, encoder, controller, planes -- and the
- * things built on top of that chain: a state manager, a planner, a statement
- * of what the backend can do. Separately, a connector answers what the panel
- * on the far end of the cable is: which timings it runs, how large it is, and
- * whether it is built into the machine or plugged into it.
- *
- * There is no cable here and nothing to enumerate, so both roles land on one
- * object. The core is not told which of the two it is talking to, and does
- * not need to be: it asks the same questions in the same order it asks them
- * of a DRM display.
- *
- * The pipeline owns its state manager, planner and vertical-blank source and
- * outlives all three; the references handed out stay valid for as long as the
- * pipeline does.
- */
-class DisplayPipeline {
-public:
-    virtual ~DisplayPipeline() = default;
+  /* What upstream asks the connector. */
 
-    /* The planes this display may put layers on, and the one meant for a
-     * cursor if it has one.
-     *
-     * Handed out as bindings rather than plainly, so that a plane cannot end
-     * up claimed by two displays at once: holding the binding is what says it
-     * is this one's, and letting go is what gives it back. The shape of the
-     * pair is what the planner expects to be given.
-     */
-    virtual drm_hwcomposer::UsablePlanes usablePlanes() const = 0;
+  virtual std::string GetName() const = 0;
 
-    /* Carries out what a frame's plan describes, and answers beforehand
-     * whether it could. Mode changes and power changes travel the same way,
-     * as arguments to a commit rather than as calls of their own. */
-    virtual drm_hwcomposer::AtomicStateManager &atomicStateManager() = 0;
+  /* Timings the panel can run. The one marked preferred is what the display
+   * comes up in. Fixed-mode panels report exactly one. */
+  virtual const std::vector<DrmMode> &GetModes() const = 0;
 
-    /* Decides which layers this display's planes can take and which are left
-     * to the client. */
-    virtual drm_hwcomposer::CompositionPlanner &planner() = 0;
+  /* Physical size of the visible area. Zero where the panel does not say,
+   * which consumers must read as "no information" rather than as a display of
+   * no size. */
+  virtual uint32_t GetMmWidth() const = 0;
+  virtual uint32_t GetMmHeight() const = 0;
 
-    /* What this backend can do beyond what the planes report, or null where
-     * it has nothing to add. Null is the ordinary answer: the base class
-     * already says "no opinion" to every question. */
-    virtual const drm_hwcomposer::BackendDisplayCapabilities *capabilities()
-        const = 0;
+  /* Whether this display is something the user plugged in. It decides which
+   * of the two high-dynamic-range settings applies, and how the framework is
+   * told about the display appearing and going away. */
+  virtual bool IsExternal() const = 0;
 
-    /* Human-readable, for logs and for the framework's display name. */
-    virtual std::string name() const = 0;
+  /* Where blanks come from.
+   *
+   * Upstream's display builds its own reader over the DRM vertical-blank
+   * ioctl, which every KMS driver has. There is no such thing to assume here
+   * -- how a controller reports a blank is its own business -- so the display
+   * is handed one rather than making one.
+   */
+  virtual hwc::VSyncSource &GetVSyncSource() = 0;
 
-    /* Timings the panel can run. The one marked preferred is what the display
-     * comes up in. Fixed-mode panels report exactly one, which is the case on
-     * this board. */
-    virtual const std::vector<drm_hwcomposer::DrmMode> &modes() const = 0;
-
-    /* Physical size of the visible area. Zero where the panel does not say,
-     * which consumers must read as "no information" rather than as a display
-     * of no size. */
-    virtual uint32_t mmWidth() const = 0;
-    virtual uint32_t mmHeight() const = 0;
-
-    /* Whether this display is something the user plugged in. It decides which
-     * of the two high-dynamic-range settings applies, and how the framework
-     * is told about the display appearing and going away. */
-    virtual bool isExternal() const = 0;
-
-    virtual VSyncSource &vsyncSource() = 0;
+  /* Owned by the pipeline, and not outliving it.
+   *
+   * Public and named as upstream names them, because upstream reaches for
+   * them by name: a display asks its pipeline's planner for a plan and its
+   * state manager to carry the plan out.
+   */
+  std::unique_ptr<AtomicStateManager> atomic_state_manager;
+  std::unique_ptr<CompositionPlanner> planner;
+  std::unique_ptr<BackendDisplayCapabilities> capabilities;
 };
 
-}  // namespace hwc
+}  // namespace drm_hwcomposer
 }  // namespace android
-
-#endif  // DISPLAY_DISPLAY_PIPELINE_H

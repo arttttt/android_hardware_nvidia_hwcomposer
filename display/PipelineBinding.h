@@ -33,7 +33,7 @@
 
 namespace android::drm_hwcomposer {
 
-class DisplayPipeline;
+struct DisplayPipeline;
 
 template <class O>
 class BindingOwner;

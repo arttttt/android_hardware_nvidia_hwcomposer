@@ -22,13 +22,11 @@
 
 #include "display/DrmMode.h"
 
-namespace android::hwc {
-class DisplayPipeline;
-}  // namespace android::hwc
-
 namespace android::drm_hwcomposer {
 
 using ConfigId = int32_t;
+
+struct DisplayPipeline;
 
 /**
  * Display panel colorspace property values.
@@ -74,10 +72,10 @@ class HwcDisplayConfigsGenerator {
 
   /* Upstream reads the panel off a DRM connector. There is no connector
    * here, so the same four questions -- which timings, how large, and is it
-   * plugged in or built in -- are put to the pipeline instead. Only where
-   * the answers come from has changed; what is made of them below has not. */
+   * plugged in or built in -- are put to the pipeline instead, which answers
+   * them under the connector's own names. */
   std::optional<HwcDisplayConfigs> GenerateDisplayConfigs(
-      const hwc::DisplayPipeline &pipeline, const HwcConfigParameters &params);
+      const DisplayPipeline &pipeline, const HwcConfigParameters &params);
   HwcDisplayConfigs GetFakeMode(uint16_t width, uint16_t height);
 
  private:
