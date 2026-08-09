@@ -357,6 +357,12 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
 
   const bool flatten = FlatteningWanted();
 
+  /* Split from the flip that follows it, because between them they are the
+   * whole of what showing a frame costs and they are answerable in different
+   * places -- one is a favour asked of the allocator, the other an ioctl. */
+  const int64_t before_flatten = NowNs();
+  size_t flattened_count = 0;
+
   for (size_t i = 0; flatten && i < windows.size() && i < handles.size();
        ++i) {
     if (handles[i] == nullptr || windows[i].bufferFd == 0)
@@ -395,7 +401,10 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
 
     windows[i].preFence = *ready;
     flattened.push_back(std::move(ready));
+    ++flattened_count;
   }
+
+  const int64_t after_flatten = NowNs();
 
   /* How long after its own flip a fence comes due, which is the whole
    * question behind the shift below.
@@ -420,6 +429,17 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   int err = head_.flip(windows, &post_fence);
   if (err)
     return err;
+
+  /* Only when the two together did not fit comfortably inside a refresh --
+   * the rest is the ordinary case and says nothing. */
+  constexpr int64_t kWorthSaying = 3000000;
+  const int64_t after_flip = NowNs();
+  if (after_flip - before_flatten > kWorthSaying) {
+    HWC_LOGD("slow present: flattened %zu buffer(s) in %" PRId64
+             "us, flip %" PRId64 "us",
+             flattened_count, (after_flatten - before_flatten) / 1000,
+             (after_flip - before_flip) / 1000);
+  }
 
   if (!diag_fence_) {
     diag_fence_ = previous_post_fence_;
