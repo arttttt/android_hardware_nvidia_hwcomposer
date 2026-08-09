@@ -274,7 +274,7 @@ static std::vector<struct tegra_dc_ext_flip_windowattr> describe(
     std::vector<struct tegra_dc_ext_flip_windowattr> attrs(windows.size());
 
     for (size_t i = 0; i < windows.size(); ++i) {
-        const Window &src = windows[i];
+        const DcHead::Window &src = windows[i];
         struct tegra_dc_ext_flip_windowattr &dst = attrs[i];
 
         memset(&dst, 0, sizeof(dst));
