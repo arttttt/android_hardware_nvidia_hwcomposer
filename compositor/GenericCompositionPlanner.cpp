@@ -169,6 +169,29 @@ auto GenericCompositionPlanner::ValidateDisplay(
       last_total = layers.size();
       HWC_LOGD("plan: %zu of %zu layer(s) on the hardware", on_hardware,
                layers.size());
+
+      /* And which, with what they are, because the count alone does not say
+       * whether the GPU was left with a full screen to draw or a scrap. A
+       * layer left to the client is one the display could not be given, and
+       * the reason is nearly always in these numbers -- how big it is, where
+       * it lands, whether it is being resized. */
+      for (size_t z = 0; z < layers.size(); ++z) {
+        const auto it = validated_composition.composition_types.find(layers[z]);
+        const bool client = it == validated_composition.composition_types.end()
+                                ? true
+                                : it->second == CompositionType::kClient;
+
+        const auto& pi = layers[z]->GetLayerData().pi;
+        const auto& src = pi.source_crop.f_rect;
+        const auto& dst = pi.display_frame.i_rect;
+
+        HWC_LOGD("  z=%zu -> %-8s src=%.0fx%.0f dst=%dx%d+%d+%d%s", z,
+                 client ? "client" : "hardware",
+                 src ? src->Width() : 0.F, src ? src->Height() : 0.F,
+                 dst ? dst->Width() : 0, dst ? dst->Height() : 0,
+                 dst ? dst->left : 0, dst ? dst->top : 0,
+                 pi.RequireScalingOrPhasing() ? " resized" : "");
+      }
     }
   }
 
