@@ -1,0 +1,35 @@
+Headers this platform is older than
+===================================
+
+Copies of two AOSP headers, taken from the android11-release branch of
+platform/hardware/libhardware and unmodified. They shadow the ones this
+release ships, because this release ships version 2.3 of the composer
+interface and the code above expects 2.4.
+
+    hardware/hwcomposer2.h
+    hardware/hwcomposer_defs.h
+
+Why a copy rather than a compatibility header. Everything 2.4 added on the C
+side could have been declared alongside the platform's own, as is done for
+the display headers in drm/. The C++ half could not: what 2.4 added there are
+new members of existing enum classes, and an enum class cannot be added to
+from outside. Their code writes `HWC2::Callback::Vsync_2_4`, and the only way
+for that to mean anything is for the enumeration to have been declared with
+it in the first place.
+
+Why it is safe. Version 2.4 is a superset of 2.3 -- new callbacks, new
+functions, new enumeration members, no removals and no changed values, which
+is checked rather than assumed:
+
+    HWC2_CALLBACK_VSYNC stays 3, and 2.4 appends 4, 5, 6
+    the function descriptors of 2.3 keep their numbers, 2.4 appends from 53
+    the error codes of 2.3 keep theirs, 2.4 appends two
+
+So a composer built against 2.4 answers a 2.3 caller exactly as a 2.3 one
+would. What the framework on this release never asks for, it never gets --
+the entry points are present and unreachable, which is the same arrangement
+as the display attributes this hardware has not got.
+
+To retire this directory: build on a release that ships 2.4 or later, drop it
+from the include path, and delete it. Nothing outside it refers to it by
+name.

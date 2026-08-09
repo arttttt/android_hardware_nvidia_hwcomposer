@@ -34,6 +34,11 @@ endif
 
 LOCAL_C_INCLUDES := $(LOCAL_PATH)
 
+# Before the platform's own, and deliberately: this release ships version 2.3
+# of the composer interface and the code above expects 2.4. See compat/README
+# for why the newer header is copied whole rather than added to.
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/compat
+
 # The display controller interface is declared in the kernel's own
 # include/video/tegra_dc_ext.h. That header is GPL-2.0 and is not exported by
 # headers_install, so it is reached where it lives instead of being copied
