@@ -30,6 +30,7 @@
 #include "display/CommitStatus.h"
 #include "display/Plane.h"
 #include "hwc/HwcLayer.h"
+#include "utils/Logging.h"
 #include "utils/log.h"
 
 namespace android::drm_hwcomposer {
@@ -143,6 +144,32 @@ auto GenericCompositionPlanner::ValidateDisplay(
 
   if (use_cursor_plane) {
     validated_composition.cursor_plane_validated = success;
+  }
+
+  /* The other half of the answer. Everything that ends up wholly on the GPU
+   * says why on its way through GetFlattenedComposition; this says what got
+   * through when it did not, which is the number the whole exercise is about.
+   *
+   * Said only when it changes, for the same reason as there: a plan holds for
+   * long stretches, and a line a frame would be sixty a second of the same
+   * sentence.
+   */
+  if (success) {
+    size_t on_hardware = 0;
+    for (const auto& [layer, type] : validated_composition.composition_types) {
+      if (type != CompositionType::kClient) {
+        ++on_hardware;
+      }
+    }
+
+    static size_t last_on_hardware = SIZE_MAX;
+    static size_t last_total = SIZE_MAX;
+    if (on_hardware != last_on_hardware || layers.size() != last_total) {
+      last_on_hardware = on_hardware;
+      last_total = layers.size();
+      HWC_LOGD("plan: %zu of %zu layer(s) on the hardware", on_hardware,
+               layers.size());
+    }
   }
 
   return {.composition = std::move(validated_composition),
