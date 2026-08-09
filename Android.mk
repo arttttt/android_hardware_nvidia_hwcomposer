@@ -19,11 +19,18 @@ LOCAL_CFLAGS := \
     -std=c++17
 
 # Per-frame tracing: what a plan contained, which descriptors went where,
-# what the hardware answered. On while the composer is being brought up; set
-# to 0 for a quiet log without touching a line of code. The calls stay
-# compiled either way, so they cannot rot into something that no longer
-# builds.
+# what the hardware answered. Driven from the device tree with
+#
+#     TARGET_HWC_TRACE := true
+#
+# in BoardConfig.mk, so the decision sits with whoever is building the image
+# rather than in this repository. The calls stay compiled either way, so
+# turning tracing off cannot silently break it.
+ifeq ($(TARGET_HWC_TRACE),true)
 LOCAL_CFLAGS += -DHWC_TRACE_ENABLED=1
+else
+LOCAL_CFLAGS += -DHWC_TRACE_ENABLED=0
+endif
 
 LOCAL_C_INCLUDES := $(LOCAL_PATH)
 
