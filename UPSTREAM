@@ -40,6 +40,13 @@ sides.
   bufferinfo/BufferInfo.h
   bufferinfo/BufferInfoGetter.h
   bufferinfo/BufferInfoGetter.cpp
+  display/PipelineBinding.h
+      From drm/DrmDisplayPipeline.h, the two templates that say who a piece
+      of display hardware currently belongs to. They are here because they
+      know nothing about DRM, while the rest of that file is nothing else.
+      Changed: the thing bound to is a pipeline as this composer describes
+      one.
+
   bufferinfo/GrallocBufferHandle.h
   bufferinfo/GrallocBufferHandle.cpp
       Changed: the handle is kept rather than imported. The mapper on this
