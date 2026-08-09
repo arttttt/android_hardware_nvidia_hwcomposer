@@ -34,11 +34,9 @@
 namespace android {
 namespace hwc {
 
-std::unique_ptr<TegraDisplayPipeline> TegraDisplayPipeline::create(int index) {
-    PanelTiming timing;
-    int err = readPanelTiming(index, &timing);
-    if (err)
-        return nullptr;
+std::unique_ptr<TegraDisplayPipeline> TegraDisplayPipeline::create(
+    TegraConnector &connector) {
+    const auto index = static_cast<int>(connector.GetId());
 
     std::unique_ptr<DcHead> head = DcHead::open(index);
     if (!head)
@@ -52,29 +50,28 @@ std::unique_ptr<TegraDisplayPipeline> TegraDisplayPipeline::create(int index) {
         return nullptr;
 
     return std::unique_ptr<TegraDisplayPipeline>(new TegraDisplayPipeline(
-        index, std::move(head), std::move(vsync), timing));
+        connector, std::move(head), std::move(vsync)));
 }
 
-TegraDisplayPipeline::TegraDisplayPipeline(int index,
+TegraDisplayPipeline::TegraDisplayPipeline(TegraConnector &tegraConnector,
                                            std::unique_ptr<DcHead> head,
-                                           std::unique_ptr<TegraVSyncSource> vsync,
-                                           const PanelTiming &timing)
+                                           std::unique_ptr<TegraVSyncSource> vsync)
     : mHead(std::move(head)),
       mVSync(std::move(vsync)),
       mCompositor(new TegraCompositor(*mHead)),
-      mConnector(static_cast<uint32_t>(index), timing),
-      mCrtc(static_cast<uint32_t>(index)) {
+      mCrtc(tegraConnector.GetId()) {
     /* Binding is what says a piece of hardware is this display's. Nothing
      * else can claim these afterwards, and letting go of the binding is what
      * would give them back. */
-    connector = mConnector.BindPipeline(this);
+    connector = tegraConnector.BindPipeline(this);
     crtc = mCrtc.BindPipeline(this);
 
     atomic_state_manager =
         std::make_unique<drm_hwcomposer::TegraAtomicStateManager>(
-            *mHead, mConnector.GetModes());
-    planner =
-        std::make_unique<drm_hwcomposer::GenericLayerMapperCompositionPlanner>();
+            *mHead, tegraConnector.GetModes());
+
+    /* The planner is not built here. Which one runs is a decision the backend
+     * makes from a property, and a pipeline has no business overriding it. */
 }
 
 TegraDisplayPipeline::~TegraDisplayPipeline() {

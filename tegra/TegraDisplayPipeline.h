@@ -41,9 +41,14 @@ namespace hwc {
  */
 class TegraDisplayPipeline : public drm_hwcomposer::DisplayPipeline {
 public:
-    /* Opens head `index` and reads its panel timing. Returns null if either
-     * fails, having logged which. */
-    static std::unique_ptr<TegraDisplayPipeline> create(int index);
+    /* Opens the head `connector` is the panel of. Returns null on failure,
+     * having logged what failed.
+     *
+     * The connector is not taken: it belongs to the device and outlives every
+     * pipeline that binds to it. What is built here is the rest of the chain
+     * and the things that hang off it. */
+    static std::unique_ptr<TegraDisplayPipeline> create(
+        TegraConnector &connector);
 
     ~TegraDisplayPipeline() override;
 
@@ -64,17 +69,17 @@ public:
     void setCompositor(std::unique_ptr<Compositor> compositor);
 
 private:
-    TegraDisplayPipeline(int index, std::unique_ptr<DcHead> head,
-                         std::unique_ptr<TegraVSyncSource> vsync,
-                         const PanelTiming &timing);
+    TegraDisplayPipeline(TegraConnector &connector,
+                         std::unique_ptr<DcHead> head,
+                         std::unique_ptr<TegraVSyncSource> vsync);
 
     std::unique_ptr<DcHead> mHead;
     std::unique_ptr<TegraVSyncSource> mVSync;
     std::unique_ptr<Compositor> mCompositor;
 
-    /* The links of the chain. Owned here and bound in the constructor; what
-     * the base class holds are bindings to these. */
-    TegraConnector mConnector;
+    /* Owned here and bound in the constructor, unlike the connector, which
+     * belongs to the device. A head is not shared between displays and has
+     * nothing to say once its display is gone. */
     TegraCrtc mCrtc;
 
     /* One per window the head owns, made the first time anyone asks which

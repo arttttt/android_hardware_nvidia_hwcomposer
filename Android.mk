@@ -74,6 +74,7 @@ LOCAL_SHARED_LIBRARIES := \
 
 LOCAL_SRC_FILES := \
     backend/BackendManager.cpp \
+    backend/ClientBackend.cpp \
     backend/GenericBackend.cpp \
     bufferinfo/BufferInfoGetter.cpp \
     bufferinfo/GrallocBufferHandle.cpp \
@@ -107,6 +108,8 @@ LOCAL_SRC_FILES := \
     tegra/DcHead.cpp \
     tegra/TegraAtomicCommitSink.cpp \
     tegra/TegraAtomicStateManager.cpp \
+    tegra/TegraBackend.cpp \
+    tegra/TegraDevice.cpp \
     tegra/TegraFormat.cpp \
     tegra/TegraPlane.cpp \
     tegra/TegraCompositor.cpp \
