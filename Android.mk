@@ -34,6 +34,7 @@ LOCAL_SHARED_LIBRARIES := \
 LOCAL_SRC_FILES := \
     tegra/DcControl.cpp \
     tegra/DcHead.cpp \
+    tegra/FbMode.cpp \
     tegra/TegraVSyncSource.cpp
 
 include $(BUILD_STATIC_LIBRARY)
