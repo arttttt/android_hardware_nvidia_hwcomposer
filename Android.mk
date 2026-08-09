@@ -25,6 +25,19 @@ LOCAL_CFLAGS += \
     -DHWC2_USE_CPP11 \
     -DHWC2_INCLUDE_STRINGIFICATION
 
+# Up to and including Android 9 the framework deals with a display appearing
+# while it is still inside the call that registered its callbacks, on that
+# same thread, and asks the composer about the display before returning.
+# Later releases take the news away and deal with it afterwards. The composer
+# has to know which, because it decides how far its own lock may extend around
+# announcing a display; both behaviours are compiled either way. See
+# utils/FrameworkTraits.h.
+ifeq ($(shell test $(PLATFORM_SDK_VERSION) -le 28 && echo reentrant),reentrant)
+LOCAL_CFLAGS += -DHWC_FRAMEWORK_HOTPLUG_IS_REENTRANT=1
+else
+LOCAL_CFLAGS += -DHWC_FRAMEWORK_HOTPLUG_IS_REENTRANT=0
+endif
+
 # Per-frame tracing: what a plan contained, which descriptors went where,
 # what the hardware answered. Driven from the device tree with
 #

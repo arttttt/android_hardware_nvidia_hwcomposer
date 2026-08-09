@@ -35,6 +35,7 @@
 #include "hwc/HwcLayer.h"
 #include "display/FbImporter.h"
 #include "hwc2_device/DrmHwcTwo.h"
+#include "utils/FrameworkTraits.h"
 #include "utils/GraphicsCompat.h"
 #include "utils/Time.h"
 #include "utils/log.h"
@@ -238,22 +239,26 @@ static int32_t DisplayHook(hwc2_device_t *dev, hwc2_display_t display_handle,
   return static_cast<int32_t>((display->*func)(std::forward<Args>(args)...));
 }
 
-/* Registering a callback has work to do after the lock is dropped, so it does
- * not go through the ordinary hook.
+/* Registering a callback is the one entry point whose locking depends on the
+ * release this is built for, so it does not go through the ordinary hook.
  *
- * Telling the framework about a display is not something that can wait. This
- * release checks, the moment its registering call returns, that a primary
- * display was announced during it, and gives up if none was -- so the news
- * has to go out on this thread, before returning.
+ * Where the framework takes the news of a display away and deals with it
+ * afterwards -- every release after Android 9 -- the lock is held across the
+ * whole call, which is what upstream does and what the ordinary hook would
+ * have done.
  *
- * It also cannot go out under the lock. The framework handles the display
- * appearing there and then, on this same thread, and asks the composer what
- * kind of display it is before returning from the callback -- and that
- * question wants the lock this call is holding.
+ * Where it does not, the lock cannot reach that far. Android 9 handles the
+ * display appearing while still inside this call, on this same thread, and
+ * asks the composer what kind of display it is before returning -- and that
+ * question wants this lock. Nor can the news simply be deferred: the same
+ * release checks on return that a primary display was announced during the
+ * call, and gives up if none was. So there the lock covers the registration
+ * and is let go before the composer speaks, which is exactly what the queue
+ * those events sit in is for, and what this composer itself did when Android
+ * 9 was the current release.
  *
- * So: build everything under the lock, let the lock go, then speak. Which is
- * what the queue those events sit in is for, and what this composer did when
- * this release was the current one, before it had a lock to hold at all.
+ * Both are compiled every time. Which one runs is decided by a constant; see
+ * utils/FrameworkTraits.h.
  */
 static int32_t RegisterCallbackHook(hwc2_device_t *dev, int32_t descriptor,
                                     hwc2_callback_data_t data,
@@ -263,13 +268,20 @@ static int32_t RegisterCallbackHook(hwc2_device_t *dev, int32_t descriptor,
   auto *hwc = ToDrmHwcTwo(dev);
   int32_t result = 0;
 
-  {
+  if (kFrameworkHotplugIsReentrant) {
+    {
+      const std::unique_lock lock(hwc->GetMainLock());
+      result = static_cast<int32_t>(
+          hwc->RegisterCallback(descriptor, data, function));
+    }
+
+    hwc->FlushHotplugEvents();
+  } else {
     const std::unique_lock lock(hwc->GetMainLock());
     result = static_cast<int32_t>(
         hwc->RegisterCallback(descriptor, data, function));
+    hwc->FlushHotplugEvents();
   }
-
-  hwc->FlushHotplugEvents();
 
   return result;
 }
@@ -528,10 +540,16 @@ static int32_t GetColorModes(hwc2_device_t *device, hwc2_display_t display,
   if (modes.empty())
     return static_cast<int32_t>(HWC2::Error::BadConfig);
 
-  for (uint32_t i = 0; i < modes.size(); ++i) {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
-    out_modes[i] = static_cast<int32_t>(modes[i]);
+  /* Asked twice: once with nowhere to put the answer, only to learn how much
+   * room to make, and again with the room made. Writing on the first asking
+   * is a write through nothing. */
+  if (out_modes != nullptr) {
+    for (uint32_t i = 0; i < modes.size(); ++i) {
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
+      out_modes[i] = static_cast<int32_t>(modes[i]);
+    }
   }
+
   *num_modes = modes.size();
   return 0;
 }
