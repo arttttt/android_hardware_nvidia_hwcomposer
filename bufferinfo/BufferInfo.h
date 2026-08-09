@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2026 Artem Bambalov
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,67 +14,59 @@
  * limitations under the License.
  */
 
-#ifndef BUFFERINFO_BUFFER_INFO_H
-#define BUFFERINFO_BUFFER_INFO_H
+#pragma once
 
 #include <cstdint>
+#include <memory>
 
-#include <cutils/native_handle.h>
+namespace android::drm_hwcomposer {
 
-#include "utils/UniqueFd.h"
+constexpr int kBufferMaxPlanes = 4;
 
-namespace android {
-namespace hwc {
-
-/* A graphics buffer, described in the terms the display controller needs.
- *
- * Everything here comes from the allocator that produced the buffer. The
- * handle it hands out is a private structure whose layout belongs to that
- * allocator and changes with it, so nothing here reads it: the questions are
- * asked through the allocator's own functions, which have outlived several
- * versions of that structure.
- */
-struct BufferInfo {
-    /* dma-buf for the pixels, borrowed. Owned by the buffer, valid as long
-     * as the handle is. */
-    int fd = -1;
-
-    /* Where the image starts within that memory. */
-    uint32_t offset = 0;
-
-    /* Bytes per row, padding included. Not pixels: the controller counts in
-     * bytes, and the allocator does not. */
-    uint32_t strideBytes = 0;
-
-    /* The controller's own format code. */
-    uint32_t format = 0;
-
-    /* Flags for the flip: whether the memory is laid out in blocks rather
-     * than rows, and how tall a block is. */
-    uint32_t flags = 0;
-    uint8_t blockHeightLog2 = 0;
+enum class BufferColorEncoding : int32_t {
+  kUndefined,
+  kItuRec601,
+  kItuRec709,
+  kItuRec2020,
 };
 
-/* Describes `handle` for scanout. Returns 0, or a negative errno with the
- * reason logged. */
-int describeBuffer(buffer_handle_t handle, BufferInfo *outInfo);
+enum class BufferSampleRange : int32_t {
+  kUndefined,
+  kFullRange,
+  kLimitedRange,
+};
 
-/* Puts `handle` into a state the display can read.
- *
- * The GPU on this hardware writes colour compressed, and the allocator only
- * undoes that when someone locks the buffer to read it. Scanout does not lock
- * anything, so nothing would ever undo it and the controller would be handed
- * memory it cannot interpret.
- *
- * `acquireFence` is borrowed; the fence handed back in `outFence` is owned by
- * the caller and is the one to wait on before reading, whether or not any
- * work turned out to be needed. It carries the acquire fence's meaning
- * forward, so the caller should stop using its own once this returns.
- */
-void prepareForScanout(buffer_handle_t handle, int acquireFence,
-                       UniqueFd *outFence);
+enum class BufferBlendMode : int32_t {
+  kUndefined,
+  kNone,
+  kPreMult,
+  kCoverage,
+};
 
-}  // namespace hwc
-}  // namespace android
+class PrimeFdsSharedBase {
+ public:
+  virtual ~PrimeFdsSharedBase() = default;
+};
 
-#endif  // BUFFERINFO_BUFFER_INFO_H
+struct BufferInfo {
+  uint32_t width;
+  uint32_t height;
+  uint32_t format; /* DRM_FORMAT_* from drm_fourcc.h */
+  uint32_t pitches[kBufferMaxPlanes];
+  uint32_t offsets[kBufferMaxPlanes];
+  /* sizes[] is used only by mapper@4 metadata getter for internal purposes */
+  uint32_t sizes[kBufferMaxPlanes];
+  int prime_fds[kBufferMaxPlanes];
+  uint64_t modifiers[kBufferMaxPlanes];
+
+  BufferColorEncoding color_encoding;
+  BufferSampleRange sample_range;
+  BufferBlendMode blend_mode;
+
+  /* prime_fds field require valid file descriptors. While their lifecycle is
+   * managed elsewhere. The shared_ptr is used to ensure that the fds are not
+   * closed while the BufferInfo is still in use. */
+  std::shared_ptr<PrimeFdsSharedBase> fds_shared;
+};
+
+}  // namespace android::drm_hwcomposer

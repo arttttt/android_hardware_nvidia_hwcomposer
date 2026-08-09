@@ -1,0 +1,39 @@
+Provenance of adapted files
+===========================
+
+Part of this composer is adapted from drm-hwcomposer rather than written
+here. Those files keep their original copyright headers, and this file
+records where each of them came from, so that a later reader can diff
+against the original and see exactly what was changed and why.
+
+Upstream:   https://gitlab.freedesktop.org/drm-hwcomposer/drm-hwcomposer
+Base:       da06409105fe03cc0f2f2090f88af96fd0e5053e
+            with 5b36732 ("Remove hwc2_device") reverted
+
+Why that base. The HWC2 entry point was removed upstream on 2025-12-11,
+and the layer-mapping work landed after it, so neither point of the
+history has both. Reverting the removal onto the current tree brings the
+two together: the revert applies without a conflict, and of the thirty
+two members the entry point reaches for on the display, three no longer
+exist -- each with a direct successor.
+
+What is left out. Everything that speaks to the display through DRM/KMS:
+this kernel has no DRM driver for the display controller at all, and the
+hardware is driven through tegra_dc_ext instead. Also left out are the
+parts with no counterpart on this board: HDCP, flattening telemetry, and
+the vendor backends for other hardware.
+
+
+Adapted files
+-------------
+
+Taken unchanged unless a note says otherwise. Paths are the same on both
+sides.
+
+  utils/fd.h
+  utils/fd.cpp
+  compositor/DisplayInfo.h
+  compositor/FrameTimeHistory.h
+  compositor/FrameTimeHistory.cpp
+  compositor/LayerData.h
+  bufferinfo/BufferInfo.h
