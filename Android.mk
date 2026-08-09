@@ -32,6 +32,7 @@ LOCAL_SHARED_LIBRARIES := \
     libcutils
 
 LOCAL_SRC_FILES := \
+    hwc/HwcLayer.cpp \
     tegra/DcControl.cpp \
     tegra/DcHead.cpp \
     tegra/FbMode.cpp \
