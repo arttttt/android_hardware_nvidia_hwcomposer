@@ -41,6 +41,10 @@ namespace {
  * allows itself, so a comparison between the two is like for like. */
 constexpr int kAcquireWaitMs = 5000;
 
+/* Long enough that a display running at sixty frames a second has had two
+ * chances to take the frame, short enough that asking costs nothing. */
+constexpr int kPresentProbeMs = 100;
+
 /* Read straight from the clock rather than through libutils: one timestamp
  * is not worth a library. */
 int64_t monotonicUs() {
@@ -207,7 +211,41 @@ int TegraCompositor::present(const FramePlan &plan, UniqueFd *outPresentFence) {
         windows.push_back(window);
     }
 
-    return mHead.flip(windows, outPresentFence);
+    err = mHead.flip(windows, outPresentFence);
+    if (err)
+        return err;
+
+    if (HWC_TRACE_ENABLED && *outPresentFence) {
+        /* Does the frame actually reach the panel?
+         *
+         * Everything downstream hangs on this one fence. It signals when the
+         * display has taken the frame, and the framework will not hand a
+         * buffer back to whoever drew it until then -- so if it never fires,
+         * the next frame has nothing to draw into, its own fence never fires
+         * either, and the whole pipeline settles into one frame per timeout.
+         * That is the shape of the stall we are looking at, and this is the
+         * measurement that says whether the display is the reason.
+         *
+         * On a duplicate and with a short timeout, so the answer costs a
+         * fraction of a frame and the fence handed to the framework is
+         * untouched.
+         */
+        UniqueFd probe = outPresentFence->dup();
+        if (probe) {
+            const int64_t before = monotonicUs();
+            const int signalled = sync_wait(probe.get(), kPresentProbeMs);
+            const int64_t elapsedUs = monotonicUs() - before;
+
+            if (signalled < 0)
+                HWC_LOGE("present fence still unsignalled after %d ms",
+                         kPresentProbeMs);
+            else
+                HWC_LOGD("present fence signalled after %" PRId64 " us",
+                         elapsedUs);
+        }
+    }
+
+    return 0;
 }
 
 }  // namespace hwc
