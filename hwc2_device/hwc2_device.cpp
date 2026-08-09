@@ -258,7 +258,7 @@ static int32_t DisplayHook(hwc2_device_t *dev, hwc2_display_t display_handle,
 static int32_t RegisterCallbackHook(hwc2_device_t *dev, int32_t descriptor,
                                     hwc2_callback_data_t data,
                                     hwc2_function_pointer_t function) {
-  ALOGV("Device hook: RegisterCallback");
+  ALOGV("Device hook: %s", GetFuncName(__PRETTY_FUNCTION__).c_str());
 
   auto *hwc = ToDrmHwcTwo(dev);
   int32_t result = 0;
