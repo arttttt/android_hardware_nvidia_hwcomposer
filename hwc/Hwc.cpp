@@ -113,6 +113,16 @@ const std::set<std::string> &Hwc::GetInternalDisplayNames() {
 }
 
 bool Hwc::Init() {
+  /* Let go before taking hold again.
+   *
+   * Which windows a display head has is decided per open file: the driver
+   * hands them to whoever asks first and refuses everyone after. Building the
+   * new device before releasing the old one means asking a head that is still
+   * owned, and it answers by giving nothing -- so the displays come up with
+   * no planes to put anything on. */
+  DeinitDisplays();
+  device_.reset();
+
   device_ = CreateDevice();
   if (!device_) {
     ALOGE("No display hardware to drive");
@@ -153,6 +163,12 @@ bool Hwc::Init() {
    * composer into headless mode, which is what keeps the framework alive when
    * there is no display at all. */
   FinalizeDisplayBinding();
+
+  /* And then the events are handed over, which is the part that makes any of
+   * it visible. Attaching a display only queues the news of it; until this
+   * runs the framework has been told nothing, and a framework that registered
+   * for hotplug and never heard about a primary display gives up. */
+  FlushHotplugEvents();
 
   return true;
 }
