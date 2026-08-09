@@ -17,12 +17,15 @@
 #include "tegra/TegraAtomicCommitSink.h"
 
 #include <cerrno>
+#include <cinttypes>
 #include <memory>
 #include <utility>
 #include <vector>
 
 #include "display/CommitStatus.h"
 #include "tegra/TegraAtomicStateManager.h"
+#include "utils/Logging.h"
+#include "utils/Time.h"
 #include "utils/log.h"
 
 namespace android::drm_hwcomposer {
@@ -108,8 +111,16 @@ TegraAtomicCommitSink::ExecuteAtomicCommit(
                         std::unique_ptr<AtomicRequest>>>
       requests;
 
+  /* Describing the frame and carrying it out, timed apart. Everything above
+   * here has been measured and costs nothing; the composer's own work at the
+   * bottom is about a millisecond, and this whole call is five. What is
+   * between those two is this. */
+  const int64_t before_build = GetTimeMonotonicNs();
+
   if (!BuildRequests(args, &requests))
     return CommitStatusOr<Results>(CommitStatus::InternalFailure());
+
+  const int64_t after_build = GetTimeMonotonicNs();
 
   if (requests.empty()) {
     ALOGD("Committing no input, success.");
@@ -136,6 +147,14 @@ TegraAtomicCommitSink::ExecuteAtomicCommit(
     }
 
     results.emplace_back(state_manager, std::move(result));
+  }
+
+  const int64_t after_execute = GetTimeMonotonicNs();
+  if (after_execute - before_build > 3000000) {
+    HWC_LOGD("slow execute: describing %" PRId64 "us, carrying out %" PRId64
+             "us",
+             (after_build - before_build) / 1000,
+             (after_execute - after_build) / 1000);
   }
 
   return CommitStatusOr<Results>(results);
