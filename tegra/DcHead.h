@@ -47,7 +47,7 @@ public:
      * exactly one; overlays are the same structure, more of them.
      */
     struct Window {
-        /* Which hardware window. Must have been claimed with claimWindow. */
+        /* Which hardware window; one of those windows() reports. */
         int32_t index = 0;
 
         /* dma-buf descriptor for the memory to scan out, borrowed for the
@@ -97,13 +97,19 @@ public:
     DcHead(const DcHead &) = delete;
     DcHead &operator=(const DcHead &) = delete;
 
-    /* Takes ownership of a hardware window. The driver refuses a flip that
-     * touches a window owned by another client, so this must succeed before
-     * that window appears in a flip. Idempotent within one instance. */
-    int claimWindow(uint32_t index);
-
-    /* Gives a window back and blanks it. Called for us on destruction. */
-    int releaseWindow(uint32_t index);
+    /* The windows this head has, in ascending order, all owned by us.
+     *
+     * Which windows a head has is a property of the board rather than of the
+     * chip: the controller's windows are split between the heads, and the
+     * split is not the same on every design. There is no ioctl that answers
+     * it, so they are discovered by being asked for -- the driver hands over
+     * the ones this head has and refuses the rest. Ownership is per open
+     * file and lasts until this object dies, so the asking happens once.
+     *
+     * A flip must name a window this head owns, so everything that builds a
+     * flip starts here.
+     */
+    const std::vector<uint32_t> &windows();
 
     /* Posts one frame.
      *
@@ -116,11 +122,19 @@ public:
 private:
     DcHead(UniqueFd fd, int index): mFd(std::move(fd)), mIndex(index) {}
 
+    /* Takes ownership of one window. A refusal is an answer, not a failure --
+     * it is how the head says the window is not its -- so it is not logged. */
+    bool tryClaimWindow(uint32_t index);
+
+    /* Gives a window back and blanks it. Done for us on destruction. */
+    void releaseWindow(uint32_t index);
+
     UniqueFd mFd;
     int mIndex;
 
-    /* Claimed windows, so destruction can hand them all back. */
+    /* Owned windows, ascending. Empty until the first call to windows(). */
     std::vector<uint32_t> mOwnedWindows;
+    bool mWindowsDiscovered = false;
 };
 
 }  // namespace hwc

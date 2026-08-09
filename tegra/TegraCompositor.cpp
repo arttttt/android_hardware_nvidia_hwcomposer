@@ -41,10 +41,6 @@ namespace {
  * allows itself, so a comparison between the two is like for like. */
 constexpr int kAcquireWaitMs = 5000;
 
-/* Long enough that a display running at sixty frames a second has had two
- * chances to take the frame, short enough that asking costs nothing. */
-constexpr int kPresentProbeMs = 100;
-
 /* Read straight from the clock rather than through libutils: one timestamp
  * is not worth a library. */
 int64_t monotonicUs() {
@@ -70,23 +66,7 @@ uint32_t blendFor(BlendMode mode) {
 TegraCompositor::TegraCompositor(DcHead &head, uint32_t panelWidth)
     : mHead(head), mPanelWidth(panelWidth) {}
 
-int TegraCompositor::ensureWindows(size_t count) {
-    for (size_t i = mClaimedWindows; i < count; ++i) {
-        int err = mHead.claimWindow(static_cast<uint32_t>(i));
-        if (err) {
-            /* Whatever was claimed before this stays claimed and usable, so
-             * the count reflects reality rather than the request. */
-            mClaimedWindows = i;
-            return err;
-        }
-    }
-
-    if (count > mClaimedWindows)
-        mClaimedWindows = count;
-    return 0;
-}
-
-int TegraCompositor::describeWindow(const PlannedLayer &layer, int32_t index,
+int TegraCompositor::describeWindow(const PlannedLayer &layer, uint32_t index,
                                     uint32_t z, DcHead::Window *outWindow) {
     BufferInfo info;
     int err = describeBuffer(layer.buffer, mPanelWidth, &info);
@@ -95,7 +75,7 @@ int TegraCompositor::describeWindow(const PlannedLayer &layer, int32_t index,
 
     *outWindow = DcHead::Window{};
 
-    outWindow->index = index;
+    outWindow->index = static_cast<int32_t>(index);
     outWindow->bufferFd = info.fd;
     outWindow->offset = info.offset;
     outWindow->stride = info.strideBytes;
@@ -154,23 +134,24 @@ int TegraCompositor::test(const FramePlan &plan) {
     if (plan.isEmpty())
         return -EINVAL;
 
+    /* One window per layer, and the head has as many as it has.
+     *
+     * There is no dry run beyond this yet. The controller can also refuse a
+     * plan over scaling ratios, per-window format and rotation limits, or
+     * bandwidth, and the honest way to ask is the proposed-configuration
+     * ioctl. Until layers are handed to windows at all, every plan here is
+     * one full-screen buffer and there is nothing for it to weigh.
+     */
+    const size_t available = mHead.windows().size();
+    if (plan.layerCount() > available) {
+        HWC_LOGE("%zu layer(s) will not fit in %zu window(s)",
+                 plan.layerCount(), available);
+        return -EINVAL;
+    }
+
     /* Every layer must be describable to the hardware. A buffer in a format
      * the controller cannot scan out is the one refusal worth making here,
-     * and making it now rather than mid-flip is the point of asking.
-     *
-     * How many windows the head actually has is deliberately not checked
-     * against a constant. The compile-time maximum for this chip counts
-     * windows across the controller, while a head owns whichever the board
-     * wired to it; the authority is the hardware, which refuses to hand over
-     * a window that is not there. So the limit is discovered by claiming
-     * rather than assumed, and present reports what it managed to get.
-     *
-     * Nor is there a dry run yet. The controller can also refuse a plan over
-     * scaling ratios, per-window format and rotation limits, or bandwidth,
-     * and the honest way to ask is the proposed-configuration ioctl. Until
-     * layers are handed to windows at all, every plan here is one full-screen
-     * buffer and there is nothing for it to weigh.
-     */
+     * and making it now rather than mid-flip is the point of asking. */
     for (const PlannedLayer &layer : plan.layers()) {
         BufferInfo info;
         int err = describeBuffer(layer.buffer, mPanelWidth, &info);
@@ -190,62 +171,79 @@ int TegraCompositor::present(const FramePlan &plan, UniqueFd *outPresentFence) {
      * running both would do that work twice for every frame. Whatever test
      * would have refused, describeWindow refuses on the same grounds, before
      * anything has been posted. */
-    int err = ensureWindows(plan.layerCount());
-    if (err) {
-        HWC_LOGE("only %zu of %zu window(s) claimed", mClaimedWindows,
-                 plan.layerCount());
-        return err;
+    const std::vector<uint32_t> &available = mHead.windows();
+    if (plan.layerCount() > available.size()) {
+        HWC_LOGE("%zu layer(s) will not fit in %zu window(s)",
+                 plan.layerCount(), available.size());
+        return -EINVAL;
     }
 
-    std::vector<DcHead::Window> windows;
-    windows.reserve(plan.layerCount());
+    /* Every window of the head goes into every flip, not just the ones with
+     * something to show.
+     *
+     * A window keeps whatever it was last given until it is told otherwise,
+     * and a flip only touches the windows it names. Leaving one out therefore
+     * does not clear it: it stays enabled with its old buffer, and if its
+     * depth puts it above ours it covers the frame we just posted. Whoever
+     * set it up -- the kernel's own framebuffer, or the composer before a
+     * layer moved off an overlay -- is not around to take it down.
+     *
+     * So the unused ones are sent as well, with no buffer, which is how the
+     * driver is told to switch a window off. That is what a default-built
+     * Window already is, hence the loop only fills in the ones a layer
+     * claimed.
+     */
+    std::vector<DcHead::Window> windows(available.size());
 
-    for (size_t i = 0; i < plan.layers().size(); ++i) {
-        DcHead::Window window;
-        err = describeWindow(plan.layers()[i], static_cast<int32_t>(i),
-                             static_cast<uint32_t>(i), &window);
+    for (size_t i = 0; i < available.size(); ++i) {
+        windows[i].index = static_cast<int32_t>(available[i]);
+
+        if (i >= plan.layerCount())
+            continue;
+
+        int err = describeWindow(plan.layers()[i], available[i],
+                                 static_cast<uint32_t>(i), &windows[i]);
         if (err) {
             HWC_LOGE("layer %zu cannot be shown: %d", i, err);
             return err;
         }
-        windows.push_back(window);
     }
 
-    err = mHead.flip(windows, outPresentFence);
+    int err = mHead.flip(windows, outPresentFence);
     if (err)
         return err;
 
-    if (HWC_TRACE_ENABLED && *outPresentFence) {
-        /* Does the frame actually reach the panel?
-         *
-         * Everything downstream hangs on this one fence. It signals when the
-         * display has taken the frame, and the framework will not hand a
-         * buffer back to whoever drew it until then -- so if it never fires,
-         * the next frame has nothing to draw into, its own fence never fires
-         * either, and the whole pipeline settles into one frame per timeout.
-         * That is the shape of the stall we are looking at, and this is the
-         * measurement that says whether the display is the reason.
-         *
-         * On a duplicate and with a short timeout, so the answer costs a
-         * fraction of a frame and the fence handed to the framework is
-         * untouched.
-         */
-        UniqueFd probe = outPresentFence->dup();
-        if (probe) {
-            const int64_t before = monotonicUs();
-            const int signalled = sync_wait(probe.get(), kPresentProbeMs);
-            const int64_t elapsedUs = monotonicUs() - before;
+    traceFrameLanded(*outPresentFence);
+    return 0;
+}
 
-            if (signalled < 0)
-                HWC_LOGE("present fence still unsignalled after %d ms",
-                         kPresentProbeMs);
-            else
-                HWC_LOGD("present fence signalled after %" PRId64 " us",
-                         elapsedUs);
-        }
+void TegraCompositor::traceFrameLanded(const UniqueFd &postFence) {
+    if (!HWC_TRACE_ENABLED)
+        return;
+
+    /* Do the frames actually reach the panel?
+     *
+     * The fence a flip hands back says nothing about that flip. It is built
+     * one step beyond the counter the flip advances, so it fires when the
+     * *next* flip finishes -- which is precisely the moment the buffer just
+     * posted stops being read and becomes free to draw into again. That makes
+     * it the right answer to hand the framework, and a useless one to wait on
+     * here: a frame's own fence cannot report on that frame.
+     *
+     * Two flips back it can. That fence was due when the flip before this one
+     * finished, which was a frame ago, so asking now without waiting
+     * separates a display that is quietly taking every frame from one that is
+     * accepting flips and doing nothing with them.
+     */
+    if (mPostFences[1]) {
+        if (sync_wait(mPostFences[1].get(), 0) == 0)
+            HWC_LOGD("the frame before last is on the panel");
+        else
+            HWC_LOGE("the frame before last never reached the panel");
     }
 
-    return 0;
+    mPostFences[1] = std::move(mPostFences[0]);
+    mPostFences[0] = postFence.dup();
 }
 
 }  // namespace hwc

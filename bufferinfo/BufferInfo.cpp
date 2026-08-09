@@ -55,6 +55,19 @@ struct Allocator {
     int (*format)(buffer_handle_t) = nullptr;
     int (*stride)(buffer_handle_t) = nullptr;
 
+    /* Hands back the surface descriptors the allocator keeps for the buffer:
+     * where the image starts, how long a row is, and how the memory is laid
+     * out. Everything the controller needs beyond the descriptor is in
+     * there, and nothing else reports it.
+     *
+     * Kept apart from the four above because it is the one whose answer is a
+     * structure rather than a number, and a structure has a layout that
+     * belongs to whichever build of the allocator this device carries. Until
+     * that layout is confirmed against the device, it is read for the log and
+     * not acted on, and its absence is not a reason to refuse a buffer.
+     */
+    void (*surfaces)(buffer_handle_t, const void **, size_t *) = nullptr;
+
     bool resolved = false;
     bool failed = false;
 };
@@ -95,8 +108,61 @@ const Allocator *allocator() {
         return nullptr;
     }
 
+    /* Optional, so its own failure is not the group's. */
+    resolveOne(library, "nvgr_get_surfaces", &gAllocator.surfaces);
+
     HWC_LOGI("libnvgr resolved");
     return &gAllocator;
+}
+
+/* Reports what the allocator says about a buffer's memory, once.
+ *
+ * The controller needs three things this code does not yet ask for: where the
+ * image starts inside the buffer, how long a row really is, and whether the
+ * memory is arranged in rows at all or in the blocks the GPU prefers. All
+ * three live in the allocator's surface descriptor, which is a plain
+ * structure of thirty-two bit fields in a documented order:
+ *
+ *     width, height, colour format, layout, pitch, memory handle, offset,
+ *     base pointer, kind, block height log2, scan format, second field offset
+ *
+ * That order comes from a version of the allocator older than the one this
+ * device carries, so it is printed rather than trusted: the raw words are
+ * logged beside the reading, and the reading is only worth acting on if the
+ * two agree with what the buffer is known to be. Width and height are the
+ * anchor -- they are the one pair whose correct value is known in advance.
+ */
+void reportSurface(buffer_handle_t handle, const Allocator *nvgr) {
+    if (!HWC_TRACE_ENABLED || nvgr->surfaces == nullptr)
+        return;
+
+    static bool reported = false;
+    if (reported)
+        return;
+    reported = true;
+
+    const void *surfaces = nullptr;
+    size_t count = 0;
+    nvgr->surfaces(handle, &surfaces, &count);
+
+    if (surfaces == nullptr || count == 0) {
+        HWC_LOGD("buffer %p has no surfaces", handle);
+        return;
+    }
+
+    const uint32_t *word = static_cast<const uint32_t *>(surfaces);
+
+    HWC_LOGD("surface[0] of %zu, as read: %ux%u fmt=%u layout=%u pitch=%u "
+             "offset=%u kind=%u blockh=%u",
+             count, word[0], word[1], word[2], word[3], word[4], word[6],
+             word[8], word[9]);
+
+    /* Twelve for the structure as documented, four past it: if the reading
+     * above is off, the shift shows up as the anchor appearing late, and
+     * anything after the first surface is another one just like it. */
+    for (size_t i = 0; i < 16; i += 4)
+        HWC_LOGD("surface words %2zu: %08x %08x %08x %08x", i, word[i],
+                 word[i + 1], word[i + 2], word[i + 3]);
 }
 
 /* Bytes each pixel occupies, for the formats a display can scan out. Zero
@@ -149,6 +215,8 @@ int describeBuffer(buffer_handle_t handle, uint32_t width, BufferInfo *outInfo) 
         HWC_LOGE("buffer %p is not one of the allocator's", handle);
         return -EINVAL;
     }
+
+    reportSurface(handle, nvgr);
 
     const int halFormat = nvgr->format(handle);
     const uint32_t bpp = bytesPerPixel(halFormat);

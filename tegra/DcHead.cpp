@@ -50,6 +50,11 @@ uint32_t toFixed(float value) {
     return static_cast<uint32_t>(value * (1 << kFixedPointShift));
 }
 
+/* How far up to look for windows. No generation of this controller has more
+ * than six, and asking for one past the end costs a single refused ioctl at
+ * startup. */
+constexpr uint32_t kWindowSearchLimit = 6;
+
 }  // namespace
 
 std::unique_ptr<DcHead> DcHead::open(int index) {
@@ -71,37 +76,52 @@ DcHead::~DcHead() {
         releaseWindow(window);
 }
 
-int DcHead::claimWindow(uint32_t index) {
-    if (std::find(mOwnedWindows.begin(), mOwnedWindows.end(), index) !=
-        mOwnedWindows.end())
-        return 0;
+const std::vector<uint32_t> &DcHead::windows() {
+    if (mWindowsDiscovered)
+        return mOwnedWindows;
 
-    if (ioctl(mFd.get(), TEGRA_DC_EXT_GET_WINDOW, index) < 0) {
-        int err = -errno;
-        HWC_LOGE("head %d: GET_WINDOW(%u): %s", mIndex, index, strerror(-err));
-        return err;
+    /* Marked done first: a head with no windows at all is an answer too, and
+     * repeating the search every frame would not change it. */
+    mWindowsDiscovered = true;
+
+    for (uint32_t index = 0; index < kWindowSearchLimit; ++index) {
+        if (tryClaimWindow(index))
+            mOwnedWindows.push_back(index);
     }
 
-    mOwnedWindows.push_back(index);
-    return 0;
+    if (mOwnedWindows.empty()) {
+        HWC_LOGE("head %d has no windows to give", mIndex);
+        return mOwnedWindows;
+    }
+
+    /* One line rather than one per window: this is startup, and the set is
+     * small enough to read at a glance. */
+    char list[kWindowSearchLimit * 3 + 1];
+    size_t used = 0;
+    for (uint32_t index : mOwnedWindows)
+        used += snprintf(list + used, sizeof(list) - used, "%s%u",
+                         used ? "," : "", index);
+
+    HWC_LOGI("head %d owns window(s) %s", mIndex, list);
+    return mOwnedWindows;
 }
 
-int DcHead::releaseWindow(uint32_t index) {
+bool DcHead::tryClaimWindow(uint32_t index) {
+    return ioctl(mFd.get(), TEGRA_DC_EXT_GET_WINDOW, index) == 0;
+}
+
+void DcHead::releaseWindow(uint32_t index) {
     auto it = std::find(mOwnedWindows.begin(), mOwnedWindows.end(), index);
     if (it == mOwnedWindows.end())
-        return 0;
+        return;
 
     /* Dropped from the list first: the ioctl blanks the window, and leaving
      * it listed after a failure would have the destructor try again on a
      * window the driver may already consider gone. */
     mOwnedWindows.erase(it);
 
-    if (ioctl(mFd.get(), TEGRA_DC_EXT_PUT_WINDOW, index) < 0) {
-        int err = -errno;
-        HWC_LOGE("head %d: PUT_WINDOW(%u): %s", mIndex, index, strerror(-err));
-        return err;
-    }
-    return 0;
+    if (ioctl(mFd.get(), TEGRA_DC_EXT_PUT_WINDOW, index) < 0)
+        HWC_LOGE("head %d: PUT_WINDOW(%u): %s", mIndex, index, strerror(errno));
 }
 
 int DcHead::flip(const std::vector<Window> &windows, UniqueFd *outPostFence) {
