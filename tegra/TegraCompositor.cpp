@@ -18,11 +18,11 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <time.h>
 
 #include <vector>
 
 #include <android/sync.h>
-#include <utils/Timers.h>
 
 #include <tegra_dc_ext.h>
 
@@ -40,6 +40,14 @@ namespace {
 /* How long to wait for a buffer before giving up. Matches what the driver
  * allows itself, so a comparison between the two is like for like. */
 constexpr int kAcquireWaitMs = 5000;
+
+/* Read straight from the clock rather than through libutils: one timestamp
+ * is not worth a library. */
+int64_t monotonicUs() {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return static_cast<int64_t>(now.tv_sec) * 1000000 + now.tv_nsec / 1000;
+}
 
 uint32_t blendFor(BlendMode mode) {
     switch (mode) {
@@ -117,10 +125,9 @@ int TegraCompositor::describeWindow(const PlannedLayer &layer, int32_t index,
          * in lockstep instead of letting the hardware overlap them -- so it
          * is a measurement, not a fix.
          */
-        const int64_t before = systemTime(SYSTEM_TIME_MONOTONIC);
+        const int64_t before = monotonicUs();
         const int waited = sync_wait(layer.acquireFence, kAcquireWaitMs);
-        const int64_t elapsedUs =
-            (systemTime(SYSTEM_TIME_MONOTONIC) - before) / 1000;
+        const int64_t elapsedUs = monotonicUs() - before;
 
         if (waited < 0)
             HWC_LOGE("acquire fence %d did not signal in %d ms",
