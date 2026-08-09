@@ -72,18 +72,23 @@ LOCAL_C_INCLUDES += \
     external/libdrm/include \
     external/libdrm/include/drm
 
-# libdrm is here for a handful of helper calls in the property model -- adding
-# one to an atomic request, reading a blob -- and for nothing else. No display
-# on this board is reached through DRM and no device node is opened.
 LOCAL_SHARED_LIBRARIES := \
     liblog \
     libbase \
     libcutils \
-    libdrm \
     libhardware \
     libsync \
     libui \
     libdl
+
+# Statically, and that is the point rather than a preference. It is here for a
+# handful of helper calls in the property model -- adding one to an atomic
+# request, reading a blob -- and for nothing else: no display on this board is
+# reached through DRM and no device node is opened. Nothing else on this device
+# needs it either, so it is not in the image, and a shared dependency on it is
+# a module that will not load.
+LOCAL_STATIC_LIBRARIES := \
+    libdrm
 
 LOCAL_SRC_FILES := \
     backend/BackendManager.cpp \
