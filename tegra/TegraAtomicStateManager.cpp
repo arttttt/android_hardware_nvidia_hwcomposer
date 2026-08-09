@@ -82,6 +82,23 @@ uint32_t BlendFor(BufferBlendMode mode) {
   }
 }
 
+/* The buffer as the allocator knows it, if whoever read this one left it
+ * behind, and null otherwise.
+ *
+ * The cast is not a guess. That field exists to carry exactly this -- the
+ * handle a description was read from, kept alive as long as the description
+ * is -- and GrallocBufferHandle is the only thing in this tree that can be
+ * put in it. It is a static cast because this platform's builds turn run-time
+ * type information off, so the checked one would not link.
+ */
+buffer_handle_t NativeHandleOf(const BufferInfo &bi) {
+  if (!bi.fds_shared)
+    return nullptr;
+
+  return std::static_pointer_cast<GrallocBufferHandle>(bi.fds_shared)
+      ->GetHandle();
+}
+
 /* Where a plan puts a layer, said the way this controller reads it.
  *
  * The two count in opposite directions. A plan says how high a layer sits,
@@ -101,23 +118,6 @@ uint32_t BlendFor(BufferBlendMode mode) {
  * the controller's, rather than by teaching the planner this hardware's
  * dialect.
  */
-/* The buffer as the allocator knows it, if whoever read this one left it
- * behind, and null otherwise.
- *
- * The cast is not a guess. That field exists to carry exactly this -- the
- * handle a description was read from, kept alive as long as the description
- * is -- and GrallocBufferHandle is the only thing in this tree that can be
- * put in it. It is a static cast because this platform's builds turn run-time
- * type information off, so the checked one would not link.
- */
-buffer_handle_t NativeHandleOf(const BufferInfo &bi) {
-  if (!bi.fds_shared)
-    return nullptr;
-
-  return std::static_pointer_cast<GrallocBufferHandle>(bi.fds_shared)
-      ->GetHandle();
-}
-
 uint32_t DepthForZPos(int z_pos) {
   constexpr uint32_t kFurthestBack = 0xff;
 
