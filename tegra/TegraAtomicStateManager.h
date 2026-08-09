@@ -143,6 +143,10 @@ class TegraAtomicStateManager : public AtomicStateManager {
   /* The fence the previous flip returned. What the driver hands back comes
    * due one flip later, so this is what a present is answered with. */
   SharedFd previous_post_fence_;
+
+  /* When the previous flip was posted, to say how long after it the fence it
+   * returned came due. Diagnostic only, and only read by the trace. */
+  int64_t last_flip_ns_ = 0;
 };
 
 }  // namespace android::drm_hwcomposer

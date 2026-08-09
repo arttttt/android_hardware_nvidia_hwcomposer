@@ -17,6 +17,11 @@
 #include "tegra/TegraAtomicStateManager.h"
 
 #include <errno.h>
+#include <inttypes.h>
+#include <ndk/sync.h>
+#include <time.h>
+
+#include <optional>
 
 #include <algorithm>
 #include <memory>
@@ -56,6 +61,43 @@ namespace {
  */
 bool FlatteningWanted() {
   return property_get_bool("vendor.hwc.tegra.flatten", 1) != 0;
+}
+
+int64_t NowNs() {
+  struct timespec ts = {};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (static_cast<int64_t>(ts.tv_sec) * 1000000000) + ts.tv_nsec;
+}
+
+/* When a fence came due, or nothing if it has not yet.
+ *
+ * Read rather than waited on: the question here is whether a fence was
+ * already due at a particular moment, and waiting to find out would change
+ * the answer. The time comes from the fence itself, so it is when the
+ * hardware finished rather than when this thread got round to asking.
+ */
+std::optional<int64_t> SignalTimeNs(const SharedFd &fence) {
+  if (!fence)
+    return std::nullopt;
+
+  struct sync_file_info *info = sync_file_info(*fence);
+  if (info == nullptr)
+    return std::nullopt;
+
+  if (info->status != 1) {
+    sync_file_info_free(info);
+    return std::nullopt;
+  }
+
+  int64_t latest = 0;
+  struct sync_fence_info *each = sync_get_fence_info(info);
+  for (size_t i = 0; i < info->num_fences; i++) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    latest = std::max(latest, static_cast<int64_t>(each[i].timestamp_ns));
+  }
+
+  sync_file_info_free(info);
+  return latest;
 }
 
 uint32_t BlendFor(BufferBlendMode mode) {
@@ -332,10 +374,26 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
     flattened.push_back(std::move(ready));
   }
 
+  /* Read before the flip, not after, because the question is what was true
+   * when this frame was posted. If the previous flip's fence is already due
+   * by now -- one frame later -- then a flip's fence comes due within its own
+   * frame, and handing the previous one out below is a frame of pretence.
+   * If it is still pending, the note below is right. */
+  const std::optional<int64_t> previous_due = SignalTimeNs(previous_post_fence_);
+  const int64_t before_flip = NowNs();
+
   hwc::UniqueFd post_fence;
   int err = head_.flip(windows, &post_fence);
   if (err)
     return err;
+
+  HWC_LOGD("flip: took %" PRId64 "us, previous fence %s%" PRId64 "us",
+           (NowNs() - before_flip) / 1000,
+           previous_due ? "came due " : "still pending, posted ",
+           ((previous_due ? *previous_due : before_flip) - last_flip_ns_) /
+               1000);
+
+  last_flip_ns_ = before_flip;
 
   /* The fence handed out is the one the flip before this got, not this
    * flip's.
