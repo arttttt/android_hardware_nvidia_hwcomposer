@@ -27,7 +27,7 @@
 #include <vector>
 
 #include "backend/BackendDisplayCapabilities.h"
-#include "display/DisplayPipeline.h"
+#include "display/Connector.h"
 #include "display/DrmMode.h"
 #include "utils/log.h"
 
@@ -95,20 +95,20 @@ HwcDisplayConfigs HwcDisplayConfigsGenerator::GetFakeMode(uint16_t width,
 
 std::optional<HwcDisplayConfigs>
 HwcDisplayConfigsGenerator::GenerateDisplayConfigs(
-    const DisplayPipeline &pipeline, const HwcConfigParameters &params) {
-  if (pipeline.GetModes().empty()) {
+    const Connector &connector, const HwcConfigParameters &params) {
+  if (connector.GetModes().empty()) {
     ALOGE("No modes reported by KMS");
     return std::nullopt;
   }
 
   HwcDisplayConfigs configs;
   configs.preferred_config_id = 0;
-  configs.mm_width = pipeline.GetMmWidth();
-  configs.mm_height = pipeline.GetMmHeight();
+  configs.mm_width = connector.GetMmWidth();
+  configs.mm_height = connector.GetMmHeight();
 
   bool enable_hdr = params.use_color_pipeline &&
-                    (pipeline.IsExternal() ? params.external_hdr_enabled
-                                           : params.persistent_hdr_enabled);
+                    (connector.IsExternal() ? params.external_hdr_enabled
+                                            : params.persistent_hdr_enabled);
 
   if (params.capabilities != nullptr) {
     auto override_types = params.capabilities->GetHdrTypesOverride();
@@ -129,8 +129,8 @@ HwcDisplayConfigsGenerator::GenerateDisplayConfigs(
   uint32_t next_group_id = 1;
 
   std::vector<DrmMode> modes;
-  modes.reserve(pipeline.GetModes().size());
-  for (const auto &mode : pipeline.GetModes()) {
+  modes.reserve(connector.GetModes().size());
+  for (const auto &mode : connector.GetModes()) {
     if ((mode.GetRawMode().flags & DRM_MODE_FLAG_3D_MASK) != 0) {
       ALOGI("Skipping display mode %s (Modes with 3D flag aren't supported)",
             mode.GetName().c_str());

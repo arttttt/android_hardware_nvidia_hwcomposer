@@ -17,39 +17,38 @@
 
 /* Adapted from drm-hwcomposer's drm/DrmDisplayPipeline.h.
  *
- * Upstream splits a display in two. A pipeline is the chain of DRM objects a
- * frame travels down -- connector, encoder, controller, planes -- and the
- * things built on that chain: a state manager, a planner, a statement of what
- * the backend can do. A connector, separately, answers what is on the far end
- * of the cable: which timings it runs, how large it is, whether it is built
- * into the machine or plugged into it.
+ * The chain a frame travels down to reach one display, and the things built
+ * on that chain: something to decide what goes where, something to carry the
+ * decision out, and a statement of what the hardware underneath can do.
  *
- * There is no cable here and nothing to enumerate, so both roles land on one
- * object. What was a chain of DRM objects becomes whatever a backend needs to
- * drive its display, which is why this is something to implement rather than
- * something to fill in.
+ * The chain is theirs, link for link and name for name, because their code
+ * reaches into it by name -- a display asks `pipeline->connector->Get()` what
+ * the panel is and `pipeline->planner` for a plan, with no accessor in
+ * between. Each link is now something to implement rather than a DRM object,
+ * which is the whole of the adaptation: what a link IS became a question for
+ * a backend, while what a link ANSWERS stayed exactly as it was.
  *
- * The fields upstream reads directly are kept as fields with their names, and
- * what it reached for through the connector is kept as the connector's own
- * method names. Their code above this line therefore reads the same as it
- * does upstream, which is the point.
+ * Building the chain is a backend's business, so the one thing here that
+ * cannot be inherited from upstream is their static CreatePipeline: there is
+ * no connector to enumerate and be handed. Which planes the chain may use is
+ * likewise something only the backend knows, so it is asked rather than
+ * worked out.
  */
 
 #pragma once
 
-#include <cstdint>
 #include <memory>
-#include <string>
-#include <vector>
 
-/* Complete types rather than declarations, because the pipeline owns all
- * three and its destructor is here: taking apart a unique pointer needs to
- * know what it is pointing at. Upstream puts its destructor in a source file
- * and so gets away with declarations; this one has no source file. */
+/* Complete types rather than declarations: the pipeline owns three of these
+ * and its destructor is here, and taking apart a unique pointer needs to
+ * know what it points at. Upstream puts its destructor in a source file and
+ * so gets away with declarations; this one is a header alone. */
 #include "backend/BackendDisplayCapabilities.h"
 #include "compositor/CompositionPlanner.h"
 #include "display/AtomicStateManager.h"
-#include "display/DrmMode.h"
+#include "display/Connector.h"
+#include "display/Crtc.h"
+#include "display/Encoder.h"
 #include "display/PipelineBinding.h"
 
 namespace android {
@@ -60,72 +59,45 @@ class VSyncSource;
 
 namespace drm_hwcomposer {
 
+class Device;
+class FbImporter;
+class Plane;
+
 struct DisplayPipeline {
   virtual ~DisplayPipeline() = default;
 
   /* The planes this display may put layers on, and the one meant for a
    * cursor if it has one.
    *
-   * Handed out as bindings rather than plainly, so that a plane cannot end up
-   * claimed by two displays at once: holding the binding is what says it is
-   * this one's, and letting go is what gives it back.
+   * Handed out as bindings rather than plainly, so that a plane cannot end
+   * up claimed by two displays at once: holding the binding is what says it
+   * is this one's, and letting go is what gives it back.
    */
   virtual UsablePlanes GetUsablePlanes() const = 0;
-
-  /* What upstream asks the connector. */
-
-  virtual std::string GetName() const = 0;
-
-  /* Timings the panel can run. The one marked preferred is what the display
-   * comes up in. Fixed-mode panels report exactly one. */
-  virtual const std::vector<DrmMode> &GetModes() const = 0;
-
-  /* Physical size of the visible area. Zero where the panel does not say,
-   * which consumers must read as "no information" rather than as a display of
-   * no size. */
-  virtual uint32_t GetMmWidth() const = 0;
-  virtual uint32_t GetMmHeight() const = 0;
-
-  /* Whether this display is something the user plugged in. It decides which
-   * of the two high-dynamic-range settings applies, and how the framework is
-   * told about the display appearing and going away. */
-  virtual bool IsExternal() const = 0;
-
-  /* Which sleep states this display has, beyond simply on and off.
-   *
-   * Upstream asks its backend, the backend being the vendor-specific thing
-   * that knows how to build a pipeline for a connector on a device. Building
-   * a pipeline is what an implementation of this is for, so the questions
-   * belong here rather than to a second object that would answer for nothing
-   * else. The defaults are the ones upstream's base backend gives.
-   */
-  virtual bool SupportsDoze() const {
-    return false;
-  }
-
-  virtual bool SupportsDozeSuspend() const {
-    return false;
-  }
-
-  virtual bool SupportsSuspend() const {
-    return false;
-  }
 
   /* Where blanks come from.
    *
    * Upstream's display builds its own reader over the DRM vertical-blank
-   * ioctl, which every KMS driver has. There is no such thing to assume here
-   * -- how a controller reports a blank is its own business -- so the display
+   * ioctl, which every KMS driver has. There is nothing to assume here --
+   * how a controller reports a blank is its own business -- so the display
    * is handed one rather than making one.
    */
   virtual hwc::VSyncSource &GetVSyncSource() = 0;
 
-  /* Owned by the pipeline, and not outliving it.
-   *
-   * Public and named as upstream names them, because upstream reaches for
-   * them by name: a display asks its pipeline's planner for a plan and its
-   * state manager to carry the plan out.
-   */
+  /* Not owned, and outliving the pipeline. */
+  Device *device{};
+  FbImporter *importer{};
+
+  /* The chain. Bound rather than pointed at, so that no two displays can
+   * claim the same piece of hardware. */
+  std::shared_ptr<BindingOwner<Connector>> connector;
+  std::shared_ptr<BindingOwner<Connector>> writeback_connector;
+  std::shared_ptr<BindingOwner<Encoder>> encoder;
+  std::shared_ptr<BindingOwner<Crtc>> crtc;
+  std::shared_ptr<BindingOwner<Plane>> primary_plane;
+
+  /* Owned by the pipeline, and not outliving it. Public and named as
+   * upstream names them, because upstream reaches for them by name. */
   std::unique_ptr<AtomicStateManager> atomic_state_manager;
   std::unique_ptr<CompositionPlanner> planner;
   std::unique_ptr<BackendDisplayCapabilities> capabilities;

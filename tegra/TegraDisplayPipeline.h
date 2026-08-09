@@ -18,25 +18,26 @@
 #define TEGRA_DISPLAY_PIPELINE_H
 
 #include <memory>
-#include <string>
 #include <vector>
 
 #include "display/Compositor.h"
 #include "display/DisplayPipeline.h"
 #include "tegra/DcHead.h"
 #include "tegra/FbDevice.h"
+#include "tegra/TegraConnector.h"
+#include "tegra/TegraCrtc.h"
 #include "tegra/TegraPlane.h"
 #include "tegra/TegraVSyncSource.h"
 
 namespace android {
 namespace hwc {
 
-/* One Tegra display head, assembled.
+/* One Tegra display head, assembled into the chain a frame travels down.
  *
  * Three devices answer for one display and none of them answers for all of
  * it: the head node posts frames, the control node carries events, and the
  * framebuffer device knows the timing and the backlight. This is where that
- * is hidden, so that above it a display is one pipeline like any other.
+ * is hidden, so that above it a display is a pipeline like any other.
  */
 class TegraDisplayPipeline : public drm_hwcomposer::DisplayPipeline {
 public:
@@ -47,18 +48,6 @@ public:
     ~TegraDisplayPipeline() override;
 
     drm_hwcomposer::UsablePlanes GetUsablePlanes() const override;
-
-    std::string GetName() const override;
-
-    const std::vector<drm_hwcomposer::DrmMode> &GetModes() const override {
-        return mModes;
-    }
-
-    uint32_t GetMmWidth() const override { return mTiming.mmWidth; }
-    uint32_t GetMmHeight() const override { return mTiming.mmHeight; }
-
-    /* Soldered to the board. */
-    bool IsExternal() const override { return false; }
 
     VSyncSource &GetVSyncSource() override { return *mVSync; }
 
@@ -85,13 +74,10 @@ private:
     std::unique_ptr<TegraVSyncSource> mVSync;
     std::unique_ptr<Compositor> mCompositor;
 
-    /* What the panel reported, kept as it arrived. The modes list below is
-     * built from it; the physical size is answered straight from here. */
-    PanelTiming mTiming;
-
-    /* Exactly one. The panel is fixed and has a single timing; the framework
-     * still wants a list, so it gets one of length one. */
-    std::vector<drm_hwcomposer::DrmMode> mModes;
+    /* The links of the chain. Owned here and bound in the constructor; what
+     * the base class holds are bindings to these. */
+    TegraConnector mConnector;
+    TegraCrtc mCrtc;
 
     /* One per window the head owns, made the first time anyone asks which
      * planes this display has. Held here because a plane belongs to the

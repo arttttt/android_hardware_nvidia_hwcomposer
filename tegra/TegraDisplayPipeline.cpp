@@ -63,11 +63,17 @@ TegraDisplayPipeline::TegraDisplayPipeline(int index,
       mHead(std::move(head)),
       mVSync(std::move(vsync)),
       mCompositor(new TegraCompositor(*mHead)),
-      mTiming(timing),
-      mModes{drm_hwcomposer::DrmMode(&mTiming.mode)} {
+      mConnector(static_cast<uint32_t>(index), timing),
+      mCrtc(static_cast<uint32_t>(index)) {
+    /* Binding is what says a piece of hardware is this display's. Nothing
+     * else can claim these afterwards, and letting go of the binding is what
+     * would give them back. */
+    connector = mConnector.BindPipeline(this);
+    crtc = mCrtc.BindPipeline(this);
+
     atomic_state_manager =
-        std::make_unique<drm_hwcomposer::TegraAtomicStateManager>(*mHead,
-                                                                 mModes);
+        std::make_unique<drm_hwcomposer::TegraAtomicStateManager>(
+            *mHead, mConnector.GetModes());
     planner =
         std::make_unique<drm_hwcomposer::GenericLayerMapperCompositionPlanner>();
 }
@@ -76,14 +82,16 @@ TegraDisplayPipeline::~TegraDisplayPipeline() {
     /* Ordered, and it has to be. What a pipeline owns is declared in the base
      * class and so outlives everything declared here, while what it owns is
      * built on top of what is here: the state manager holds the head and the
-     * modes. Left to the ordinary order it would be reading both after they
-     * were gone.
+     * connector's modes. Left to the ordinary order it would be reading both
+     * after they were gone.
      *
      * The vertical blank reader goes first for the same reason -- it must
      * stop before the devices it reads from do. */
     mVSync.reset();
     atomic_state_manager.reset();
     planner.reset();
+    connector.reset();
+    crtc.reset();
     mCompositor.reset();
     mHead.reset();
 }
@@ -120,12 +128,6 @@ drm_hwcomposer::UsablePlanes TegraDisplayPipeline::GetUsablePlanes() const {
     }
 
     return usable;
-}
-
-std::string TegraDisplayPipeline::GetName() const {
-    char buffer[32];
-    snprintf(buffer, sizeof(buffer), "tegra-dc-%d", mIndex);
-    return buffer;
 }
 
 void TegraDisplayPipeline::setCompositor(std::unique_ptr<Compositor> compositor) {
