@@ -84,6 +84,20 @@ int TegraVSyncSource::waitForVSync(int64_t *outTimestampNs) {
         fd.revents = 0;
 
         int ready = poll(&fd, 1, kWaitTimeoutMs);
+
+        /* Says once, and only once, which of the two ways this is going: the
+         * controller reporting blanks, or nothing arriving and the caller
+         * timing them itself. The difference is the panel's rate against a
+         * fraction of it, and from the outside the two look the same except
+         * that everything is slow. */
+        if (!mReported) {
+            mReported = true;
+            HWC_LOGI("first wait for a blank: %s",
+                     ready > 0 ? "the controller reported one"
+                               : ready == 0 ? "nothing arrived, timed out"
+                                            : strerror(errno));
+        }
+
         if (ready < 0) {
             /* Handed straight back rather than retried: a wait interrupted
              * by a signal is how the caller's thread is asked to look at

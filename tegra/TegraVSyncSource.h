@@ -59,6 +59,10 @@ private:
 
     std::unique_ptr<DcControl> mControl;
     const uint32_t mHeadHandle;
+
+    /* Whether the first wait has been reported. Only the reading thread
+     * touches it, and only ever sets it. */
+    bool mReported = false;
 };
 
 }  // namespace hwc
