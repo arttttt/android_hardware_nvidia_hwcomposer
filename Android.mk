@@ -46,6 +46,11 @@ endif
 # in BoardConfig.mk, so the decision sits with whoever is building the image
 # rather than in this repository. The calls stay compiled either way, so
 # turning tracing off cannot silently break it.
+#
+# This only decides whether the tracing is built. Whether it runs is decided
+# on the device with `setprop vendor.hwc.trace 1`, and the answer is no unless
+# asked -- a build that carries the tracing should not pay for it. See the
+# note in utils/Logging.h for what it costs when it does run.
 ifeq ($(TARGET_HWC_TRACE),true)
 LOCAL_CFLAGS += -DHWC_TRACE_ENABLED=1
 else
@@ -139,6 +144,7 @@ LOCAL_SRC_FILES := \
     stats/StatsPoller.cpp \
     utils/BacklightController.cpp \
     utils/ColorUtil.cpp \
+    utils/Logging.cpp \
     utils/SysfsBacklightController.cpp \
     utils/fd.cpp \
     utils/properties.cpp \

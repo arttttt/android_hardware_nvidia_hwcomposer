@@ -29,24 +29,46 @@
 #define HWC_LOGI(...) ALOGI(__VA_ARGS__)
 
 /* Per-frame and per-call detail: what a plan contained, which descriptors
- * went where, what the hardware answered. Off by default, because at sixty
- * frames a second it drowns everything else in the log.
+ * went where, what the hardware answered.
  *
- * Switched with one line in the build:
+ * Two switches, and both have to be on. The build decides whether any of this
+ * is compiled at all:
  *     LOCAL_CFLAGS += -DHWC_TRACE_ENABLED=1
+ * and the device decides whether what was compiled actually runs:
+ *     setprop vendor.hwc.trace 1
  *
- * The call stays inside `if (false)` when disabled rather than being cut by
- * the preprocessor, so the compiler still checks the format string against
- * its arguments and then drops the whole statement. Tracing that stops
- * compiling the moment it is switched off is tracing that rots.
+ * The second exists because a line of this costs more than it looks. Writing
+ * one is a message to another process, and there are five of them in every
+ * frame -- which came to several milliseconds of a sixteen millisecond frame
+ * on this hardware, quietly taken out of the client's share of it. A build
+ * that carries the tracing should not pay for it until someone asks, and the
+ * asking is worth a restart.
+ *
+ * Read once, for the same reason: a question asked sixty times a second is
+ * itself a cost, however small the answer.
+ *
+ * The call stays inside `if (false)` when the build switch is off rather than
+ * being cut by the preprocessor, so the compiler still checks the format
+ * string against its arguments and then drops the whole statement. Tracing
+ * that stops compiling the moment it is switched off is tracing that rots.
  */
 #ifndef HWC_TRACE_ENABLED
 #define HWC_TRACE_ENABLED 0
 #endif
 
+namespace android {
+namespace hwc {
+
+/* Whether the device was asked for the trace. Answered once, on the first
+ * asking; changing it afterwards takes a restart. */
+bool TracingWanted();
+
+}  // namespace hwc
+}  // namespace android
+
 #define HWC_LOGD(...)                                                         \
     do {                                                                      \
-        if (HWC_TRACE_ENABLED)                                                \
+        if (HWC_TRACE_ENABLED && ::android::hwc::TracingWanted())             \
             ALOGD(__VA_ARGS__);                                               \
     } while (0)
 
