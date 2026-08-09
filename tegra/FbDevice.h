@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef TEGRA_FB_MODE_H
-#define TEGRA_FB_MODE_H
+#ifndef TEGRA_FB_DEVICE_H
+#define TEGRA_FB_DEVICE_H
 
 #include "display/DisplayMode.h"
 
@@ -36,7 +36,19 @@ namespace hwc {
  */
 int readDisplayMode(int index, DisplayMode *outMode);
 
+/* Powers the panel down or brings it back.
+ *
+ * Also the framebuffer device's job, and for the same reason: tegra_dc_ext
+ * posts frames but has no say over whether the display is lit.
+ *
+ * Powering down is not the same as showing nothing. The controller stops
+ * scanning out, the backlight goes off and the panel leaves self-refresh, so
+ * a flip posted afterwards will not appear -- which is why the composer
+ * tracks the power state rather than posting and hoping.
+ */
+int setPanelPowered(int index, bool powered);
+
 }  // namespace hwc
 }  // namespace android
 
-#endif  // TEGRA_FB_MODE_H
+#endif  // TEGRA_FB_DEVICE_H

@@ -36,7 +36,8 @@ LOCAL_SRC_FILES := \
     hwc/HwcLayer.cpp \
     tegra/DcControl.cpp \
     tegra/DcHead.cpp \
-    tegra/FbMode.cpp \
+    tegra/FbDevice.cpp \
+    tegra/TegraDisplayPipeline.cpp \
     tegra/TegraVSyncSource.cpp
 
 include $(BUILD_STATIC_LIBRARY)

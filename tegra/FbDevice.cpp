@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "FbMode.h"
+#include "FbDevice.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -29,7 +29,7 @@
 #include "utils/UniqueFd.h"
 
 #undef  LOG_TAG
-#define LOG_TAG "hwc-fb-mode"
+#define LOG_TAG "hwc-fb-device"
 
 namespace android {
 namespace hwc {
@@ -76,11 +76,18 @@ int32_t vsyncPeriodFrom(const struct fb_var_screeninfo &info) {
 
 }  // namespace
 
+namespace {
+
+UniqueFd openFb(int index, int flags, char *pathOut, size_t pathSize) {
+    snprintf(pathOut, pathSize, "/dev/graphics/fb%d", index);
+    return UniqueFd(::open(pathOut, flags | O_CLOEXEC));
+}
+
+}  // namespace
+
 int readDisplayMode(int index, DisplayMode *outMode) {
     char path[32];
-    snprintf(path, sizeof(path), "/dev/graphics/fb%d", index);
-
-    UniqueFd fd(::open(path, O_RDONLY | O_CLOEXEC));
+    UniqueFd fd = openFb(index, O_RDONLY, path, sizeof(path));
     if (!fd) {
         int err = -errno;
         ALOGE("%s: %s", path, strerror(-err));
@@ -110,6 +117,33 @@ int readDisplayMode(int index, DisplayMode *outMode) {
           outMode->height, 1e9f / static_cast<float>(outMode->vsyncPeriodNs),
           outMode->dpiX, outMode->dpiY);
 
+    return 0;
+}
+
+int setPanelPowered(int index, bool powered) {
+    char path[32];
+
+    /* Write access, unlike the mode read: blanking changes the hardware. */
+    UniqueFd fd = openFb(index, O_RDWR, path, sizeof(path));
+    if (!fd) {
+        int err = -errno;
+        ALOGE("%s: %s", path, strerror(-err));
+        return err;
+    }
+
+    /* POWERDOWN rather than one of the two intermediate levels. Those exist
+     * for displays that can drop their sync signals and keep the panel warm,
+     * which saves the power a backlight uses and none of the rest. This one
+     * has two useful states. */
+    const int level = powered ? FB_BLANK_UNBLANK : FB_BLANK_POWERDOWN;
+
+    if (ioctl(fd.get(), FBIOBLANK, level) < 0) {
+        int err = -errno;
+        ALOGE("%s: FBIOBLANK(%d): %s", path, level, strerror(-err));
+        return err;
+    }
+
+    ALOGI("%s: panel %s", path, powered ? "on" : "off");
     return 0;
 }
 
