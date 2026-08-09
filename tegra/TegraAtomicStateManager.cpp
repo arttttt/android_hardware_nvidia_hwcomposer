@@ -18,7 +18,6 @@
 
 #include <errno.h>
 #include <inttypes.h>
-#include <ndk/sync.h>
 #include <time.h>
 
 #include <optional>
@@ -68,37 +67,6 @@ int64_t NowNs() {
   struct timespec ts = {};
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return (static_cast<int64_t>(ts.tv_sec) * 1000000000) + ts.tv_nsec;
-}
-
-/* When a fence came due, or nothing if it has not yet.
- *
- * Read rather than waited on: the question here is whether a fence was
- * already due at a particular moment, and waiting to find out would change
- * the answer. The time comes from the fence itself, so it is when the
- * hardware finished rather than when this thread got round to asking.
- */
-std::optional<int64_t> SignalTimeNs(const SharedFd &fence) {
-  if (!fence)
-    return std::nullopt;
-
-  struct sync_file_info *info = sync_file_info(*fence);
-  if (info == nullptr)
-    return std::nullopt;
-
-  if (info->status != 1) {
-    sync_file_info_free(info);
-    return std::nullopt;
-  }
-
-  int64_t latest = 0;
-  struct sync_fence_info *each = sync_get_fence_info(info);
-  for (size_t i = 0; i < info->num_fences; i++) {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-    latest = std::max(latest, static_cast<int64_t>(each[i].timestamp_ns));
-  }
-
-  sync_file_info_free(info);
-  return latest;
 }
 
 uint32_t BlendFor(BufferBlendMode mode) {
@@ -406,23 +374,6 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
 
   const int64_t after_flatten = NowNs();
 
-  /* How long after its own flip a fence comes due, which is the whole
-   * question behind the shift below.
-   *
-   * Asked of a fence two flips old rather than the last one: a flip is queued
-   * rather than carried out, and the fence cannot come due before the driver
-   * has got to it and the panel has taken the frame. Asked one flip later the
-   * answer is always "not yet", which distinguishes nothing. Two flips leaves
-   * room for both possible answers -- about one frame, and the fence belongs
-   * to its own flip; about two, and it belongs to the flip after.
-   */
-  const std::optional<int64_t> due = SignalTimeNs(diag_fence_);
-  if (due) {
-    HWC_LOGD("flip fence: came due %" PRId64 "us after its own flip",
-             (*due - diag_posted_ns_) / 1000);
-    diag_fence_ = {};
-  }
-
   const int64_t before_flip = NowNs();
 
   hwc::UniqueFd post_fence;
@@ -439,11 +390,6 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
              "us, flip %" PRId64 "us",
              flattened_count, (after_flatten - before_flatten) / 1000,
              (after_flip - before_flip) / 1000);
-  }
-
-  if (!diag_fence_) {
-    diag_fence_ = previous_post_fence_;
-    diag_posted_ns_ = last_flip_ns_;
   }
 
   last_flip_ns_ = before_flip;
