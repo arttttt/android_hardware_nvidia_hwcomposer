@@ -29,7 +29,7 @@
 
 namespace android::drm_hwcomposer {
 
-class IDrmFbIdHandle;
+class FbIdHandle;
 
 using ILayerId = int64_t;
 
@@ -141,7 +141,7 @@ struct PresentInfo {
 
 struct LayerData {
   std::optional<BufferInfo> bi;
-  std::shared_ptr<IDrmFbIdHandle> fb;
+  std::shared_ptr<FbIdHandle> fb;
   PresentInfo pi;
   SharedFd acquire_fence;
   HwcColorspace colorspace;

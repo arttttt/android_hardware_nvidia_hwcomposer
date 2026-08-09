@@ -260,10 +260,17 @@ void DcHead::releaseWindow(uint32_t index) {
         HWC_LOGE("head %d: PUT_WINDOW(%u): %s", mIndex, index, strerror(errno));
 }
 
-int DcHead::flip(const std::vector<Window> &windows, UniqueFd *outPostFence) {
-    if (windows.empty())
-        return -EINVAL;
-
+/* Turns windows into what the controller's calls expect.
+ *
+ * Shared between asking whether a frame would go up and putting it up,
+ * because those must weigh exactly the same thing: a test of anything other
+ * than what is posted answers a question nobody asked.
+ *
+ * A free function rather than a method, so that the kernel's structure stays
+ * out of the header -- see the note there on why this class does not show it.
+ */
+static std::vector<struct tegra_dc_ext_flip_windowattr> describe(
+    const std::vector<DcHead::Window> &windows) {
     std::vector<struct tegra_dc_ext_flip_windowattr> attrs(windows.size());
 
     for (size_t i = 0; i < windows.size(); ++i) {
@@ -312,6 +319,43 @@ int DcHead::flip(const std::vector<Window> &windows, UniqueFd *outPostFence) {
          * ioctl always asks for one. -1 means the buffer is ready now. */
         dst.pre_syncpt_fd = src.preFence;
     }
+
+    return attrs;
+}
+
+int DcHead::test(const std::vector<Window> &windows) {
+    if (windows.empty())
+        return -EINVAL;
+
+    std::vector<struct tegra_dc_ext_flip_windowattr> attrs = describe(windows);
+
+    struct tegra_dc_ext_flip_3 proposal;
+    memset(&proposal, 0, sizeof(proposal));
+
+    proposal.win = reinterpret_cast<__u64>(attrs.data());
+    proposal.win_num = static_cast<__u8>(attrs.size());
+    proposal.post_syncpt_fd = -1;
+    proposal.flags = 0;
+
+    /* The controller weighs the whole set against the memory bandwidth it can
+     * command and answers without touching anything. This is the one refusal
+     * that cannot be predicted from the windows alone: each may be within
+     * what it can do while together they ask for more than there is. */
+    if (ioctl(mFd.get(), TEGRA_DC_EXT_SET_PROPOSED_BW_3, &proposal) < 0) {
+        int err = -errno;
+        HWC_LOGD("head %d: %zu window(s) will not fit: %s", mIndex,
+                 windows.size(), strerror(-err));
+        return err;
+    }
+
+    return 0;
+}
+
+int DcHead::flip(const std::vector<Window> &windows, UniqueFd *outPostFence) {
+    if (windows.empty())
+        return -EINVAL;
+
+    std::vector<struct tegra_dc_ext_flip_windowattr> attrs = describe(windows);
 
     struct tegra_dc_ext_flip_3 flip;
     memset(&flip, 0, sizeof(flip));

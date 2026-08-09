@@ -159,6 +159,19 @@ public:
      */
     int flip(const std::vector<Window> &windows, UniqueFd *outPostFence);
 
+    /* Would this frame go up?
+     *
+     * Asks the controller to weigh the same set of windows it would be given
+     * to show, and to say whether it can feed them all at once. That is the
+     * one limit no amount of reading a window's capabilities will reveal:
+     * each window on its own may be within what it can do, while together
+     * they ask more of memory than there is to give.
+     *
+     * Nothing is posted and nothing changes. Returns 0 if the frame would be
+     * accepted.
+     */
+    int test(const std::vector<Window> &windows);
+
 private:
     DcHead(UniqueFd fd, int index): mFd(std::move(fd)), mIndex(index) {}
 
