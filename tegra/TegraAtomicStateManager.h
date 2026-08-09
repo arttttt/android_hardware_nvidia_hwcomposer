@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <cutils/native_handle.h>
+
 #include <memory>
 #include <optional>
 #include <vector>
@@ -41,15 +43,30 @@ namespace android::drm_hwcomposer {
 class TegraAtomicRequest : public AtomicRequest {
  public:
   TegraAtomicRequest(std::vector<hwc::DcHead::Window> windows,
+                     std::vector<buffer_handle_t> handles,
                      bool has_composition,
                      std::optional<PowerMode> power_mode)
       : windows_(std::move(windows)),
+        handles_(std::move(handles)),
         has_composition_(has_composition),
         power_mode_(power_mode) {
   }
 
   const std::vector<hwc::DcHead::Window> &GetWindows() const {
     return windows_;
+  }
+
+  /* The buffer behind each window, as the allocator knows it, in step with
+   * GetWindows(); null where a window shows nothing.
+   *
+   * Carried because a window is described in the controller's terms and the
+   * allocator answers to none of them: preparing a buffer for the display
+   * takes its own handle. Kept beside the windows rather than inside one,
+   * because it is not something the controller is told -- it is what has to
+   * happen before the controller is told anything.
+   */
+  const std::vector<buffer_handle_t> &GetHandles() const {
+    return handles_;
   }
 
   /* Whether anything is to be shown. A commit that only changes the power
@@ -66,6 +83,7 @@ class TegraAtomicRequest : public AtomicRequest {
 
  private:
   const std::vector<hwc::DcHead::Window> windows_;
+  const std::vector<buffer_handle_t> handles_;
   const bool has_composition_;
   const std::optional<PowerMode> power_mode_;
 };

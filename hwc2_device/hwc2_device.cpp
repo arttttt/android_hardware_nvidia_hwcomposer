@@ -129,29 +129,22 @@ class Hwc2DeviceLayer : public FrontendLayerBase {
       swchain_slots_[slot_id] = bo_info.value();
     }
 
-    /* Undone here because this is the only place that has both of the two
-     * things undoing it needs: the buffer as the allocator knows it, and the
-     * fence saying when what was drawn into it is finished.
+    /* What the GPU draws is compressed, and this display cannot read that --
+     * but flattening it is not done here. Nothing is known at this point about
+     * where the buffer is going, and most of them are not going to the display
+     * at all: a layer the planner sends to the client is composed by the GPU,
+     * which reads the compressed arrangement natively and is only slowed down
+     * by having been handed a flattened copy. Undoing it for every buffer of
+     * every frame is work thrown away several times over on every frame.
      *
-     * What the GPU draws is compressed -- it keeps a second, smaller record
-     * of each tile beside the pixels and writes only that where it can. A
-     * display that understands the arrangement reads both. This one does not,
-     * and reads the record as though it were pixels, which is the regular
-     * grid laid over a recognisable picture. So it is flattened back before
-     * the frame is described, every frame, because every frame is drawn
-     * again.
-     *
-     * The fence handed back carries the acquire fence's meaning forward,
-     * whether or not any flattening turned out to be needed. */
-    SharedFd ready;
-    NvGralloc::GetInstance()->PrepareForScanout(buffer_handle, fence_fd,
-                                                &ready);
-
+     * It is undone where that is known instead -- when the plan is turned into
+     * windows of the controller, which is exactly the set of buffers the
+     * display will read. See TegraAtomicStateManager. */
     HwcLayer::LayerProperties lp;
     lp.buffer = HwcLayer::Buffer{
         .bi = swchain_slots_[slot_id],
         .fb = importer.GetOrCreateFbId(&swchain_slots_[slot_id]),
-        .fence = std::move(ready),
+        .fence = MakeSharedFd(fence_fd),
     };
 
     return std::make_pair(lp, not_a_swapchain);

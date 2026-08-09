@@ -19,11 +19,15 @@
 #include <errno.h>
 
 #include <algorithm>
+#include <memory>
 #include <utility>
+#include <vector>
 
 #include <tegra_dc_ext.h>
 
 #include "bufferinfo/BufferInfo.h"
+#include "bufferinfo/GrallocBufferHandle.h"
+#include "bufferinfo/NvGralloc.h"
 #include "compositor/LayerData.h"
 #include "compositor/LayerToPlaneJoiningPlan.h"
 #include "display/FbIdHandle.h"
@@ -69,6 +73,23 @@ uint32_t BlendFor(BufferBlendMode mode) {
  * the controller's, rather than by teaching the planner this hardware's
  * dialect.
  */
+/* The buffer as the allocator knows it, if whoever read this one left it
+ * behind, and null otherwise.
+ *
+ * The cast is not a guess. That field exists to carry exactly this -- the
+ * handle a description was read from, kept alive as long as the description
+ * is -- and GrallocBufferHandle is the only thing in this tree that can be
+ * put in it. It is a static cast because this platform's builds turn run-time
+ * type information off, so the checked one would not link.
+ */
+buffer_handle_t NativeHandleOf(const BufferInfo &bi) {
+  if (!bi.fds_shared)
+    return nullptr;
+
+  return std::static_pointer_cast<GrallocBufferHandle>(bi.fds_shared)
+      ->GetHandle();
+}
+
 uint32_t DepthForZPos(int z_pos) {
   constexpr uint32_t kFurthestBack = 0xff;
 
@@ -184,6 +205,12 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
   for (size_t i = 0; i < available.size(); ++i)
     windows[i].index = static_cast<int32_t>(available[i]);
 
+  /* In step with the windows, and null wherever one shows nothing. This is
+   * the answer to "which buffers will the display actually read", which is
+   * not known any earlier than here and is the whole reason for carrying the
+   * handles this far. */
+  std::vector<buffer_handle_t> handles(available.size(), nullptr);
+
   if (args.composition) {
     for (const auto &joining : args.composition->plan) {
       if (!joining.plane)
@@ -201,10 +228,14 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
       if (!DescribeWindow(joining.layer, plane_id,
                           DepthForZPos(joining.z_pos), &windows[slot]))
         return nullptr;
+
+      handles[slot] = joining.layer.bi ? NativeHandleOf(*joining.layer.bi)
+                                       : nullptr;
     }
   }
 
   return std::make_unique<TegraAtomicRequest>(std::move(windows),
+                                              std::move(handles),
                                               args.composition != nullptr,
                                               args.power_mode);
 }
@@ -234,8 +265,55 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
     return 0;
   }
 
+  /* Flattened here, and only here, because this is the first point at which
+   * it is known which buffers the display will read -- and the last point
+   * before it reads them.
+   *
+   * What the GPU draws is compressed: beside the pixels it keeps a smaller
+   * record of each tile and writes only that where it can. A display that
+   * understands the arrangement reads both; this one does not, and reads the
+   * record as though it were pixels, which shows as a regular grid laid over
+   * a recognisable picture. So the buffers going to a window are flattened
+   * back, every frame, because every frame is drawn again.
+   *
+   * Only those. A layer the planner sent to the client is composed by the GPU,
+   * which reads the compressed arrangement natively and gains nothing from a
+   * flattened copy -- flattening it is a full pass over the screen thrown
+   * away, and there were several of them in every frame.
+   *
+   * Not done while a plan is merely being weighed, either: the planner asks
+   * whether a frame would go up several times before settling on one, and
+   * doing the work for each of those would be worse than doing it once for
+   * every buffer.
+   */
+  std::vector<hwc::DcHead::Window> windows = tegra.GetWindows();
+  const std::vector<buffer_handle_t> &handles = tegra.GetHandles();
+
+  /* Held until the flip has been made. The controller waits on these before
+   * reading, and a fence closed while it is still waited on is a frame shown
+   * before it was finished. */
+  std::vector<SharedFd> flattened;
+  flattened.reserve(windows.size());
+
+  for (size_t i = 0; i < windows.size() && i < handles.size(); ++i) {
+    if (handles[i] == nullptr || windows[i].bufferFd == 0)
+      continue;
+
+    SharedFd ready;
+    NvGralloc::GetInstance()->PrepareForScanout(handles[i],
+                                                windows[i].preFence, &ready);
+
+    /* Nothing handed back means nothing to wait for beyond what was already
+     * being waited for, so the window keeps the fence it came with. */
+    if (!ready)
+      continue;
+
+    windows[i].preFence = *ready;
+    flattened.push_back(std::move(ready));
+  }
+
   hwc::UniqueFd post_fence;
-  int err = head_.flip(tegra.GetWindows(), &post_fence);
+  int err = head_.flip(windows, &post_fence);
   if (err)
     return err;
 

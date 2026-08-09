@@ -118,6 +118,20 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
       break;
   }
 
+  /* The buffer as the allocator knows it, carried along with the reading of
+   * it. Everything above this is told in the vocabulary the composer shares
+   * with a DRM driver -- a descriptor, a pitch, a layout -- and that is enough
+   * to hand a frame to the display. It is not enough to ask the allocator to
+   * do anything to the buffer, which takes its own handle and nothing else,
+   * and one thing does have to be asked of it: undoing the compression this
+   * display cannot read.
+   *
+   * That question is asked much later, once the plan has settled and it is
+   * known which buffers the display will actually read. This is the last place
+   * that has the handle, so this is where it is kept.
+   */
+  bi.fds_shared = Import(handle);
+
   return bi;
 }
 
