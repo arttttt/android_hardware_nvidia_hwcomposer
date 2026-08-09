@@ -35,6 +35,7 @@
 #include "display/DisplayPipeline.h"
 #include "display/VSyncSource.h"
 #include "utils/ThreadAnnotations.h"
+#include "utils/Time.h"
 #include "utils/fd.h"
 #include "utils/log.h"
 
@@ -200,7 +201,7 @@ int VSyncWorker::SyntheticWaitVBlank(int64_t *timestamp) {
   int64_t phased_timestamp = 0;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    int64_t time_now = ResourceManager::GetTimeMonotonicNs();
+    int64_t time_now = GetTimeMonotonicNs();
     phased_timestamp = GetPhasedVSync(vsync_period_ns_, time_now);
   }
 
