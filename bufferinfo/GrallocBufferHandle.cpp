@@ -29,8 +29,12 @@ namespace android::drm_hwcomposer {
 auto GrallocBufferHandle::Create(buffer_handle_t handle)
     -> std::shared_ptr<GrallocBufferHandle> {
   buffer_handle_t imported_handle{};
-  auto result = ::android::GraphicBufferMapper::get()
-                    .importBufferNoValidate(handle, &imported_handle);
+  /* importBuffer rather than importBufferNoValidate: the variant that skips
+   * validation arrived with a later mapper than this platform has, and the
+   * difference is only whether the mapper re-checks a handle it is about to
+   * take a reference to. */
+  auto result = ::android::GraphicBufferMapper::get().importBuffer(
+      handle, &imported_handle);
 
   if (result != ::android::NO_ERROR) {
     ALOGE("Failed to import buffer handle: %d", result);

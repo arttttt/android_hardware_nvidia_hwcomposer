@@ -17,7 +17,9 @@
 #include "TegraCompositor.h"
 
 #include <errno.h>
+#include <inttypes.h>
 
+#include <optional>
 #include <vector>
 
 #include <tegra_dc_ext.h>

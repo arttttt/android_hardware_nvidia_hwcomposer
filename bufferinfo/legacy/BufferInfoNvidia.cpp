@@ -54,6 +54,12 @@
 #define DRM_FORMAT_MOD_NVIDIA_TEGRA_TILED fourcc_mod_code(NVIDIA, 1)
 #endif
 
+/* Plain rows have been spelled both ways over the years, and the copy of the
+ * format header in this tree only knows the older spelling. */
+#ifndef DRM_FORMAT_MOD_LINEAR
+#define DRM_FORMAT_MOD_LINEAR DRM_FORMAT_MOD_NONE
+#endif
+
 namespace android::drm_hwcomposer {
 
 LEGACY_BUFFER_INFO_GETTER(BufferInfoNvidia);
