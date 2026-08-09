@@ -24,6 +24,7 @@
 #include "display/DisplayPipeline.h"
 #include "tegra/TegraAtomicCommitSink.h"
 #include "tegra/TegraConnector.h"
+#include "tegra/TegraDevice.h"
 #include "tegra/TegraDisplayPipeline.h"
 #include "utils/log.h"
 

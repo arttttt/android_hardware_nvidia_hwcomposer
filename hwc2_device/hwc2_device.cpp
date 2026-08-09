@@ -33,7 +33,9 @@
 #include "compositor/DisplayInfo.h"
 #include "hwc/HwcDisplay.h"
 #include "hwc/HwcLayer.h"
+#include "display/FbImporter.h"
 #include "hwc2_device/DrmHwcTwo.h"
+#include "utils/GraphicsCompat.h"
 #include "utils/Time.h"
 #include "utils/log.h"
 #include "utils/properties.h"
@@ -569,11 +571,10 @@ static int32_t GetDisplayConfigs(hwc2_device_t *device, hwc2_display_t display,
   GET_DISPLAY(display);
 
   uint32_t idx = 0;
+  /* Upstream skipped configs marked disabled here. A config no longer
+   * carries that mark -- the ones that cannot be used are left out when the
+   * list is built, which is earlier and truer. */
   for (const auto &hwc_config : idisplay->GetDisplayConfigs()) {
-    if (hwc_config.disabled) {
-      continue;
-    }
-
     if (configs != nullptr) {
       if (idx >= *num_configs) {
         break;
@@ -628,7 +629,12 @@ static int32_t SetColorMode(hwc2_device_t *device, hwc2_display_t display, int32
   // https://android.googlesource.com/platform/hardware/interfaces/+/refs/heads/main/graphics/composer/aidl/android/hardware/graphics/composer3/ColorMode.aidl
   // https://cs.android.com/android/platform/superproject/main/+/main:system/core/libsystem/include/system/graphics-base-v1.0.h;drc=7d940ae4afa450696afa25e07982f3a95e17e9b2;l=118
   // https://cs.android.com/android/platform/superproject/main/+/main:system/core/libsystem/include/system/graphics-base-v1.1.h;drc=7d940ae4afa450696afa25e07982f3a95e17e9b2;l=35
-  idisplay->SetColorMode(static_cast<ColorMode>(mode));
+  /* A colour mode now arrives with the intent it is to be rendered under.
+   * This entry point has no way to say one -- the framework only gained that
+   * later -- so it asks for the plain one, which is what a display without
+   * the choice was doing all along. */
+  idisplay->SetColorMode(static_cast<ColorMode>(mode),
+                         ui::RenderIntent::COLORIMETRIC);
   return 0;
 }
 
@@ -789,10 +795,24 @@ static int32_t SetPowerMode(hwc2_device_t *device, hwc2_display_t display,
       return static_cast<int32_t>(HWC2::Error::BadParameter);
   }
 
-  if (!idisplay->SetDisplayEnabled(mode ==
-                                   static_cast<int32_t>(HWC2::PowerMode::On))) {
-    return static_cast<int32_t>(HWC2::Error::BadParameter);
+  /* Turning a display on and off is a power mode now rather than a boolean,
+   * which is the same two states this switch has already narrowed the request
+   * to -- and it says why it refused rather than only that it did. */
+  const auto err = idisplay
+                       ->SetPowerMode(mode == static_cast<int32_t>(
+                                                  HWC2::PowerMode::On)
+                                          ? PowerMode::kOn
+                                          : PowerMode::kOff);
+  switch (err) {
+    case HwcDisplay::Error::kNone:
+      break;
+    case HwcDisplay::Error::kUnsupported:
+      return static_cast<int32_t>(HWC2::Error::Unsupported);
+    case HwcDisplay::Error::kBadParameter:
+    default:
+      return static_cast<int32_t>(HWC2::Error::BadParameter);
   }
+
   return static_cast<int32_t>(HWC2::Error::None);
 }
 
@@ -814,7 +834,12 @@ static int32_t ValidateDisplay(hwc2_device_t *device, hwc2_display_t display,
 
   auto hwc2display = GetHwc2DeviceDisplay(*idisplay);
 
-  hwc2display->changed_layers = idisplay->ValidateStagedComposition();
+  /* Validating now answers with more than the layers whose composition
+   * changed: it also says which of them the client should punch a hole for.
+   * This entry point has no way to ask for that, so only the first half is
+   * kept -- which is the whole of what it used to be given. */
+  hwc2display->changed_layers = idisplay->ValidateStagedComposition()
+                                    .changed_layers;
 
   *out_num_types = hwc2display->changed_layers.size();
   *out_num_requests = 0;
@@ -1166,7 +1191,7 @@ static int32_t SetLayerDataspace(hwc2_device_t *device, hwc2_display_t display,
   GET_LAYER(layer);
 
   HwcLayer::LayerProperties layer_properties;
-  layer_properties.color_space = Hwc2ToColorSpace(dataspace);
+  layer_properties.color_encoding = Hwc2ToColorSpace(dataspace);
   layer_properties.sample_range = Hwc2ToSampleRange(dataspace);
   ilayer->SetLayerProperties(layer_properties);
   return 0;
