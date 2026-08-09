@@ -109,6 +109,58 @@ HwcDisplay *HwcDevice::display(hwc2_display_t id) {
     return it == mDisplays.end() ? nullptr : it->second.get();
 }
 
+void HwcDevice::announceDisplays() {
+    /* The framework learns that a display exists only from this callback,
+     * and ours exists before anyone registers for it, so it is announced as
+     * soon as there is someone to tell.
+     *
+     * Never with the lock held. The call leaves this process: the service
+     * forwards it to SurfaceFlinger over binder, SurfaceFlinger answers by
+     * asking the composer about the display it has just heard of, and that
+     * question arrives on another binder thread. Holding the lock across
+     * the announcement blocks that thread on it while this one waits for
+     * SurfaceFlinger to finish -- a deadlock spanning two processes, which
+     * looks from the outside like a composer that simply never comes up.
+     */
+    HWC2_PFN_HOTPLUG callback = nullptr;
+    hwc2_callback_data_t data = nullptr;
+    std::vector<hwc2_display_t> displays;
+    {
+        std::lock_guard<std::mutex> lock(mMutex);
+        callback = mHotplug;
+        data = mHotplugData;
+        for (const auto &entry : mDisplays)
+            displays.push_back(entry.first);
+    }
+
+    if (!callback)
+        return;
+
+    for (hwc2_display_t id : displays)
+        callback(data, id, HWC2_CONNECTION_CONNECTED);
+}
+
+int32_t HwcDevice::registerCallbackHook(hwc2_device_t *device,
+                                        int32_t descriptor,
+                                        hwc2_callback_data_t data,
+                                        hwc2_function_pointer_t function) {
+    HwcDevice *self = toDevice(device);
+
+    int32_t result;
+    {
+        std::lock_guard<std::mutex> lock(self->mMutex);
+        result = self->registerCallback(descriptor, data, function);
+    }
+
+    /* Outside the lock, for the reason announceDisplays explains. This is
+     * the one entry point that cannot go through the generic hook. */
+    if (result == HWC2_ERROR_NONE && descriptor == HWC2_CALLBACK_HOTPLUG &&
+        function != nullptr)
+        self->announceDisplays();
+
+    return result;
+}
+
 void HwcDevice::onVSync(int64_t timestampNs) {
     /* Copied under the lock, called outside it: the framework answers a
      * blank by calling straight back in, and holding the lock across that
@@ -131,23 +183,12 @@ int32_t HwcDevice::registerCallback(int32_t descriptor,
                                     hwc2_callback_data_t data,
                                     hwc2_function_pointer_t function) {
     switch (descriptor) {
-    case HWC2_CALLBACK_HOTPLUG: {
+    case HWC2_CALLBACK_HOTPLUG:
         mHotplugData = data;
         mHotplug = reinterpret_cast<HWC2_PFN_HOTPLUG>(function);
-
-        /* The framework learns about displays only from this callback, and
-         * ours exists before it registers. So it is announced the moment
-         * there is someone to tell.
-         *
-         * Called with the lock held, which is safe only because the
-         * framework's hotplug handler does not call back into the composer
-         * before this returns -- unlike vsync, which does. */
-        if (mHotplug) {
-            for (const auto &entry : mDisplays)
-                mHotplug(mHotplugData, entry.first, HWC2_CONNECTION_CONNECTED);
-        }
+        /* Announcing the displays happens after the lock is dropped; see
+         * registerCallbackHook. */
         return HWC2_ERROR_NONE;
-    }
     case HWC2_CALLBACK_VSYNC:
         mVsyncData = data;
         mVsync = reinterpret_cast<HWC2_PFN_VSYNC>(function);
@@ -804,9 +845,7 @@ hwc2_function_pointer_t HwcDevice::getFunctionHook(struct hwc2_device *device,
     switch (static_cast<hwc2_function_descriptor_t>(descriptor)) {
     /* Device. */
     case HWC2_FUNCTION_REGISTER_CALLBACK:
-        return asHook<HWC2_PFN_REGISTER_CALLBACK>(
-            deviceHook<&HwcDevice::registerCallback, int32_t,
-                       hwc2_callback_data_t, hwc2_function_pointer_t>);
+        return asHook<HWC2_PFN_REGISTER_CALLBACK>(registerCallbackHook);
     case HWC2_FUNCTION_CREATE_VIRTUAL_DISPLAY:
         return asHook<HWC2_PFN_CREATE_VIRTUAL_DISPLAY>(
             deviceHook<&HwcDevice::createVirtualDisplay, uint32_t, uint32_t,

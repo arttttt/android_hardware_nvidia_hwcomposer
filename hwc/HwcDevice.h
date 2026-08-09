@@ -153,6 +153,17 @@ private:
     int32_t setLayerZOrder(hwc2_display_t display, hwc2_layer_t layer,
                            uint32_t z);
 
+    /* Tells the framework about the displays that already exist. Never
+     * called with the lock held; see the definition. */
+    void announceDisplays();
+
+    /* The one entry point with its own trampoline, because it has work to do
+     * after the lock is dropped. */
+    static int32_t registerCallbackHook(hwc2_device_t *device,
+                                        int32_t descriptor,
+                                        hwc2_callback_data_t data,
+                                        hwc2_function_pointer_t function);
+
     /* Called from the vertical blank reader's thread. */
     void onVSync(int64_t timestampNs);
 
