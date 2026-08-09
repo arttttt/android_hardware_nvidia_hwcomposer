@@ -4,15 +4,22 @@ A hardware composer for NVIDIA Tegra K1 (T124), speaking the HWC2 API to
 SurfaceFlinger and driving the display controller through the `tegra_dc_ext`
 ioctl interface.
 
-**Status: nothing works yet.** The repository exists to hold the work; there is
-no loadable module here.
-
 ## Why
 
-The board ships a proprietary HWC1 module. Recent platform releases dropped the
-shim that used to bridge an HWC1 module to SurfaceFlinger, so that module can no
-longer drive the display at all — the composer has to speak HWC2 natively. That
-is what this is.
+The board ships a proprietary HWC1 module, and the platform provides an adapter
+that lets an HWC1 module serve the HWC2 API. On this hardware that adapter does
+not hold up.
+
+The failure is in fence ownership. The NVIDIA module takes the acquire fence out
+of the layer structure and zeroes the field, and closes fences internally when it
+recycles framebuffer layers — neither of which the adapter tracks. It ends up
+either closing a descriptor that was already taken, or leaking the ones it never
+learned about, at a few descriptors per composed frame. Under a steady frame rate
+the process walks into its descriptor limit and SurfaceFlinger dies with it.
+
+Papering over that means fixing the adapter for one vendor's quirks. Speaking
+HWC2 natively means the fence discipline is ours and correct by construction,
+which is what this is.
 
 Target device: Xiaomi Mi Pad 1st generation, codename `mocha`.
 
