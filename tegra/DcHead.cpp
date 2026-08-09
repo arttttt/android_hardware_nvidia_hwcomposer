@@ -156,6 +156,20 @@ int DcHead::flip(const std::vector<Window> &windows, UniqueFd *outPostFence) {
         dst.out_w = static_cast<__u32>(src.outWidth);
         dst.out_h = static_cast<__u32>(src.outHeight);
 
+        /* Take the new contents at the end of a frame rather than the end of
+         * a line.
+         *
+         * Left at zero the driver treats an update that changes nothing but
+         * the address as safe to apply between two scanlines, and applies it
+         * there -- so the panel finishes the frame it started from one buffer
+         * and out of the next. That is a tear, and it shows up exactly on the
+         * frames where consecutive images differ enough to notice.
+         *
+         * Any non-zero interval asks for the vertical blank instead, which
+         * costs at most the remainder of the frame already being drawn. A
+         * composer has no use for the other trade. */
+        dst.swap_interval = 1;
+
         /* The union here is either a syncpoint id and value pair or a
          * descriptor. This flip always means the descriptor: the driver
          * decides by whether the caller wants a post fence back, and this
