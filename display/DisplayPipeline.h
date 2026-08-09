@@ -91,6 +91,26 @@ struct DisplayPipeline {
    * told about the display appearing and going away. */
   virtual bool IsExternal() const = 0;
 
+  /* Which sleep states this display has, beyond simply on and off.
+   *
+   * Upstream asks its backend, the backend being the vendor-specific thing
+   * that knows how to build a pipeline for a connector on a device. Building
+   * a pipeline is what an implementation of this is for, so the questions
+   * belong here rather than to a second object that would answer for nothing
+   * else. The defaults are the ones upstream's base backend gives.
+   */
+  virtual bool SupportsDoze() const {
+    return false;
+  }
+
+  virtual bool SupportsDozeSuspend() const {
+    return false;
+  }
+
+  virtual bool SupportsSuspend() const {
+    return false;
+  }
+
   /* Where blanks come from.
    *
    * Upstream's display builds its own reader over the DRM vertical-blank
