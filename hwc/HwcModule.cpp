@@ -20,7 +20,7 @@
 #include <hardware/hardware.h>
 #include <hardware/hwcomposer2.h>
 
-#include <utils/Log.h>
+#include "utils/Logging.h"
 
 #include "hwc/HwcDevice.h"
 
@@ -34,7 +34,7 @@ namespace {
 int hwcOpen(const struct hw_module_t *module, const char *name,
             struct hw_device_t **device) {
     if (strcmp(name, HWC_HARDWARE_COMPOSER) != 0) {
-        ALOGE("asked for \"%s\", which this module does not provide", name);
+        HWC_LOGE("asked for \"%s\", which this module does not provide", name);
         return -EINVAL;
     }
 

@@ -23,7 +23,7 @@
 
 #include <tegra_dc_ext.h>
 
-#include <utils/Log.h>
+#include "utils/Logging.h"
 
 #undef  LOG_TAG
 #define LOG_TAG "hwc-vsync"
@@ -55,7 +55,7 @@ int TegraVSyncSource::enable(Callback callback) {
     int pipeFds[2];
     if (pipe2(pipeFds, O_CLOEXEC) < 0) {
         int err = -errno;
-        ALOGE("stop pipe: %s", strerror(-err));
+        HWC_LOGE("stop pipe: %s", strerror(-err));
         return err;
     }
     mStopReadFd.reset(pipeFds[0]);
@@ -113,7 +113,7 @@ int TegraVSyncSource::signalStop() {
     ssize_t written = TEMP_FAILURE_RETRY(write(mStopWriteFd.get(), &byte, 1));
     if (written < 0) {
         int err = -errno;
-        ALOGE("stop write: %s", strerror(-err));
+        HWC_LOGE("stop write: %s", strerror(-err));
         return err;
     }
     return 0;
@@ -138,7 +138,7 @@ void TegraVSyncSource::run() {
 
         int ready = TEMP_FAILURE_RETRY(poll(fds, 2, -1));
         if (ready < 0) {
-            ALOGE("poll: %s", strerror(errno));
+            HWC_LOGE("poll: %s", strerror(errno));
             return;
         }
 
@@ -153,7 +153,7 @@ void TegraVSyncSource::run() {
         DcControl::Event event;
         int err = mControl->readEvent(&event);
         if (err) {
-            ALOGE("readEvent: %s", strerror(-err));
+            HWC_LOGE("readEvent: %s", strerror(-err));
             return;
         }
 

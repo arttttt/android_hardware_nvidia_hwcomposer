@@ -18,6 +18,13 @@ LOCAL_CFLAGS := \
     -Werror \
     -std=c++17
 
+# Per-frame tracing: what a plan contained, which descriptors went where,
+# what the hardware answered. On while the composer is being brought up; set
+# to 0 for a quiet log without touching a line of code. The calls stay
+# compiled either way, so they cannot rot into something that no longer
+# builds.
+LOCAL_CFLAGS += -DHWC_TRACE_ENABLED=1
+
 LOCAL_C_INCLUDES := $(LOCAL_PATH)
 
 # The display controller interface is declared in the kernel's own

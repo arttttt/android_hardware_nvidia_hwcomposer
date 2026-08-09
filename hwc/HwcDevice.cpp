@@ -24,7 +24,7 @@
 
 #include <utility>
 
-#include <utils/Log.h>
+#include "utils/Logging.h"
 
 #include "tegra/TegraDisplayPipeline.h"
 
@@ -87,7 +87,7 @@ int HwcDevice::init() {
     std::unique_ptr<TegraDisplayPipeline> pipeline =
         TegraDisplayPipeline::create(kPrimaryHeadIndex);
     if (!pipeline) {
-        ALOGE("no display on head %d", kPrimaryHeadIndex);
+        HWC_LOGE("no display on head %d", kPrimaryHeadIndex);
         return -ENODEV;
     }
 
@@ -100,7 +100,7 @@ int HwcDevice::init() {
 
     vsync.enable([this](int64_t timestampNs) { onVSync(timestampNs); });
 
-    ALOGI("composer up, %zu display(s)", mDisplays.size());
+    HWC_LOGI("composer up, %zu display(s)", mDisplays.size());
     return 0;
 }
 

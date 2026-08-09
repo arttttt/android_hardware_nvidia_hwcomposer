@@ -21,7 +21,7 @@
 
 #include <utility>
 
-#include <utils/Log.h>
+#include "utils/Logging.h"
 
 #include "display/NullCompositor.h"
 #include "tegra/FbDevice.h"
@@ -92,7 +92,7 @@ int TegraDisplayPipeline::setPowerMode(PowerMode mode) {
 
 void TegraDisplayPipeline::setCompositor(std::unique_ptr<Compositor> compositor) {
     if (!compositor) {
-        ALOGE("refusing a null compositor; keeping the current one");
+        HWC_LOGE("refusing a null compositor; keeping the current one");
         return;
     }
     mCompositor = std::move(compositor);

@@ -21,7 +21,7 @@
 
 #include <utility>
 
-#include <utils/Log.h>
+#include "utils/Logging.h"
 
 #undef  LOG_TAG
 #define LOG_TAG "hwc-display"
@@ -93,7 +93,7 @@ int HwcDisplay::acceptChanges() {
 
 int HwcDisplay::present(UniqueFd *outPresentFence) {
     if (!mValidated) {
-        ALOGE("present without a validate");
+        HWC_LOGE("present without a validate");
         return -EINVAL;
     }
 
@@ -151,7 +151,7 @@ int HwcDisplay::present(UniqueFd *outPresentFence) {
     for (auto &entry : mLayers) {
         UniqueFd copy = presentFence.dup();
         if (!copy && presentFence)
-            ALOGE("layer %" PRIu64 ": cannot duplicate the present fence",
+            HWC_LOGE("layer %" PRIu64 ": cannot duplicate the present fence",
                   entry.first);
         entry.second.setReleaseFence(std::move(copy));
     }

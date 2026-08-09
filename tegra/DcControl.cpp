@@ -26,7 +26,7 @@
  * here; see Android.mk for why the path stops at that directory. */
 #include <tegra_dc_ext.h>
 
-#include <utils/Log.h>
+#include "utils/Logging.h"
 
 #undef  LOG_TAG
 #define LOG_TAG "hwc-dc-control"
@@ -49,7 +49,7 @@ constexpr size_t kEventBufferSize = sizeof(struct tegra_dc_ext_event) + 256;
 std::unique_ptr<DcControl> DcControl::open() {
     UniqueFd fd(::open(kControlNode, O_RDWR | O_CLOEXEC));
     if (!fd) {
-        ALOGE("%s: %s", kControlNode, strerror(errno));
+        HWC_LOGE("%s: %s", kControlNode, strerror(errno));
         return nullptr;
     }
     return std::unique_ptr<DcControl>(new DcControl(std::move(fd)));
@@ -65,7 +65,7 @@ int DcControl::outputCount(uint32_t *outCount) const {
     __u32 count = 0;
     if (ioctl(mFd.get(), TEGRA_DC_EXT_CONTROL_GET_NUM_OUTPUTS, &count) < 0) {
         int err = -errno;
-        ALOGE("GET_NUM_OUTPUTS: %s", strerror(-err));
+        HWC_LOGE("GET_NUM_OUTPUTS: %s", strerror(-err));
         return err;
     }
     *outCount = count;
@@ -83,7 +83,7 @@ int DcControl::setEventMask(uint32_t mask) {
      */
     if (ioctl(mFd.get(), TEGRA_DC_EXT_CONTROL_SET_EVENT_MASK, mask) < 0) {
         int err = -errno;
-        ALOGE("SET_EVENT_MASK(0x%x): %s", mask, strerror(-err));
+        HWC_LOGE("SET_EVENT_MASK(0x%x): %s", mask, strerror(-err));
         return err;
     }
     return 0;
@@ -96,14 +96,14 @@ int DcControl::readEvent(Event *outEvent) {
     if (got < 0)
         return -errno;
     if (static_cast<size_t>(got) < sizeof(struct tegra_dc_ext_event)) {
-        ALOGE("short event: %zd bytes", got);
+        HWC_LOGE("short event: %zd bytes", got);
         return -EIO;
     }
 
     const auto *header = reinterpret_cast<const struct tegra_dc_ext_event *>(buffer);
     const size_t payloadAvailable = static_cast<size_t>(got) - sizeof(*header);
     if (header->data_size > payloadAvailable) {
-        ALOGE("event type 0x%x claims %u payload bytes, %zu present",
+        HWC_LOGE("event type 0x%x claims %u payload bytes, %zu present",
               header->type, header->data_size, payloadAvailable);
         return -EIO;
     }

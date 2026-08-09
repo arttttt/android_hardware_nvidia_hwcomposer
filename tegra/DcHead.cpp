@@ -29,7 +29,7 @@
  * include/video rather than include/. */
 #include <tegra_dc_ext.h>
 
-#include <utils/Log.h>
+#include "utils/Logging.h"
 
 #undef  LOG_TAG
 #define LOG_TAG "hwc-dc-head"
@@ -58,7 +58,7 @@ std::unique_ptr<DcHead> DcHead::open(int index) {
 
     UniqueFd fd(::open(path, O_RDWR | O_CLOEXEC));
     if (!fd) {
-        ALOGE("%s: %s", path, strerror(errno));
+        HWC_LOGE("%s: %s", path, strerror(errno));
         return nullptr;
     }
     return std::unique_ptr<DcHead>(new DcHead(std::move(fd), index));
@@ -78,7 +78,7 @@ int DcHead::claimWindow(uint32_t index) {
 
     if (ioctl(mFd.get(), TEGRA_DC_EXT_GET_WINDOW, index) < 0) {
         int err = -errno;
-        ALOGE("head %d: GET_WINDOW(%u): %s", mIndex, index, strerror(-err));
+        HWC_LOGE("head %d: GET_WINDOW(%u): %s", mIndex, index, strerror(-err));
         return err;
     }
 
@@ -98,7 +98,7 @@ int DcHead::releaseWindow(uint32_t index) {
 
     if (ioctl(mFd.get(), TEGRA_DC_EXT_PUT_WINDOW, index) < 0) {
         int err = -errno;
-        ALOGE("head %d: PUT_WINDOW(%u): %s", mIndex, index, strerror(-err));
+        HWC_LOGE("head %d: PUT_WINDOW(%u): %s", mIndex, index, strerror(-err));
         return err;
     }
     return 0;
@@ -155,12 +155,25 @@ int DcHead::flip(const std::vector<Window> &windows, UniqueFd *outPostFence) {
      * offset. */
     flip.flags = 0;
 
+    for (const Window &window : windows) {
+        HWC_LOGD("head %d: win %d buf=%d off=%u stride=%u fmt=0x%x "
+                 "src=%.1fx%.1f+%.1f+%.1f dst=%dx%d+%d+%d z=%u pre=%d",
+                 mIndex, window.index, window.bufferFd, window.offset,
+                 window.stride, window.pixelFormat, window.sourceWidth,
+                 window.sourceHeight, window.sourceX, window.sourceY,
+                 window.outWidth, window.outHeight, window.outX, window.outY,
+                 window.z, window.preFence);
+    }
+
     if (ioctl(mFd.get(), TEGRA_DC_EXT_FLIP3, &flip) < 0) {
         int err = -errno;
-        ALOGE("head %d: FLIP3 with %zu window(s): %s", mIndex, windows.size(),
-              strerror(-err));
+        HWC_LOGE("head %d: FLIP3 with %zu window(s): %s", mIndex,
+                 windows.size(), strerror(-err));
         return err;
     }
+
+    HWC_LOGD("head %d: flipped %zu window(s), post fence %d", mIndex,
+             windows.size(), flip.post_syncpt_fd);
 
     outPostFence->reset(flip.post_syncpt_fd);
     return 0;

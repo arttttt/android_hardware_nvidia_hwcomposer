@@ -24,7 +24,7 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
-#include <utils/Log.h>
+#include "utils/Logging.h"
 
 #include "utils/UniqueFd.h"
 
@@ -90,7 +90,7 @@ int readDisplayMode(int index, DisplayMode *outMode) {
     UniqueFd fd = openFb(index, O_RDONLY, path, sizeof(path));
     if (!fd) {
         int err = -errno;
-        ALOGE("%s: %s", path, strerror(-err));
+        HWC_LOGE("%s: %s", path, strerror(-err));
         return err;
     }
 
@@ -98,12 +98,12 @@ int readDisplayMode(int index, DisplayMode *outMode) {
     memset(&info, 0, sizeof(info));
     if (ioctl(fd.get(), FBIOGET_VSCREENINFO, &info) < 0) {
         int err = -errno;
-        ALOGE("%s: FBIOGET_VSCREENINFO: %s", path, strerror(-err));
+        HWC_LOGE("%s: FBIOGET_VSCREENINFO: %s", path, strerror(-err));
         return err;
     }
 
     if (info.xres == 0 || info.yres == 0) {
-        ALOGE("%s: reports a %ux%u panel", path, info.xres, info.yres);
+        HWC_LOGE("%s: reports a %ux%u panel", path, info.xres, info.yres);
         return -EINVAL;
     }
 
@@ -113,7 +113,7 @@ int readDisplayMode(int index, DisplayMode *outMode) {
     outMode->dpiX = densityFromSize(info.xres, info.width);
     outMode->dpiY = densityFromSize(info.yres, info.height);
 
-    ALOGI("%s: %dx%d, %.2f Hz, density %d/%d", path, outMode->width,
+    HWC_LOGI("%s: %dx%d, %.2f Hz, density %d/%d", path, outMode->width,
           outMode->height, 1e9f / static_cast<float>(outMode->vsyncPeriodNs),
           outMode->dpiX, outMode->dpiY);
 
@@ -127,7 +127,7 @@ int setPanelPowered(int index, bool powered) {
     UniqueFd fd = openFb(index, O_RDWR, path, sizeof(path));
     if (!fd) {
         int err = -errno;
-        ALOGE("%s: %s", path, strerror(-err));
+        HWC_LOGE("%s: %s", path, strerror(-err));
         return err;
     }
 
@@ -139,11 +139,11 @@ int setPanelPowered(int index, bool powered) {
 
     if (ioctl(fd.get(), FBIOBLANK, level) < 0) {
         int err = -errno;
-        ALOGE("%s: FBIOBLANK(%d): %s", path, level, strerror(-err));
+        HWC_LOGE("%s: FBIOBLANK(%d): %s", path, level, strerror(-err));
         return err;
     }
 
-    ALOGI("%s: panel %s", path, powered ? "on" : "off");
+    HWC_LOGI("%s: panel %s", path, powered ? "on" : "off");
     return 0;
 }
 
