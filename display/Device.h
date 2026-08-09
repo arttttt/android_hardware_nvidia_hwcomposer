@@ -26,8 +26,10 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 /* A complete type, not a declaration: an optional of it is returned by value
  * and so has to know how large it is and how to take it apart. */
@@ -37,6 +39,7 @@ namespace android::drm_hwcomposer {
 
 class AtomicCommitSink;
 class Backend;
+class Connector;
 
 class Device {
  public:
@@ -49,6 +52,18 @@ class Device {
 
   /* What builds pipelines for this hardware, and answers what it can do. */
   virtual Backend &GetBackend() const = 0;
+
+  /* The displays this hardware has, in whatever order it found them.
+   *
+   * Upstream's resource manager watches the kernel and reports these as they
+   * come and go. Here they are found once and do not change, but what the
+   * composer does with them is the same: build a pipeline for each and hand
+   * it to the frontend.
+   *
+   * Owned by the device and outliving every pipeline bound to them.
+   */
+  virtual const std::vector<std::unique_ptr<Connector>> &GetConnectors()
+      const = 0;
 
   /* Where a frame for every display on this hardware goes at once. */
   virtual AtomicCommitSink &GetAtomicCommitSink() = 0;

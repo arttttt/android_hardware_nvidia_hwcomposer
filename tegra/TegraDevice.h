@@ -73,14 +73,15 @@ public:
 
     /* The panels found at start-up, in head order. What builds a display is
      * handed one of these; the pipeline it builds binds to it. */
-    const std::vector<std::unique_ptr<TegraConnector>> &connectors() const {
+    const std::vector<std::unique_ptr<drm_hwcomposer::Connector>>
+        &GetConnectors() const override {
         return mConnectors;
     }
 
 private:
     TegraDevice() = default;
 
-    std::vector<std::unique_ptr<TegraConnector>> mConnectors;
+    std::vector<std::unique_ptr<drm_hwcomposer::Connector>> mConnectors;
 
     std::unique_ptr<drm_hwcomposer::Backend> mBackend;
     std::unique_ptr<drm_hwcomposer::AtomicCommitSink> mSink;
