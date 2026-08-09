@@ -137,11 +137,12 @@ int TegraCompositor::present(const FramePlan &plan, UniqueFd *outPresentFence) {
     if (plan.isEmpty())
         return -EINVAL;
 
-    int err = test(plan);
-    if (err)
-        return err;
-
-    err = ensureWindows(plan.layerCount());
+    /* No test() here. It answers the same question by describing every
+     * buffer, and the loop below describes them again to build the windows;
+     * running both would do that work twice for every frame. Whatever test
+     * would have refused, describeWindow refuses on the same grounds, before
+     * anything has been posted. */
+    int err = ensureWindows(plan.layerCount());
     if (err) {
         HWC_LOGE("only %zu of %zu window(s) claimed", mClaimedWindows,
                  plan.layerCount());
