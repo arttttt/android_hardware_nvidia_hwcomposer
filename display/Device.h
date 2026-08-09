@@ -29,11 +29,14 @@
 #include <optional>
 #include <string>
 
+/* A complete type, not a declaration: an optional of it is returned by value
+ * and so has to know how large it is and how to take it apart. */
+#include "compositor/LayerData.h"
+
 namespace android::drm_hwcomposer {
 
 class AtomicCommitSink;
 class Backend;
-struct LayerData;
 
 class Device {
  public:
