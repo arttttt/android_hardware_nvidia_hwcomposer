@@ -47,6 +47,11 @@ LOCAL_C_INCLUDES := $(LOCAL_PATH)
 # `new`). Nothing in include/video collides with a libc header name.
 LOCAL_C_INCLUDES += $(TARGET_KERNEL_SOURCE)/include/video
 
+# Format codes and layout modifiers. Only the header is wanted -- nothing here
+# talks to a display through DRM, because this kernel has no such driver for
+# the display controller. It is the vocabulary that is shared, not the path.
+LOCAL_C_INCLUDES += external/libdrm/include
+
 LOCAL_SHARED_LIBRARIES := \
     liblog \
     libcutils \
@@ -54,13 +59,19 @@ LOCAL_SHARED_LIBRARIES := \
     libdl
 
 LOCAL_SRC_FILES := \
-    bufferinfo/BufferInfo.cpp \
+    bufferinfo/BufferInfoGetter.cpp \
+    bufferinfo/GrallocBufferHandle.cpp \
+    bufferinfo/NvGralloc.cpp \
+    bufferinfo/legacy/BufferInfoNvidia.cpp \
+    compositor/FrameTimeHistory.cpp \
+    utils/fd.cpp \
     hwc/HwcDevice.cpp \
     hwc/HwcDisplay.cpp \
     hwc/HwcLayer.cpp \
     hwc/HwcModule.cpp \
     tegra/DcControl.cpp \
     tegra/DcHead.cpp \
+    tegra/TegraFormat.cpp \
     tegra/TegraCompositor.cpp \
     tegra/FbDevice.cpp \
     tegra/TegraDisplayPipeline.cpp \

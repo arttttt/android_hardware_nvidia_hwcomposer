@@ -21,6 +21,7 @@
 
 #include "display/Compositor.h"
 #include "tegra/DcHead.h"
+#include "utils/fd.h"
 
 namespace android {
 namespace hwc {
@@ -43,7 +44,8 @@ private:
     /* Fills a window from one planned layer. The window borrows the fence it
      * is to wait on; `outFence` owns it and must outlive the flip. */
     int describeWindow(const PlannedLayer &layer, uint32_t index, uint32_t z,
-                       DcHead::Window *outWindow, UniqueFd *outFence);
+                       DcHead::Window *outWindow,
+                       drm_hwcomposer::SharedFd *outFence);
 
     DcHead &mHead;
 

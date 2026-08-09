@@ -23,6 +23,9 @@
 #include <tegra_dc_ext.h>
 
 #include "bufferinfo/BufferInfo.h"
+#include "bufferinfo/BufferInfoGetter.h"
+#include "bufferinfo/NvGralloc.h"
+#include "tegra/TegraFormat.h"
 #include "utils/Logging.h"
 
 #undef  LOG_TAG
@@ -51,21 +54,42 @@ TegraCompositor::TegraCompositor(DcHead &head): mHead(head) {}
 
 int TegraCompositor::describeWindow(const PlannedLayer &layer, uint32_t index,
                                     uint32_t z, DcHead::Window *outWindow,
-                                    UniqueFd *outFence) {
-    BufferInfo info;
-    int err = describeBuffer(layer.buffer, &info);
-    if (err)
-        return err;
+                                    drm_hwcomposer::SharedFd *outFence) {
+    /* What the buffer is, asked of whoever allocated it. Everything past this
+     * point is a translation into the terms this controller uses. */
+    auto *getter = drm_hwcomposer::BufferInfoGetter::GetInstance();
+    if (getter == nullptr)
+        return -ENOSYS;
+
+    std::optional<drm_hwcomposer::BufferInfo> info =
+        getter->GetBoInfo(layer.buffer);
+    if (!info)
+        return -EINVAL;
+
+    const uint32_t format = drm_hwcomposer::TegraFormatFromDrm(info->format);
+    if (format == 0) {
+        HWC_LOGE("format 0x%x cannot be scanned out", info->format);
+        return -EINVAL;
+    }
+
+    uint32_t flags = 0;
+    uint8_t blockHeightLog2 = 0;
+    if (!drm_hwcomposer::TegraLayoutFromModifier(info->modifiers[0], &flags,
+                                                 &blockHeightLog2)) {
+        HWC_LOGE("memory arrangement 0x%" PRIx64 " cannot be scanned out",
+                 info->modifiers[0]);
+        return -EINVAL;
+    }
 
     *outWindow = DcHead::Window{};
 
     outWindow->index = static_cast<int32_t>(index);
-    outWindow->bufferFd = info.fd;
-    outWindow->offset = info.offset;
-    outWindow->stride = info.strideBytes;
-    outWindow->pixelFormat = info.format;
-    outWindow->flags = info.flags;
-    outWindow->blockHeightLog2 = info.blockHeightLog2;
+    outWindow->bufferFd = info->prime_fds[0];
+    outWindow->offset = info->offsets[0];
+    outWindow->stride = info->pitches[0];
+    outWindow->pixelFormat = format;
+    outWindow->flags = flags;
+    outWindow->blockHeightLog2 = blockHeightLog2;
 
     outWindow->sourceX = layer.sourceCrop.left;
     outWindow->sourceY = layer.sourceCrop.top;
@@ -87,8 +111,9 @@ int TegraCompositor::describeWindow(const PlannedLayer &layer, uint32_t index,
      * The window only borrows it. Ownership stays with the caller, whose copy
      * has to outlive the flip -- the kernel takes its own reference during
      * the call and not a moment sooner. */
-    prepareForScanout(layer.buffer, layer.acquireFence, outFence);
-    outWindow->preFence = outFence->get();
+    auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
+    gralloc->PrepareForScanout(layer.buffer, layer.acquireFence, outFence);
+    outWindow->preFence = *outFence ? **outFence : -1;
 
     return 0;
 }
@@ -115,11 +140,18 @@ int TegraCompositor::test(const FramePlan &plan) {
     /* Every layer must be describable to the hardware. A buffer in a format
      * the controller cannot scan out is the one refusal worth making here,
      * and making it now rather than mid-flip is the point of asking. */
+    auto *getter = drm_hwcomposer::BufferInfoGetter::GetInstance();
+    if (getter == nullptr)
+        return -ENOSYS;
+
     for (const PlannedLayer &layer : plan.layers()) {
-        BufferInfo info;
-        int err = describeBuffer(layer.buffer, &info);
-        if (err)
-            return err;
+        std::optional<drm_hwcomposer::BufferInfo> info =
+            getter->GetBoInfo(layer.buffer);
+        if (!info)
+            return -EINVAL;
+
+        if (drm_hwcomposer::TegraFormatFromDrm(info->format) == 0)
+            return -EINVAL;
     }
 
     return 0;
@@ -160,7 +192,7 @@ int TegraCompositor::present(const FramePlan &plan, UniqueFd *outPresentFence) {
 
     /* The windows only borrow their fences; these hold them, and outlive the
      * flip by being declared before it. */
-    std::vector<UniqueFd> fences(available.size());
+    std::vector<drm_hwcomposer::SharedFd> fences(available.size());
 
     for (size_t i = 0; i < available.size(); ++i) {
         windows[i].index = static_cast<int32_t>(available[i]);
