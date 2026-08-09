@@ -22,7 +22,9 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
-#include <video/tegra_dc_ext.h>
+/* From the kernel tree, reached through include/video rather than copied
+ * here; see Android.mk for why the path stops at that directory. */
+#include <tegra_dc_ext.h>
 
 #include <utils/Log.h>
 
