@@ -2,8 +2,14 @@ LOCAL_PATH := $(call my-dir)
 
 include $(CLEAR_VARS)
 
-LOCAL_MODULE := libhwc_tegra
+# Named after the board rather than the device: the loader asks for
+# hwcomposer.<ro.board.platform>.so, and that is `tegra` here.
+LOCAL_MODULE := hwcomposer.$(TARGET_BOARD_PLATFORM)
+LOCAL_MODULE_RELATIVE_PATH := hw
 LOCAL_MODULE_TAGS := optional
+
+# A hardware module belongs on the vendor side, next to the service that
+# loads it.
 LOCAL_PROPRIETARY_MODULE := true
 
 LOCAL_CFLAGS := \
@@ -29,15 +35,18 @@ LOCAL_C_INCLUDES += $(TARGET_KERNEL_SOURCE)/include/video
 
 LOCAL_SHARED_LIBRARIES := \
     liblog \
-    libcutils
+    libcutils \
+    libhardware
 
 LOCAL_SRC_FILES := \
+    hwc/HwcDevice.cpp \
     hwc/HwcDisplay.cpp \
     hwc/HwcLayer.cpp \
+    hwc/HwcModule.cpp \
     tegra/DcControl.cpp \
     tegra/DcHead.cpp \
     tegra/FbDevice.cpp \
     tegra/TegraDisplayPipeline.cpp \
     tegra/TegraVSyncSource.cpp
 
-include $(BUILD_STATIC_LIBRARY)
+include $(BUILD_SHARED_LIBRARY)
