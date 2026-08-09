@@ -81,3 +81,39 @@ sides.
   compositor/LayerToPlaneJoiningPlan.h
       Changed: the pipeline is forward-declared as a struct, which is what
       it is. Upstream says class and its own build only warns.
+
+  hwc2_device/hwc2_device.cpp
+      Changed: registering a callback has an entry point of its own instead
+      of the shared one, so that it can let the lock go before telling the
+      framework about a display.
+
+      Not a fork of their behaviour but an application of it: the queue
+      those events sit in exists to keep hotplug callbacks out of the main
+      mutex, and says so where it is declared. Their own call site empties
+      it while the mutex is held, which is harmless where the framework
+      defers the news and fatal where it does not.
+
+      This release does not defer it. It handles the display appearing on
+      the registering thread, asks the composer what kind of display it is
+      before returning, and checks on return that a primary display was
+      announced -- so the news can neither wait nor go out under the lock.
+      The same composer did exactly this when this release was current: it
+      called back from inside the registering call, and had no lock at all.
+
+      Correct on any release, so there is nothing here to undo later. A
+      newer framework that defers the news is served by it just as well.
+
+  compat/
+      Not upstream's at all: copies of two AOSP headers newer than the ones
+      this release ships. See compat/README, which says what they are for
+      and how to retire the directory.
+
+  utils/ThreadAnnotations.h
+  utils/Tracing.h
+  utils/GraphicsCompat.h
+  drm/drm_mode.h
+      One declaration each that this release is missing, guarded so that a
+      newer platform's own wins and the file can then be deleted. In order:
+      a lock assertion, a trace marker for a moment rather than a span, one
+      colour mode, and the way a display is told about high-dynamic-range
+      content.
