@@ -16,6 +16,7 @@
 
 #include "FbDevice.h"
 
+#include <drm/drm_mode.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/fb.h>
@@ -36,42 +37,79 @@ namespace hwc {
 
 namespace {
 
-/* Used when the panel reports no usable timing. Sixty is not a guess about
- * this hardware so much as the value every consumer copes with; a composer
- * that reported zero would have the framework dividing by it. */
-constexpr int32_t kFallbackVsyncPeriodNs = 16'666'667;
+/* Used when the panel reports no pixel clock. Sixty is not a guess about this
+ * hardware so much as the value every consumer copes with; a composer that
+ * reported zero would have the framework dividing by it. */
+constexpr uint32_t kFallbackVRefresh = 60;
 
-constexpr float kMillimetresPerInch = 25.4f;
+/* A pixel clock is quoted in picoseconds per pixel here and in kilohertz
+ * there. Pixels per second is 1e12 divided by the one, and a thousand of
+ * those is the other. */
+constexpr uint64_t kPicosecondsPerKilopixel = 1'000'000'000;
 
-/* The framework wants density in thousandths of a pixel per inch. */
-int32_t densityFromSize(uint32_t pixels, uint32_t millimetres) {
-    if (pixels == 0 || millimetres == 0)
-        return 0;
-    return static_cast<int32_t>(
-        (static_cast<float>(pixels) * kMillimetresPerInch * 1000.f) /
-        static_cast<float>(millimetres));
+/* The two ways a synchronisation pulse can be active, in both vocabularies.
+ * A framebuffer device says which are active high and leaves the rest to be
+ * read as active low; a mode says both explicitly. */
+uint32_t modeFlagsFrom(const struct fb_var_screeninfo &info) {
+    uint32_t flags = 0;
+
+    flags |= (info.sync & FB_SYNC_HOR_HIGH_ACT) ? DRM_MODE_FLAG_PHSYNC
+                                                : DRM_MODE_FLAG_NHSYNC;
+    flags |= (info.sync & FB_SYNC_VERT_HIGH_ACT) ? DRM_MODE_FLAG_PVSYNC
+                                                 : DRM_MODE_FLAG_NVSYNC;
+
+    if ((info.vmode & FB_VMODE_MASK) == FB_VMODE_INTERLACED)
+        flags |= DRM_MODE_FLAG_INTERLACE;
+    if ((info.vmode & FB_VMODE_MASK) == FB_VMODE_DOUBLE)
+        flags |= DRM_MODE_FLAG_DBLSCAN;
+
+    return flags;
 }
 
-/* Refresh comes out of the timing, not out of a field: the pixel clock is
- * picoseconds per pixel, and one frame is every pixel the panel clocks
- * including the blanking it spends not drawing. */
-int32_t vsyncPeriodFrom(const struct fb_var_screeninfo &info) {
-    if (info.pixclock == 0)
-        return kFallbackVsyncPeriodNs;
+/* Both descriptions carry the same six numbers per axis; only the naming and
+ * the order differ. A framebuffer device counts outwards from the active
+ * area -- so much before the pulse, so much of it, so much after -- while a
+ * mode counts positions along the line. Nothing is computed here that the
+ * panel did not report. */
+void fillTiming(const struct fb_var_screeninfo &info, drmModeModeInfo *mode) {
+    mode->hdisplay = static_cast<uint16_t>(info.xres);
+    mode->hsync_start = static_cast<uint16_t>(mode->hdisplay +
+                                              info.right_margin);
+    mode->hsync_end = static_cast<uint16_t>(mode->hsync_start + info.hsync_len);
+    mode->htotal = static_cast<uint16_t>(mode->hsync_end + info.left_margin);
 
-    const uint64_t totalWidth =
-        info.xres + info.left_margin + info.right_margin + info.hsync_len;
-    const uint64_t totalHeight =
-        info.yres + info.upper_margin + info.lower_margin + info.vsync_len;
+    mode->vdisplay = static_cast<uint16_t>(info.yres);
+    mode->vsync_start = static_cast<uint16_t>(mode->vdisplay +
+                                              info.lower_margin);
+    mode->vsync_end = static_cast<uint16_t>(mode->vsync_start + info.vsync_len);
+    mode->vtotal = static_cast<uint16_t>(mode->vsync_end + info.upper_margin);
 
-    const uint64_t picoseconds =
-        static_cast<uint64_t>(info.pixclock) * totalWidth * totalHeight;
-    const uint64_t nanoseconds = picoseconds / 1000;
+    mode->flags = modeFlagsFrom(info);
 
-    if (nanoseconds == 0 || nanoseconds > INT32_MAX)
-        return kFallbackVsyncPeriodNs;
+    /* The panel is soldered to this board and is the display this composer
+     * comes up in. Both of those are exactly what the two marks mean. */
+    mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
 
-    return static_cast<int32_t>(nanoseconds);
+    snprintf(mode->name, sizeof(mode->name), "%ux%u", info.xres, info.yres);
+
+    /* Refresh is left to be worked out from the clock and the totals, which
+     * is what every consumer of this structure does. Where there is no clock
+     * there is nothing to work it out from, and the field below is what gets
+     * read instead. */
+    const uint64_t pixels = static_cast<uint64_t>(mode->htotal) * mode->vtotal;
+
+    if (info.pixclock == 0 || pixels == 0) {
+        HWC_LOGW("panel reports no pixel clock; assuming %u Hz",
+                 kFallbackVRefresh);
+        mode->clock = 0;
+        mode->vrefresh = kFallbackVRefresh;
+        return;
+    }
+
+    mode->clock = static_cast<uint32_t>(kPicosecondsPerKilopixel /
+                                        info.pixclock);
+    mode->vrefresh = static_cast<uint32_t>(
+        (static_cast<uint64_t>(mode->clock) * 1000 + pixels / 2) / pixels);
 }
 
 }  // namespace
@@ -85,7 +123,7 @@ UniqueFd openFb(int index, int flags, char *pathOut, size_t pathSize) {
 
 }  // namespace
 
-int readDisplayMode(int index, DisplayMode *outMode) {
+int readPanelTiming(int index, PanelTiming *outTiming) {
     char path[32];
     UniqueFd fd = openFb(index, O_RDONLY, path, sizeof(path));
     if (!fd) {
@@ -107,15 +145,18 @@ int readDisplayMode(int index, DisplayMode *outMode) {
         return -EINVAL;
     }
 
-    outMode->width = static_cast<int32_t>(info.xres);
-    outMode->height = static_cast<int32_t>(info.yres);
-    outMode->vsyncPeriodNs = vsyncPeriodFrom(info);
-    outMode->dpiX = densityFromSize(info.xres, info.width);
-    outMode->dpiY = densityFromSize(info.yres, info.height);
+    memset(&outTiming->mode, 0, sizeof(outTiming->mode));
+    fillTiming(info, &outTiming->mode);
 
-    HWC_LOGI("%s: %dx%d, %.2f Hz, density %d/%d", path, outMode->width,
-          outMode->height, 1e9f / static_cast<float>(outMode->vsyncPeriodNs),
-          outMode->dpiX, outMode->dpiY);
+    /* Zero where the panel does not say. A display of unknown size is a fact
+     * the layers above are equipped to be told; a plausible number is not. */
+    outTiming->mmWidth = info.width;
+    outTiming->mmHeight = info.height;
+
+    const drmModeModeInfo &mode = outTiming->mode;
+    HWC_LOGI("%s: %s %ux%u total, %u kHz, ~%u Hz, %ux%u mm", path, mode.name,
+             mode.htotal, mode.vtotal, mode.clock, mode.vrefresh,
+             outTiming->mmWidth, outTiming->mmHeight);
 
     return 0;
 }

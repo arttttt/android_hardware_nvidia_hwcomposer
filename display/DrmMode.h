@@ -21,11 +21,7 @@
 #include <cstdint>
 #include <string>
 
-#include "drm/DrmUnique.h"
-
 namespace android::drm_hwcomposer {
-
-class DrmDevice;
 
 class DrmMode {
  public:
@@ -58,9 +54,6 @@ class DrmMode {
   auto GetName() const {
     return std::string(mode_.name) + "@" + std::to_string(GetVRefresh());
   }
-
-  auto CreateModeBlob(const DrmDevice &drm) const
-      -> DrmModeUserPropertyBlobUnique;
 
  private:
   drmModeModeInfo mode_;

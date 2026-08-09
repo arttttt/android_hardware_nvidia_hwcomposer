@@ -23,7 +23,7 @@
 #include <optional>
 
 #include "compositor/DisplayInfo.h"
-#include "display/DisplayMode.h"
+#include "display/DrmMode.h"
 #include "utils/fd.h"
 
 namespace android::drm_hwcomposer {
@@ -47,7 +47,7 @@ struct AtomicCommitArgs {
   bool blocking = false;
   bool teardown = false;
   bool seamless = false;
-  std::optional<DisplayMode> display_mode;
+  std::optional<DrmMode> display_mode;
   std::optional<PowerMode> power_mode;
   std::shared_ptr<LayerToPlaneJoiningPlan> composition;
   std::shared_ptr<const HalColorTransformMatrix> color_matrix;

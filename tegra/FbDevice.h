@@ -17,24 +17,43 @@
 #ifndef TEGRA_FB_DEVICE_H
 #define TEGRA_FB_DEVICE_H
 
-#include "display/DisplayMode.h"
+#include <xf86drmMode.h>
+
+#include <cstdint>
 
 namespace android {
 namespace hwc {
+
+/* Everything the panel says about itself, in the terms the composer core
+ * already speaks.
+ *
+ * The core describes a timing as a `drmModeModeInfo` and a display's size in
+ * millimetres, and it does so whether or not a DRM driver is anywhere near.
+ * The framebuffer device reports exactly those quantities under different
+ * names, so this is a change of vocabulary rather than of information.
+ */
+struct PanelTiming {
+    drmModeModeInfo mode;
+    uint32_t mmWidth;
+    uint32_t mmHeight;
+};
 
 /* Reads the panel timing for head `index` from /dev/graphics/fbN.
  *
  * The display controller's own interface has no way to ask what the panel is
  * doing: tegra_dc_ext posts frames and reports events, and every question
  * about resolution or refresh is answered by the framebuffer device that sits
- * on the same hardware. So the mode comes from there, once at start-up, and
+ * on the same hardware. So the timing comes from there, once at start-up, and
  * this composer never writes through that descriptor.
  *
- * Returns 0 on success. On a partial answer the gaps are filled rather than
- * failed on -- a panel that reports no physical size still has a resolution,
- * and refusing to drive it over a missing millimetre count would be absurd.
+ * Returns 0 on success. On a partial answer the gaps are left as zero rather
+ * than filled with invention -- a panel that reports no physical size still
+ * has a resolution, and refusing to drive it over a missing millimetre count
+ * would be absurd, but a made-up number is worse than none. A timing with no
+ * pixel clock is reported as sixty hertz, which is the one number every
+ * consumer above copes with.
  */
-int readDisplayMode(int index, DisplayMode *outMode);
+int readPanelTiming(int index, PanelTiming *outTiming);
 
 /* Powers the panel down or brings it back.
  *
