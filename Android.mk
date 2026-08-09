@@ -50,15 +50,18 @@ LOCAL_C_INCLUDES += $(TARGET_KERNEL_SOURCE)/include/video
 LOCAL_SHARED_LIBRARIES := \
     liblog \
     libcutils \
-    libhardware
+    libhardware \
+    libnvgr
 
 LOCAL_SRC_FILES := \
+    bufferinfo/BufferInfo.cpp \
     hwc/HwcDevice.cpp \
     hwc/HwcDisplay.cpp \
     hwc/HwcLayer.cpp \
     hwc/HwcModule.cpp \
     tegra/DcControl.cpp \
     tegra/DcHead.cpp \
+    tegra/TegraCompositor.cpp \
     tegra/FbDevice.cpp \
     tegra/TegraDisplayPipeline.cpp \
     tegra/TegraVSyncSource.cpp

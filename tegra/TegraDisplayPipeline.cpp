@@ -23,8 +23,8 @@
 
 #include "utils/Logging.h"
 
-#include "display/NullCompositor.h"
 #include "tegra/FbDevice.h"
+#include "tegra/TegraCompositor.h"
 
 #undef  LOG_TAG
 #define LOG_TAG "hwc-pipeline"
@@ -60,7 +60,8 @@ TegraDisplayPipeline::TegraDisplayPipeline(int index,
     : mIndex(index),
       mHead(std::move(head)),
       mVSync(std::move(vsync)),
-      mCompositor(new NullCompositor()),
+      mCompositor(new TegraCompositor(*mHead,
+                                      static_cast<uint32_t>(mode.width))),
       mModes{mode} {}
 
 TegraDisplayPipeline::~TegraDisplayPipeline() {
