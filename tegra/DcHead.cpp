@@ -136,6 +136,12 @@ const std::vector<uint32_t> &DcHead::windows() {
                          used ? "," : "", index);
 
     HWC_LOGI("head %d owns window(s) %s", mIndex, list);
+
+    /* Asked now rather than when a plan first needs it, so that what the
+     * hardware says about itself is in the log from the start -- next to the
+     * list of windows it belongs to, and before anything has depended on it. */
+    capabilities(mOwnedWindows.front());
+
     return mOwnedWindows;
 }
 
