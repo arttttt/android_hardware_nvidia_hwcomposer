@@ -32,8 +32,18 @@ sides.
 
   utils/fd.h
   utils/fd.cpp
+  utils/log.h
   compositor/DisplayInfo.h
   compositor/FrameTimeHistory.h
   compositor/FrameTimeHistory.cpp
   compositor/LayerData.h
   bufferinfo/BufferInfo.h
+  bufferinfo/BufferInfoGetter.h
+  bufferinfo/BufferInfoGetter.cpp
+  bufferinfo/GrallocBufferHandle.h
+  bufferinfo/GrallocBufferHandle.cpp
+      Changed: the handle is kept rather than imported. The mapper on this
+      platform wants a full description of the buffer alongside the handle,
+      which this function is not given; and the import is not needed here,
+      because the handle arrives over the interface into the process this
+      runs in and what reaches the display is one of its own descriptors.

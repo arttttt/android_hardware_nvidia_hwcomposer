@@ -28,26 +28,23 @@ namespace android::drm_hwcomposer {
 
 auto GrallocBufferHandle::Create(buffer_handle_t handle)
     -> std::shared_ptr<GrallocBufferHandle> {
-  buffer_handle_t imported_handle{};
-  /* importBuffer rather than importBufferNoValidate: the variant that skips
-   * validation arrived with a later mapper than this platform has, and the
-   * difference is only whether the mapper re-checks a handle it is about to
-   * take a reference to. */
-  auto result = ::android::GraphicBufferMapper::get().importBuffer(
-      handle, &imported_handle);
-
-  if (result != ::android::NO_ERROR) {
-    ALOGE("Failed to import buffer handle: %d", result);
-    return nullptr;
-  }
-  // Since GrallocBufferHandle c'tor is not public, we can't use
-  // std::make_shared.
-  return std::shared_ptr<GrallocBufferHandle>(
-      new GrallocBufferHandle(imported_handle));
+  /* Adapted: the handle is kept, not imported.
+   *
+   * Importing means asking the mapper for a reference of this process's own,
+   * which matters where a handle arrives as bare numbers and has to be made
+   * real. That is not this path. The composer is loaded into the service that
+   * receives the handle over the interface, which materialises its
+   * descriptors on the way in, and what reaches the display controller is one
+   * of those descriptors rather than anything mapped here.
+   *
+   * The import this replaces cannot be spelled on this platform in any case:
+   * the mapper here takes a full description of the buffer alongside the
+   * handle -- dimensions, format, usage, stride -- none of which this function
+   * is given, and all of which are known only to the allocator it came from.
+   */
+  return std::shared_ptr<GrallocBufferHandle>(new GrallocBufferHandle(handle));
 }
 
-GrallocBufferHandle::~GrallocBufferHandle() {
-  ::android::GraphicBufferMapper::get().freeBuffer(imported_handle_);
-}
+GrallocBufferHandle::~GrallocBufferHandle() = default;
 
 }  // namespace android::drm_hwcomposer
