@@ -39,10 +39,21 @@ namespace {
  * A wait with no limit is what the hardware invites: a panel that has been
  * powered down reports nothing and would hold the thread for ever. Ten
  * blanks at sixty hertz is long enough that a running panel never reaches
- * it, and short enough that a stopped one is noticed. Giving up is not a
- * failure -- the caller answers it by timing the blanks itself.
+ * it, and short enough that a stopped one is noticed.
+ *
+ * It is paid once, at the moment blanks stop, and not again on every wait
+ * after that. Giving up is not a failure -- the caller answers it by timing
+ * the blanks itself -- but giving up slowly, over and over, is: it turns a
+ * display with no blanks to read into a display running at whatever rate
+ * this source fails at, which is a sixth of the panel's and looks from the
+ * outside like every part of the system being slow at once.
  */
 constexpr int kWaitTimeoutMs = 166;
+
+/* And how long to wait once they are known to have stopped: not at all.
+ * The stream is still looked at, because a blank may have arrived since the
+ * last look, and that is how reporting is noticed to have resumed. */
+constexpr int kNoWaitMs = 0;
 
 constexpr int64_t kOneSecondNs = 1'000'000'000;
 
@@ -98,7 +109,7 @@ int TegraVSyncSource::waitForVSync(int64_t *outTimestampNs) {
     while (true) {
         fd.revents = 0;
 
-        int ready = poll(&fd, 1, kWaitTimeoutMs);
+        int ready = poll(&fd, 1, mReporting ? kWaitTimeoutMs : kNoWaitMs);
 
         if (ready < 0) {
             /* Handed straight back rather than retried: a wait interrupted

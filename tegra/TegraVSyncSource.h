@@ -82,6 +82,13 @@ private:
      * blanks are arriving it plainly still holds, and while they are not
      * there is no telling it from a request the driver has quietly dropped.
      *
+     * And it decides what a wait is worth. While it holds, a wait that comes
+     * up empty means something is wrong and is worth a real timeout to
+     * establish; while it does not, waiting is pure delay -- the answer is
+     * already known -- and the wait only looks, so that the caller can time
+     * the blanks itself at the panel's rate instead of at the rate this
+     * source fails.
+     *
      * Only the reading thread touches it. */
     bool mReporting = false;
 };
