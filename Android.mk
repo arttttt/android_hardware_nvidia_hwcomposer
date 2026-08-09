@@ -73,6 +73,8 @@ LOCAL_SHARED_LIBRARIES := \
     libdl
 
 LOCAL_SRC_FILES := \
+    backend/BackendManager.cpp \
+    backend/GenericBackend.cpp \
     bufferinfo/BufferInfoGetter.cpp \
     bufferinfo/GrallocBufferHandle.cpp \
     bufferinfo/NvGralloc.cpp \

@@ -27,6 +27,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace android::drm_hwcomposer {
 
@@ -37,6 +38,11 @@ struct LayerData;
 class Device {
  public:
   virtual ~Device() = default;
+
+  /* Which kind of hardware this is. Upstream reads the DRM driver's own
+   * name; it is what decides which backend gets built, and what a property
+   * override overrides. */
+  virtual std::string GetName() const = 0;
 
   /* What builds pipelines for this hardware, and answers what it can do. */
   virtual Backend &GetBackend() const = 0;
