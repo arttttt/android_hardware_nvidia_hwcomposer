@@ -24,6 +24,7 @@
 
 #include "compositor/DisplayInfo.h"
 #include "display/DrmMode.h"
+#include "display/DrmModeCompat.h"
 #include "utils/fd.h"
 
 namespace android::drm_hwcomposer {

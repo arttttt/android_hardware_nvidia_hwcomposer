@@ -42,6 +42,13 @@
 #include <string>
 #include <vector>
 
+/* Complete types rather than declarations, because the pipeline owns all
+ * three and its destructor is here: taking apart a unique pointer needs to
+ * know what it is pointing at. Upstream puts its destructor in a source file
+ * and so gets away with declarations; this one has no source file. */
+#include "backend/BackendDisplayCapabilities.h"
+#include "compositor/CompositionPlanner.h"
+#include "display/AtomicStateManager.h"
 #include "display/DrmMode.h"
 #include "display/PipelineBinding.h"
 
@@ -52,10 +59,6 @@ class VSyncSource;
 }  // namespace hwc
 
 namespace drm_hwcomposer {
-
-class AtomicStateManager;
-class BackendDisplayCapabilities;
-class CompositionPlanner;
 
 struct DisplayPipeline {
   virtual ~DisplayPipeline() = default;
