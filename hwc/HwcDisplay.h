@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2026 Artem Bambalov
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,105 +14,462 @@
  * limitations under the License.
  */
 
-#ifndef HWC_HWC_DISPLAY_H
-#define HWC_HWC_DISPLAY_H
+#pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
+#include <string>
+#include <utility>
 #include <vector>
 
-#include <cutils/native_handle.h>
+#include <ui/ColorSpace.h>
+#include <ui/GraphicTypes.h>
 
+#include "compositor/CompositionPlanner.h"
+#include "compositor/DisplayInfo.h"
+#include "compositor/ICompositorDisplay.h"
+#include "compositor/LayerData.h"
+#include "compositor/PresentedCompositionCache.h"
 #include "display/DisplayPipeline.h"
+#include "drm/drm_mode.h"
+#include "hwc/HwcDisplayConfigs.h"
 #include "hwc/HwcLayer.h"
-#include "utils/UniqueFd.h"
+#include "utils/BacklightController.h"
+#include "utils/EdidWrapper.h"
+#include "utils/fd.h"
 
-namespace android {
-namespace hwc {
+/* Upstream declares the high-dynamic-range list through a package this
+ * platform predates and aliases it into ui:: itself. Here <ui/GraphicTypes.h>
+ * above already provides ui::Hdr, so there is nothing to alias. */
 
-/* One display as the framework addresses it.
- *
- * Holds the layers, runs the frame through validate and present, and keeps
- * the small amount of state those two steps share. It knows nothing about
- * the hardware beyond the pipeline it was handed.
- *
- * The frame is a two-step handshake and the order is not advisory. The
- * framework validates, learns which layers it must draw itself, accepts
- * that answer, and only then presents. Presenting without a validate is an
- * error the framework relies on us to report, because the alternative is
- * showing a frame composed on assumptions nobody agreed to.
- */
-class HwcDisplay {
-public:
-    explicit HwcDisplay(std::unique_ptr<DisplayPipeline> pipeline);
-    ~HwcDisplay();
+namespace android::drm_hwcomposer {
 
-    HwcDisplay(const HwcDisplay &) = delete;
-    HwcDisplay &operator=(const HwcDisplay &) = delete;
+class ChangedLayer;
+template <typename T>
+class CommitStatusOr;
+class DisplayConfigurationResultReporter;
+class DisplayHotplugConnectModeDetectedAtomReporter;
+class Hwc;
+class FlatteningController;
+class HdcpController;
+class VSyncWorker;
 
-    /* Layers, addressed by the identifiers the framework was given. */
-    uint64_t createLayer();
-    int destroyLayer(uint64_t id);
-    HwcLayer *layer(uint64_t id);
+struct AtomicCommitArgs;
+struct AtomicCommitResult;
+struct CommitStatus;
+struct CompositionAttributes;
+struct CompositionStats;
+struct DisplayPipeline;
 
-    /* The buffer the framework drew the client-composed layers into, and the
-     * fence telling us when that drawing is finished. */
-    void setClientTarget(buffer_handle_t buffer, int acquireFence);
+using EdidWrapperUnique = std::unique_ptr<EdidWrapper>;
+using ColorGamut = ::android::ColorSpace;
 
-    /* One layer whose composition was decided differently from the request. */
-    struct CompositionChange {
-        uint64_t layer;
-        HwcLayer::Composition composition;
-    };
-
-    /* Decides where every layer will be composited.
-     *
-     * Fills `outChanges` with the layers given an answer differing from what
-     * was asked for. The framework reads that list, accepts it, and only
-     * then draws -- so a layer missing from it is a layer the framework
-     * believes the display will show, and which nothing will.
-     */
-    int validate(std::vector<CompositionChange> *outChanges);
-
-    /* Agrees to the answer validate gave. */
-    int acceptChanges();
-
-    /* Shows the frame. On success `outPresentFence` holds a fence that fires
-     * when it has reached the panel, and ownership passes to the caller. */
-    int present(UniqueFd *outPresentFence);
-
-    /* Per-layer fences, valid only after a successful present. */
-    std::map<uint64_t, UniqueFd> takeReleaseFences();
-
-    const std::vector<DisplayMode> &modes() const { return mPipeline->modes(); }
-    size_t activeModeIndex() const { return mPipeline->activeModeIndex(); }
-    int setActiveMode(size_t index) { return mPipeline->setActiveMode(index); }
-
-    int setPowerMode(PowerMode mode);
-    PowerMode powerMode() const { return mPowerMode; }
-
-    DisplayPipeline &pipeline() { return *mPipeline; }
-
-private:
-    std::unique_ptr<DisplayPipeline> mPipeline;
-
-    std::map<uint64_t, HwcLayer> mLayers;
-    uint64_t mNextLayerId = 1;
-
-    /* The client target is a layer in every way that matters here, so it is
-     * one: same buffer, same acquire fence, same ownership rules. */
-    HwcLayer mClientTarget;
-
-    /* Set by validate, cleared by present. What it guards is not a state
-     * machine for its own sake: presenting on a stale validate would show a
-     * frame composed against a layer set the framework has since changed. */
-    bool mValidated = false;
-
-    PowerMode mPowerMode = PowerMode::Off;
+class FrontendDisplayBase {
+ public:
+  virtual ~FrontendDisplayBase() = default;
 };
 
-}  // namespace hwc
-}  // namespace android
+inline constexpr uint32_t kPrimaryDisplay = 0;
+inline constexpr float kBrightnessUnset = -1;
 
-#endif  // HWC_HWC_DISPLAY_H
+inline constexpr ui::RenderIntent
+    kVendorBoostedRenderIntent = static_cast<ui::RenderIntent>(256);
+
+// NOLINTNEXTLINE
+class HwcDisplay : public ICompositorDisplay {
+ public:
+  enum class Error {
+    kNone,
+    kBadParameter,
+    kUnsupported,
+  };
+
+  enum ConfigError {
+    kNone,
+    kBadConfig,
+    kSeamlessNotAllowed,
+    kSeamlessNotPossible,
+    kConfigFailed
+  };
+
+  enum DisplayType { kInternal, kExternal, kVirtual };
+
+  using PowerMode = android::drm_hwcomposer::PowerMode;
+
+  HwcDisplay(DisplayHandle handle, bool is_virtual, Hwc *hwc);
+  HwcDisplay(const HwcDisplay &) = delete;
+  ~HwcDisplay() override;
+
+  auto GetColorTransformMatrix() const
+      -> std::shared_ptr<const HalColorTransformMatrix> override {
+    return color_matrix_;
+  }
+
+  void SetColorTransformMatrix(
+      const HalColorTransformMatrix &color_transform_matrix);
+
+  bool CursorPlaneNeedsColorPipeline(
+      const HwcLayer &cursor_layer) const override;
+
+  /* SetPipeline should be carefully used only by HwcTwo hotplug handlers */
+  void SetPipeline(std::shared_ptr<DisplayPipeline> pipeline);
+
+  CommitStatus TestComposition(
+      CompositionPlanner::ValidatedComposition &composition) const override;
+
+  auto GetLastPresentedComposition() const
+      -> const PresentedCompositionCache & override {
+    return last_presented_composition_;
+  }
+
+  std::vector<const HwcLayer *> GetOrderLayersByZPos() const override;
+
+  std::string Dump();
+
+  auto GetDisplayName() const -> std::string;
+
+  auto GetDisplayConfigs() const -> std::vector<HwcDisplayConfig>;
+
+  // Get the config representing the mode that has been committed to KMS.
+  auto GetCurrentConfig() const -> const HwcDisplayConfig *;
+
+  // Get the config that was last requested through SetActiveConfig and similar
+  // functions. This may differ from the GetCurrentConfig if the config change
+  // is queued up to take effect in the future.
+  auto GetLastRequestedConfig() const -> const HwcDisplayConfig *;
+
+  // Get the config that will be active during the next commit. If a config
+  // change has been staged, it will be returned iff the scheduled time has
+  // arrived. Otherwise the current config will be returned.
+  const HwcDisplayConfig *GetNextConfig() const;
+
+  // Set a config synchronously. If the requested config fails to be committed,
+  // this will return with an error. Otherwise, the config will have been
+  // committed to the kernel on successful return.
+  ConfigError SetConfig(ConfigId config);
+
+  // Queues a configuration change to take effect in the future. All queued
+  // configurations are seamless.
+  auto QueueConfig(ConfigId config, int64_t desired_time,
+                   QueuedConfigTiming *out_timing) -> ConfigError;
+
+  // Get the HwcDisplayConfig, or nullptr if none.
+  auto GetConfig(ConfigId config_id) const -> const HwcDisplayConfig *;
+
+  auto GetDisplayBoundsMm() const -> std::pair<int32_t, int32_t>;
+
+  // To be called after SetDisplayProperties. Returns an empty vector if the
+  // requested layers have been validated, otherwise the vector describes
+  // the requested composition type changes.
+  using ChangedLayer = std::pair<ILayerId, CompositionType>;
+
+  struct ValidateResult {
+    // Layers whose composition type was changed my the HWC.
+    std::vector<ChangedLayer> changed_layers;
+    // Request the client to write transparent pixels where these layers would
+    // be.
+    std::vector<ILayerId> punch_out_layers;
+  };
+  auto ValidateStagedComposition() -> ValidateResult;
+
+  // Mark previously validated properties as ready to present.
+  auto AcceptValidatedComposition() -> void;
+
+  using ReleaseFence = std::pair<ILayerId, SharedFd>;
+  // Present previously staged properties, and return fences to indicate when
+  // the new content has been presented, and when the previous buffers have
+  // been released. If |desired_present_time| is set, ensure that the
+  // composition is presented at the closest vsync to that requested time.
+  // Otherwise, present immediately.
+  auto PresentStagedComposition(std::optional<int64_t> desired_present_time,
+                                SharedFd &out_present_fence,
+                                std::vector<ReleaseFence> &out_release_fences)
+      -> bool;
+
+  // Get the edid bytes for this display. Return an empty vector on error.
+  auto GetRawEdid() const -> std::vector<uint8_t>;
+
+  // Get the port id that this display is plugged into.
+  auto GetPort() const -> uint8_t;
+
+  auto HasBacklight() const -> bool {
+    return backlight_controller_ != nullptr;
+  }
+
+  auto SetBrightness(float brightness) -> bool;
+
+  auto SetContentType(ContentType content_type) {
+    content_type_ = content_type;
+  }
+
+  // Physical displays are either internal or external.
+  auto GetDisplayType() const -> DisplayType;
+
+  // Enable or disable vsync callbacks.
+  void SetVsyncCallbacksEnabled(bool enabled);
+
+  bool GetDisplayEnabled() const;
+
+  auto GetFrontendPrivateData() -> std::shared_ptr<FrontendDisplayBase> {
+    return frontend_private_data_;
+  }
+
+  auto SetFrontendPrivateData(std::shared_ptr<FrontendDisplayBase> data) {
+    frontend_private_data_ = std::move(data);
+  }
+
+  auto CreateLayer(ILayerId new_layer_id) -> bool;
+  auto DestroyLayer(ILayerId layer_id) -> bool;
+
+  auto GetColorModes() const -> std::vector<ColorMode>;
+  auto GetRenderIntents(ColorMode color_mode) const
+      -> std::vector<ui::RenderIntent>;
+  void SetColorMode(ColorMode color_mode, ui::RenderIntent render_intent);
+
+  void GetHdrCapabilities(std::vector<ui::Hdr> *types, float *max_luminance,
+                          float *max_average_luminance,
+                          float *min_luminance) const;
+
+  auto IsHdcpPropertyPresent() -> bool;
+  auto StartHdcp() -> bool;
+  auto StopHdcp() -> bool;
+
+  bool IsWritebackSupported() const;
+  bool SetWritebackEnabled(bool enabled);
+  SharedFd GetWritebackBufferFence();
+
+  HwcLayer *get_layer(ILayerId layer) {
+    auto it = layers_.find(layer);
+    if (it == layers_.end())
+      return nullptr;
+    return &it->second;
+  }
+
+  auto layers() -> std::map<ILayerId, HwcLayer> & {
+    return layers_;
+  }
+
+  auto layers() const -> const std::map<ILayerId, HwcLayer> & {
+    return layers_;
+  }
+
+  const auto &GetPipe() const {
+    return *pipeline_;
+  }
+
+  auto &GetPipe() {
+    return *pipeline_;
+  }
+
+  size_t GetNumAvailablePlanes() const override;
+  std::shared_ptr<BindingOwner<Plane>> GetCursorPlane() const override;
+
+  // Whether the GPU should be responsible for the client CTM. (GPU is never
+  // responsible for render intent CTM).
+  bool CtmByGpu() const override;
+
+  bool ForcedScalingWithGpu() const override;
+
+  bool UseColorPipeline() const override {
+    return use_color_pipeline_;
+  };
+
+  const std::map<CompositionAttributes, CompositionStats> &comp_stats() const {
+    return comp_stats_;
+  }
+
+  /* Headless mode required to keep SurfaceFlinger alive when all display are
+   * disconnected, Without headless mode Android will continuously crash.
+   * Only single internal (primary) display is required to be in HEADLESS mode
+   * to prevent the crash. See:
+   * https://source.android.com/devices/graphics/hotplug#handling-common-scenarios
+   */
+  bool IsInHeadlessMode() const {
+    return !pipeline_;
+  }
+
+  void Deinit();
+
+  const FlatteningController *GetFlatCon() const override {
+    return flatcon_.get();
+  }
+
+  const HdcpController *GetHdcpController() const {
+    return hdcpcon_.get();
+  }
+
+  auto GetClientLayer() -> HwcLayer & {
+    return client_layer_;
+  }
+
+  const HwcLayer &GetClientLayer() const override {
+    return client_layer_;
+  }
+
+  auto &GetWritebackLayer() {
+    return writeback_layer_;
+  }
+
+  void SetVirtualDisplayResolution(uint16_t width, uint16_t height) {
+    virtual_disp_width_ = width;
+    virtual_disp_height_ = height;
+  }
+
+  auto getDisplayPhysicalOrientation() const -> std::optional<PanelOrientation>;
+
+  bool NeedsClientLayerUpdate() const;
+
+  std::pair<uint32_t, uint32_t> GetSize() const override;
+
+  // Enable or disable the display.
+  HwcDisplay::Error SetPowerMode(PowerMode mode);
+
+ private:
+  bool IsDozeSupported() const;
+  bool IsDozeSuspendSupported() const;
+  bool IsSuspendSupported() const;
+
+  void InitUseColorPipeline();
+  void InitWcgSupported();
+  void InitHdrSupported();
+  void InitForcedColorMode();
+
+  // Before CreateFrameUpdateCommit() can be called, it must be ensured that
+  // the composition's internal states are up to date and ready to create an
+  // AtomicCommitArgs.
+  void PrepareCompositionForCommit(
+      CompositionPlanner::ValidatedComposition &composition) const;
+
+  // Create AtomicCommitArgs to commit at the next vsync. Returns nullopt if
+  // such AtomicCommitArgs cannot be created due to lack of drm resources or
+  // invalid HwcDisplay or HwcLayer state.
+  // The caller must do a test commit on the returned args to ensure that the
+  // hardware can perform the commit.
+  // PrepareCompositionForCommit() must be called before this function to
+  // ensure that the composition's internal states are up to date.
+  std::optional<AtomicCommitArgs> CreateFrameUpdateCommit(
+      const CompositionPlanner::ValidatedComposition &composition) const;
+
+  // Creates a LayerToPlaneJoiningPlan for the given composition type map.
+  std::unique_ptr<LayerToPlaneJoiningPlan> CreateLayerToPlaneJoiningPlan(
+      const CompositionPlanner::CompositionTypeMap &composition_types) const;
+
+  CommitStatus CommitStagedComposition(SharedFd &out_present_fence);
+
+  // Update HwcDisplay state tracking to reflect what was committed in |a_args|.
+  // This should be called after a successful commit.
+  void ApplyCommitChanges(const AtomicCommitArgs &a_args,
+                          const AtomicCommitResult &result);
+
+  AtomicCommitArgs CreateModesetCommit(
+      const HwcDisplayConfig *config,
+      const std::optional<LayerData> &modeset_layer);
+
+  CommitStatusOr<AtomicCommitResult> ExecuteAtomicCommit(
+      AtomicCommitArgs &a_args) const;
+
+  // Sleep the current thread until |present_time| is closest to the next
+  // expected vsync time.
+  void WaitForPresentTime(int64_t present_time, uint32_t vsync_period_ns);
+
+  uint32_t GetCurrentVsyncPeriodNs() const;
+
+  // Returns a client's layer if one was already provided and its size matches
+  // the new config, otherwise allocates a new one.
+  std::optional<LayerData> GetModesetLayerData(
+      const HwcDisplayConfig *new_config);
+
+  // Seamless-tests all configs against the active config for future seamless
+  // transitions and update the config groups.
+  void SetConfigGroupsForActiveConfig();
+
+  void UpdateColorTransformMatrix();
+
+  bool Init();
+
+  void SetHdrHeadroom();
+  void SetHdrOutputMetadata(const ColorGamut &color_gamut,
+                            TransferFunction transfer_function);
+  void SetOutputType(OutputType hdr_output_type);
+
+  auto GetEdid() const -> const EdidWrapperUnique & {
+    return edid_wrapper_;
+  }
+
+  void LogModesOnHotplug();
+  void LogConfigResult(const AtomicCommitArgs &args, bool success,
+                       int64_t duration_ns) const;
+
+  HwcDisplayConfigsGenerator configs_generator_;
+  HwcDisplayConfigs configs_;
+  ConfigId active_config_id_ = 0;
+
+  Hwc *const hwc_;
+
+  EdidWrapperUnique edid_wrapper_ = std::make_unique<EdidWrapper>();
+
+  int64_t staged_mode_change_time_{};
+  std::optional<ConfigId> staged_mode_config_id_{};
+
+  std::shared_ptr<DisplayPipeline> pipeline_;
+
+  std::unique_ptr<FlatteningController> flatcon_;
+  std::unique_ptr<HdcpController> hdcpcon_;
+
+  std::unique_ptr<VSyncWorker> vsync_worker_;
+  bool vsync_event_en_{};
+
+  const DisplayHandle handle_;
+  bool is_virtual_;
+
+  std::map<ILayerId, HwcLayer> layers_;
+  HwcLayer client_layer_;
+  std::unique_ptr<HwcLayer> writeback_layer_;
+  uint16_t virtual_disp_width_{};
+  uint16_t virtual_disp_height_{};
+  std::shared_ptr<const HalColorTransformMatrix>
+      color_matrix_ = GetIdentityCtmPtr();
+  std::shared_ptr<const HalColorTransformMatrix>
+      client_color_matrix_ = GetIdentityCtmPtr();
+  // ASSERTION: render_intent_matrix_ must never have offset.
+  std::shared_ptr<const HalColorTransformMatrix>
+      render_intent_matrix_ = GetIdentityCtmPtr();
+  bool client_ctm_has_offset_ = false;
+  ContentType content_type_ = ContentType::kNoData;
+  HwcColorspace colorspace_{};
+  TransferFunction transfer_func_{};
+  int32_t min_bpc_{};
+  std::shared_ptr<hdr_output_metadata> hdr_metadata_;
+  float brightness_ = kBrightnessUnset;
+  float hdr_headroom_{};
+
+  bool has_wcg_support_ = false;
+  bool has_hdr_support_ = false;
+  bool use_color_pipeline_ = false;
+  std::optional<ColorMode> forced_color_mode_;
+
+  // Most recent result of ValidateStagedComposition. Must be kept alive until
+  // the composition is committed.
+  std::optional<CompositionPlanner::ValidatedComposition>
+      validated_composition_ = std::nullopt;
+
+  SharedFd writeback_complete_fence_;
+
+  uint32_t frame_no_ = 0;
+  std::map<CompositionAttributes, CompositionStats> comp_stats_{};
+
+  std::shared_ptr<FrontendDisplayBase> frontend_private_data_;
+
+  std::unique_ptr<DisplayHotplugConnectModeDetectedAtomReporter>
+      display_mode_reporter_;
+  std::unique_ptr<DisplayConfigurationResultReporter> config_result_reporter_;
+
+  std::unique_ptr<BacklightController> backlight_controller_;
+
+  PresentedCompositionCache last_presented_composition_;
+};
+
+}  // namespace android::drm_hwcomposer
