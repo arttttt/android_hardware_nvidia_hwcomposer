@@ -238,6 +238,42 @@ static int32_t DisplayHook(hwc2_device_t *dev, hwc2_display_t display_handle,
   return static_cast<int32_t>((display->*func)(std::forward<Args>(args)...));
 }
 
+/* Registering a callback has work to do after the lock is dropped, so it does
+ * not go through the ordinary hook.
+ *
+ * Telling the framework about a display is not something that can wait. This
+ * release checks, the moment its registering call returns, that a primary
+ * display was announced during it, and gives up if none was -- so the news
+ * has to go out on this thread, before returning.
+ *
+ * It also cannot go out under the lock. The framework handles the display
+ * appearing there and then, on this same thread, and asks the composer what
+ * kind of display it is before returning from the callback -- and that
+ * question wants the lock this call is holding.
+ *
+ * So: build everything under the lock, let the lock go, then speak. Which is
+ * what the queue those events sit in is for, and what this composer did when
+ * this release was the current one, before it had a lock to hold at all.
+ */
+static int32_t RegisterCallbackHook(hwc2_device_t *dev, int32_t descriptor,
+                                    hwc2_callback_data_t data,
+                                    hwc2_function_pointer_t function) {
+  ALOGV("Device hook: RegisterCallback");
+
+  auto *hwc = ToDrmHwcTwo(dev);
+  int32_t result = 0;
+
+  {
+    const std::unique_lock lock(hwc->GetMainLock());
+    result = static_cast<int32_t>(
+        hwc->RegisterCallback(descriptor, data, function));
+  }
+
+  hwc->FlushHotplugEvents();
+
+  return result;
+}
+
 static int HookDevClose(hw_device_t *dev) {
   // NOLINTNEXTLINE (cppcoreguidelines-pro-type-reinterpret-cast): Safe
   auto *hwc2_dev = reinterpret_cast<hwc2_device_t *>(dev);
@@ -1387,10 +1423,7 @@ static hwc2_function_pointer_t HookDevGetFunction(struct hwc2_device * /*dev*/,
     case HWC2::FunctionDescriptor::GetMaxVirtualDisplayCount:
       return (hwc2_function_pointer_t)GetMaxVirtualDisplayCount;
     case HWC2::FunctionDescriptor::RegisterCallback:
-      return ToHook<HWC2_PFN_REGISTER_CALLBACK>(
-          DeviceHook<int32_t, decltype(&DrmHwcTwo::RegisterCallback),
-                     &DrmHwcTwo::RegisterCallback, int32_t,
-                     hwc2_callback_data_t, hwc2_function_pointer_t>);
+      return ToHook<HWC2_PFN_REGISTER_CALLBACK>(RegisterCallbackHook);
 
     // Display functions
     case HWC2::FunctionDescriptor::AcceptDisplayChanges:

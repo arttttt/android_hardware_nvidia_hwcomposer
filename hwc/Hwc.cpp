@@ -181,25 +181,11 @@ bool Hwc::Init() {
    * there is no display at all. */
   FinalizeDisplayBinding();
 
-  /* And then the events are handed over, which is the part that makes any of
-   * it visible. Attaching a display only queues the news of it; until this
-   * runs the framework has been told nothing, and a framework that registered
-   * for hotplug and never heard about a primary display gives up.
-   *
-   * From a thread of its own, and that is not tidiness. This runs while the
-   * framework is registering its callbacks, and the composer's lock is held
-   * for the whole of that call. On this release the framework handles a
-   * display appearing there and then, on the thread it registered from, and
-   * asks the composer what kind of display it is before returning -- which
-   * wants the same lock. Handing the news over on the calling thread is
-   * therefore a deadlock: the framework waits for an answer that cannot be
-   * given until it returns.
-   *
-   * The queue these events sit in exists for exactly this, and says so where
-   * it is declared. Detached because there is nothing to wait for: the
-   * composer outlives every display it will ever announce.
-   */
-  std::thread([this] { FlushHotplugEvents(); }).detach();
+  /* Attaching a display only queues the news of it. Handing the queue over is
+   * deliberately not done here: it has to happen on this same thread, before
+   * the framework's registering call returns, and with the composer's lock
+   * released. Where that is arranged, and why it has to be, is at the entry
+   * point -- see the note on registering a callback. */
 
   return true;
 }
