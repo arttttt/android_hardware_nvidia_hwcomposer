@@ -24,7 +24,7 @@
 
 namespace android::drm_hwcomposer {
 
-class DrmHwcTwo : public DrmHwc {
+class DrmHwcTwo : public Hwc {
  public:
   DrmHwcTwo() = default;
   ~DrmHwcTwo() override = default;
