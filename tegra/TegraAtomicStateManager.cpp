@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include <cutils/properties.h>
 #include <tegra_dc_ext.h>
 
 #include "bufferinfo/BufferInfo.h"
@@ -40,6 +41,22 @@
 namespace android::drm_hwcomposer {
 
 namespace {
+
+/* Whether to undo the compression at all.
+ *
+ * Off, the display reads the compressed arrangement as though it were pixels
+ * and shows a regular grid over the picture -- so this is not a way to run,
+ * it is a way to measure. What flattening costs cannot be told from a build
+ * that always does it, and the question is worth answering directly rather
+ * than by inference: everything else about a frame stays exactly the same
+ * with this off, so whatever the numbers move by is what it costs.
+ *
+ * Read per frame so that it can be answered without restarting anything, and
+ * read through the same door every other setting here uses.
+ */
+bool FlatteningWanted() {
+  return property_get_bool("vendor.hwc.tegra.flatten", 1) != 0;
+}
 
 uint32_t BlendFor(BufferBlendMode mode) {
   switch (mode) {
@@ -295,7 +312,10 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   std::vector<SharedFd> flattened;
   flattened.reserve(windows.size());
 
-  for (size_t i = 0; i < windows.size() && i < handles.size(); ++i) {
+  const bool flatten = FlatteningWanted();
+
+  for (size_t i = 0; flatten && i < windows.size() && i < handles.size();
+       ++i) {
     if (handles[i] == nullptr || windows[i].bufferFd == 0)
       continue;
 
