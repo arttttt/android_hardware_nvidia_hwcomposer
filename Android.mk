@@ -72,6 +72,7 @@ LOCAL_SRC_FILES := \
     tegra/DcControl.cpp \
     tegra/DcHead.cpp \
     tegra/TegraFormat.cpp \
+    tegra/TegraPlane.cpp \
     tegra/TegraCompositor.cpp \
     tegra/FbDevice.cpp \
     tegra/TegraDisplayPipeline.cpp \
