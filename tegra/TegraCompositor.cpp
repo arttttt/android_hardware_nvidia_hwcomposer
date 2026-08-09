@@ -17,8 +17,12 @@
 #include "TegraCompositor.h"
 
 #include <errno.h>
+#include <inttypes.h>
 
 #include <vector>
+
+#include <android/sync.h>
+#include <utils/Timers.h>
 
 #include <tegra_dc_ext.h>
 
@@ -32,6 +36,10 @@ namespace android {
 namespace hwc {
 
 namespace {
+
+/* How long to wait for a buffer before giving up. Matches what the driver
+ * allows itself, so a comparison between the two is like for like. */
+constexpr int kAcquireWaitMs = 5000;
 
 uint32_t blendFor(BlendMode mode) {
     switch (mode) {
@@ -95,9 +103,38 @@ int TegraCompositor::describeWindow(const PlannedLayer &layer, int32_t index,
     outWindow->z = z;
     outWindow->blend = blendFor(layer.blend);
 
-    /* Borrowed. The plan does not own it and neither does the window: the
-     * kernel waits on it during the flip and the layer closes it later. */
-    outWindow->preFence = layer.acquireFence;
+    if (HWC_WAIT_ACQUIRE_IN_USERSPACE && layer.acquireFence >= 0) {
+        /* Wait here instead of handing the fence down.
+         *
+         * The driver waits on it for five seconds and gives up, every frame,
+         * which stalls everything behind it -- buffers come back late and the
+         * screen advances once per timeout. Waiting here answers whether the
+         * fence signals at all: if this returns quickly the fence is sound
+         * and the driver's wait is the problem, and if it times out too then
+         * nothing is ever signalling it and the fault is further up.
+         *
+         * The cost of keeping this is real -- it puts the GPU and the display
+         * in lockstep instead of letting the hardware overlap them -- so it
+         * is a measurement, not a fix.
+         */
+        const int64_t before = systemTime(SYSTEM_TIME_MONOTONIC);
+        const int waited = sync_wait(layer.acquireFence, kAcquireWaitMs);
+        const int64_t elapsedUs =
+            (systemTime(SYSTEM_TIME_MONOTONIC) - before) / 1000;
+
+        if (waited < 0)
+            HWC_LOGE("acquire fence %d did not signal in %d ms",
+                     layer.acquireFence, kAcquireWaitMs);
+        else
+            HWC_LOGD("acquire fence %d signalled after %" PRId64 " us",
+                     layer.acquireFence, elapsedUs);
+
+        outWindow->preFence = -1;
+    } else {
+        /* Borrowed. The plan does not own it and neither does the window: the
+         * kernel waits on it during the flip and the layer closes it later. */
+        outWindow->preFence = layer.acquireFence;
+    }
 
     return 0;
 }
