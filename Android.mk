@@ -18,6 +18,13 @@ LOCAL_CFLAGS := \
     -Werror \
     -std=c++17
 
+# The composer header keeps its C++ half behind these, and every user of it
+# turns them on -- the enumerations and the name-printing are what the code
+# above is written against, not the bare C typedefs.
+LOCAL_CFLAGS += \
+    -DHWC2_USE_CPP11 \
+    -DHWC2_INCLUDE_STRINGIFICATION
+
 # Per-frame tracing: what a plan contained, which descriptors went where,
 # what the hardware answered. Driven from the device tree with
 #
