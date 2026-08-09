@@ -56,11 +56,15 @@ namespace {
  * than by inference: everything else about a frame stays exactly the same
  * with this off, so whatever the numbers move by is what it costs.
  *
- * Read per frame so that it can be answered without restarting anything, and
- * read through the same door every other setting here uses.
+ * Read once. Answering it per frame would let it be changed without
+ * restarting anything, which is worth very little against asking the property
+ * store the same question sixty times a second for the life of the device --
+ * and a switch that exists to measure with is one that can afford a restart.
  */
 bool FlatteningWanted() {
-  return property_get_bool("vendor.hwc.tegra.flatten", 1) != 0;
+  static const bool wanted = property_get_bool("vendor.hwc.tegra.flatten",
+                                               1) != 0;
+  return wanted;
 }
 
 int64_t NowNs() {

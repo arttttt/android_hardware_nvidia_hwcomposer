@@ -19,6 +19,8 @@
 #include <memory>
 #include <unistd.h>
 
+#include <map>
+
 #include "bufferinfo/BufferInfo.h"
 #include "display/FbImporter.h"
 #include "tegra/TegraFbIdHandle.h"
@@ -43,14 +45,49 @@ class TegraFbImporter : public FbImporter {
     if (bo == nullptr || bo->prime_fds[0] < 0)
       return {};
 
+    /* Got before it is created, which is what the name has always promised
+     * and what this did not do: it made a fresh copy of the descriptor for
+     * every layer of every frame, and a layer showing the same buffer for a
+     * second is a hundred of them.
+     *
+     * Recognised by the object holding the buffer alive alongside its
+     * description, rather than by the descriptor number -- numbers are handed
+     * out again after they are closed, and the same number twice would be two
+     * different buffers. That object is one per buffer and lives exactly as
+     * long as the description does.
+     */
+    const auto *key = bo->fds_shared.get();
+    if (key != nullptr) {
+      auto it = fbs_.find(key);
+      if (it != fbs_.end()) {
+        if (auto held = it->second.lock())
+          return held;
+
+        /* The buffer went away and took its copy with it. Whatever is at
+         * this address now is something else. */
+        fbs_.erase(it);
+      }
+    }
+
     /* Duplicated rather than taken: the description this came from does not
      * own its descriptor and may be read again for another frame. */
     const int fd = ::dup(bo->prime_fds[0]);
     if (fd < 0)
       return {};
 
-    return std::make_shared<TegraFbIdHandle>(MakeSharedFd(fd));
+    auto fb = std::make_shared<TegraFbIdHandle>(MakeSharedFd(fd));
+
+    if (key != nullptr)
+      fbs_[key] = fb;
+
+    return fb;
   }
+
+ private:
+  /* Weakly, so that a buffer nobody is showing any more takes its copy of the
+   * descriptor with it. What is left behind is an entry that will not lock,
+   * which is removed when its address comes round again. */
+  std::map<const void *, std::weak_ptr<FbIdHandle>> fbs_;
 };
 
 }  // namespace android::drm_hwcomposer
