@@ -18,12 +18,14 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <vector>
 
 /* From the kernel tree; see Android.mk for why the include path stops at
  * include/video rather than include/. */
@@ -54,6 +56,37 @@ uint32_t toFixed(float value) {
  * than six, and asking for one past the end costs a single refused ioctl at
  * startup. */
 constexpr uint32_t kWindowSearchLimit = 6;
+
+/* How the controller spells its feature table.
+ *
+ * The call that returns the table is in the interface the kernel publishes,
+ * but the shape of what it returns is not: the codes below live in a header
+ * private to the driver (drivers/video/tegra/dc/dc_config.h) and are repeated
+ * here rather than reached for, because a composer has no business including
+ * a driver's private headers. They are read from the same kernel this builds
+ * against, and a mismatch would show as nonsense in the line logged at
+ * start-up.
+ */
+constexpr size_t kEntryArgs = 4;
+
+constexpr uint32_t kFeatureFormats = 0;
+constexpr uint32_t kFeatureMaximumSize = 2;
+constexpr uint32_t kFeatureMaximumScale = 3;
+constexpr uint32_t kFeatureLayoutType = 5;
+constexpr uint32_t kFeatureInvertType = 6;
+
+constexpr size_t kSizeMaxWidth = 0;
+constexpr size_t kSizeMinWidth = 1;
+constexpr size_t kSizeMaxHeight = 2;
+constexpr size_t kSizeMinHeight = 3;
+
+constexpr size_t kLayoutPitched = 0;
+constexpr size_t kLayoutTiled = 1;
+constexpr size_t kLayoutBlockLinear = 2;
+
+constexpr size_t kInvertH = 0;
+constexpr size_t kInvertV = 1;
+constexpr size_t kInvertScanColumn = 2;
 
 }  // namespace
 
@@ -108,6 +141,103 @@ const std::vector<uint32_t> &DcHead::windows() {
 
 bool DcHead::tryClaimWindow(uint32_t index) {
     return ioctl(mFd.get(), TEGRA_DC_EXT_GET_WINDOW, index) == 0;
+}
+
+const DcHead::WindowCapabilities *DcHead::capabilities(uint32_t index) {
+    if (!mCapabilitiesRead) {
+        mCapabilitiesRead = true;
+        if (!readCapabilities())
+            HWC_LOGE("head %d would not say what its windows can do", mIndex);
+    }
+
+    auto it = mCapabilities.find(index);
+    return it == mCapabilities.end() ? nullptr : &it->second;
+}
+
+bool DcHead::readCapabilities() {
+    /* The controller hands back its whole feature table in one go: a run of
+     * entries, each naming a window, a property of it, and up to four values.
+     *
+     * There is no way to ask how long the table is first -- the call fills
+     * whatever it is given and reports the length afterwards -- so the buffer
+     * is made large enough for any table this driver builds. A table for one
+     * head is a few entries per window.
+     */
+    constexpr size_t kMaxEntries = 256;
+
+    struct Entry {
+        __u32 window;
+        __u32 option;
+        __u32 arg[kEntryArgs];
+    };
+
+    std::vector<Entry> entries(kMaxEntries);
+
+    struct tegra_dc_ext_feature request;
+    memset(&request, 0, sizeof(request));
+    request.length = kMaxEntries;
+    request.entries = reinterpret_cast<__u32 *>(entries.data());
+
+    if (ioctl(mFd.get(), TEGRA_DC_EXT_GET_FEATURES, &request) < 0) {
+        HWC_LOGE("head %d: GET_FEATURES: %s", mIndex, strerror(errno));
+        return false;
+    }
+
+    if (request.length == 0 || request.length > kMaxEntries) {
+        HWC_LOGE("head %d: feature table of %u entries", mIndex,
+                 request.length);
+        return false;
+    }
+
+    for (size_t i = 0; i < request.length; ++i) {
+        const Entry &entry = entries[i];
+        WindowCapabilities &caps = mCapabilities[entry.window];
+
+        switch (entry.option) {
+        case kFeatureFormats:
+            /* Two words, low half then high, one bit per format code. */
+            caps.formats = static_cast<uint64_t>(entry.arg[0]) |
+                           (static_cast<uint64_t>(entry.arg[1]) << 32);
+            break;
+        case kFeatureMaximumSize:
+            caps.maxWidth = entry.arg[kSizeMaxWidth];
+            caps.minWidth = entry.arg[kSizeMinWidth];
+            caps.maxHeight = entry.arg[kSizeMaxHeight];
+            caps.minHeight = entry.arg[kSizeMinHeight];
+            break;
+        case kFeatureMaximumScale:
+            /* All four ratios are one where the window cannot resize. */
+            caps.scaling = entry.arg[0] != 1 || entry.arg[1] != 1 ||
+                           entry.arg[2] != 1 || entry.arg[3] != 1;
+            break;
+        case kFeatureLayoutType:
+            caps.pitchLayout = entry.arg[kLayoutPitched] != 0;
+            caps.tiledLayout = entry.arg[kLayoutTiled] != 0;
+            caps.blocklinearLayout = entry.arg[kLayoutBlockLinear] != 0;
+            break;
+        case kFeatureInvertType:
+            caps.invertH = entry.arg[kInvertH] != 0;
+            caps.invertV = entry.arg[kInvertV] != 0;
+            caps.scanColumn = entry.arg[kInvertScanColumn] != 0;
+            break;
+        default:
+            /* Colour conversion, filtering, field order, rotation formats.
+             * Nothing here plans around them yet, and an entry nobody reads
+             * is not an error. */
+            break;
+        }
+    }
+
+    for (const auto &entry : mCapabilities) {
+        HWC_LOGI("head %d: win %u formats 0x%" PRIx64 " up to %ux%u%s%s%s",
+                 mIndex, entry.first, entry.second.formats,
+                 entry.second.maxWidth, entry.second.maxHeight,
+                 entry.second.blocklinearLayout ? " blocklinear" : "",
+                 entry.second.tiledLayout ? " tiled" : "",
+                 entry.second.scaling ? " scaling" : "");
+    }
+
+    return true;
 }
 
 void DcHead::releaseWindow(uint32_t index) {

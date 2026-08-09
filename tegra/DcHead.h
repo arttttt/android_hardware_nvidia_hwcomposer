@@ -18,6 +18,7 @@
 #define TEGRA_DC_HEAD_H
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -93,6 +94,34 @@ public:
         int preFence = -1;
     };
 
+    /* What one window can be asked to do.
+     *
+     * The windows of a head are not alike: which formats each reads, how far
+     * it will scale, whether it understands memory arranged in blocks --
+     * these differ from one to the next, and a composer that assumed them
+     * equal would hand the hardware a frame it cannot show and find out only
+     * when the flip is refused. So they are asked for.
+     */
+    struct WindowCapabilities {
+        /* Which formats this window reads, as a bit per format code. */
+        uint64_t formats = 0;
+
+        uint32_t minWidth = 0;
+        uint32_t maxWidth = 0;
+        uint32_t minHeight = 0;
+        uint32_t maxHeight = 0;
+
+        bool pitchLayout = false;
+        bool tiledLayout = false;
+        bool blocklinearLayout = false;
+
+        bool invertH = false;
+        bool invertV = false;
+        bool scanColumn = false;
+
+        bool scaling = false;
+    };
+
     /* Opens head `index`. Returns null and logs on failure. */
     static std::unique_ptr<DcHead> open(int index);
 
@@ -115,6 +144,13 @@ public:
      */
     const std::vector<uint32_t> &windows();
 
+    /* What window `index` can do, or null if the controller would not say.
+     *
+     * Asked once and remembered: this describes the silicon, which does not
+     * change while the composer runs.
+     */
+    const WindowCapabilities *capabilities(uint32_t index);
+
     /* Posts one frame.
      *
      * Returns 0 and, in `outPostFence`, a fence that fires once the frame is
@@ -136,9 +172,17 @@ private:
     UniqueFd mFd;
     int mIndex;
 
+    /* Reads the controller's whole feature table and keeps what it says about
+     * each window. One call answers for every window, so it is done once. */
+    bool readCapabilities();
+
     /* Owned windows, ascending. Empty until the first call to windows(). */
     std::vector<uint32_t> mOwnedWindows;
     bool mWindowsDiscovered = false;
+
+    /* Indexed by window. Empty until the controller has been asked. */
+    std::map<uint32_t, WindowCapabilities> mCapabilities;
+    bool mCapabilitiesRead = false;
 };
 
 }  // namespace hwc
