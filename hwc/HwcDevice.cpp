@@ -26,6 +26,7 @@
 
 #include "utils/Logging.h"
 
+#include "bufferinfo/BufferInfoGetter.h"
 #include "tegra/TegraDisplayPipeline.h"
 
 #undef  LOG_TAG
@@ -84,6 +85,20 @@ HwcDevice::HwcDevice() {
 HwcDevice::~HwcDevice() = default;
 
 int HwcDevice::init() {
+    /* Who to ask about a buffer, decided once and for the whole composer.
+     *
+     * Which one it is depends on the board rather than on anything here: the
+     * question a display asks of a buffer is the same everywhere, and only
+     * the allocator that answers it differs. So the choice is made at start
+     * up, and every later reader takes whoever was chosen. */
+    drm_hwcomposer::BufferInfoGetter::Init(
+        drm_hwcomposer::LegacyBufferInfoGetter::CreateInstance());
+
+    if (drm_hwcomposer::BufferInfoGetter::GetInstance() == nullptr) {
+        HWC_LOGE("no allocator to ask about buffers");
+        return -ENODEV;
+    }
+
     std::unique_ptr<TegraDisplayPipeline> pipeline =
         TegraDisplayPipeline::create(kPrimaryHeadIndex);
     if (!pipeline) {
