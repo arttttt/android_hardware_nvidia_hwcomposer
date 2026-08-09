@@ -375,12 +375,23 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
     flattened.push_back(std::move(ready));
   }
 
-  /* Read before the flip, not after, because the question is what was true
-   * when this frame was posted. If the previous flip's fence is already due
-   * by now -- one frame later -- then a flip's fence comes due within its own
-   * frame, and handing the previous one out below is a frame of pretence.
-   * If it is still pending, the note below is right. */
-  const std::optional<int64_t> previous_due = SignalTimeNs(previous_post_fence_);
+  /* How long after its own flip a fence comes due, which is the whole
+   * question behind the shift below.
+   *
+   * Asked of a fence two flips old rather than the last one: a flip is queued
+   * rather than carried out, and the fence cannot come due before the driver
+   * has got to it and the panel has taken the frame. Asked one flip later the
+   * answer is always "not yet", which distinguishes nothing. Two flips leaves
+   * room for both possible answers -- about one frame, and the fence belongs
+   * to its own flip; about two, and it belongs to the flip after.
+   */
+  const std::optional<int64_t> due = SignalTimeNs(diag_fence_);
+  if (due) {
+    HWC_LOGD("flip fence: came due %" PRId64 "us after its own flip",
+             (*due - diag_posted_ns_) / 1000);
+    diag_fence_ = {};
+  }
+
   const int64_t before_flip = NowNs();
 
   hwc::UniqueFd post_fence;
@@ -388,11 +399,10 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   if (err)
     return err;
 
-  HWC_LOGD("flip: took %" PRId64 "us, previous fence %s%" PRId64 "us",
-           (NowNs() - before_flip) / 1000,
-           previous_due ? "came due " : "still pending, posted ",
-           ((previous_due ? *previous_due : before_flip) - last_flip_ns_) /
-               1000);
+  if (!diag_fence_) {
+    diag_fence_ = previous_post_fence_;
+    diag_posted_ns_ = last_flip_ns_;
+  }
 
   last_flip_ns_ = before_flip;
 

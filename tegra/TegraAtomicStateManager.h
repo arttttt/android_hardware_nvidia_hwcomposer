@@ -144,9 +144,14 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * due one flip later, so this is what a present is answered with. */
   SharedFd previous_post_fence_;
 
-  /* When the previous flip was posted, to say how long after it the fence it
-   * returned came due. Diagnostic only, and only read by the trace. */
+  /* When the last flip was posted. Diagnostic only, read by the trace. */
   int64_t last_flip_ns_ = 0;
+
+  /* A fence kept past the frame that handed it out, with the moment its own
+   * flip was posted, so the trace can say how long after that it came due.
+   * Diagnostic only; holding a copy costs a reference, not a descriptor. */
+  SharedFd diag_fence_;
+  int64_t diag_posted_ns_ = 0;
 };
 
 }  // namespace android::drm_hwcomposer
