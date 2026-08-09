@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2026 Artem Bambalov
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,96 +14,144 @@
  * limitations under the License.
  */
 
-#ifndef HWC_HWC_LAYER_H
-#define HWC_HWC_LAYER_H
+#pragma once
 
 #include <cstdint>
+#include <memory>
+#include <optional>
+#include <utility>
 
-#include <cutils/native_handle.h>
+#include "bufferinfo/BufferInfo.h"
+#include "compositor/DisplayInfo.h"
+#include "compositor/LayerData.h"
+#include "utils/fd.h"
 
-#include "display/FramePlan.h"
-#include "display/Geometry.h"
-#include "utils/UniqueFd.h"
+namespace android::drm_hwcomposer {
 
-namespace android {
-namespace hwc {
+class ICompositorDisplay;
 
-/* What the framework has told us about one layer.
- *
- * A layer is set up field by field, over many calls, and only read when the
- * frame is validated. So this is a record with setters, not an object with
- * behaviour: the composition decision belongs to whatever plans the frame,
- * and putting any of it here would scatter that decision across as many
- * places as there are layers.
- *
- * The one piece of behaviour that does belong here is the acquire fence,
- * because it is the only field the layer owns rather than copies.
- */
-class HwcLayer {
-public:
-    /* What the composer decided to do with this layer. Client means the
-     * framework must draw it into the target buffer itself; device means the
-     * display hardware will show it. */
-    enum class Composition {
-        Invalid,
-        Client,
-        Device,
-    };
-
-    void setBuffer(buffer_handle_t buffer, int acquireFence);
-
-    void setSourceCrop(const FRect &crop) { mSourceCrop = crop; }
-    void setDisplayFrame(const Rect &frame) { mDisplayFrame = frame; }
-    void setBlendMode(BlendMode blend) { mBlend = blend; }
-    void setPlaneAlpha(float alpha) { mAlpha = alpha; }
-    void setTransform(int32_t transform) { mTransform = transform; }
-    void setZOrder(uint32_t z) { mZOrder = z; }
-
-    /* What the framework asked for, and what we answered. They differ only
-     * between validate and accept, which is precisely the window in which
-     * the framework is told what changed. */
-    void setRequestedComposition(Composition type) { mRequested = type; }
-    Composition requestedComposition() const { return mRequested; }
-
-    void setActualComposition(Composition type) { mActual = type; }
-    Composition actualComposition() const { return mActual; }
-
-    buffer_handle_t buffer() const { return mBuffer; }
-    const FRect &sourceCrop() const { return mSourceCrop; }
-    const Rect &displayFrame() const { return mDisplayFrame; }
-    BlendMode blendMode() const { return mBlend; }
-    float planeAlpha() const { return mAlpha; }
-    int32_t transform() const { return mTransform; }
-    uint32_t zOrder() const { return mZOrder; }
-
-    /* Borrowed for the duration of the frame. The layer keeps ownership so
-     * that a plan can name the fence without inheriting the duty to close
-     * it, and so that a layer replaced mid-frame cannot leave a descriptor
-     * behind. -1 when the buffer needs no wait. */
-    int acquireFence() const { return mAcquireFence.get(); }
-
-    /* Handed to the framework once the frame is on screen, telling it when
-     * this layer's buffer may be reused. Ownership passes to the caller. */
-    void setReleaseFence(UniqueFd fence) { mReleaseFence = std::move(fence); }
-    UniqueFd takeReleaseFence() { return std::move(mReleaseFence); }
-
-private:
-    buffer_handle_t mBuffer = nullptr;
-    UniqueFd mAcquireFence;
-    UniqueFd mReleaseFence;
-
-    FRect mSourceCrop;
-    Rect mDisplayFrame;
-    BlendMode mBlend = BlendMode::None;
-    float mAlpha = 1.0f;
-    int32_t mTransform = 0;
-    uint32_t mZOrder = 0;
-
-    Composition mRequested = Composition::Invalid;
-    Composition mActual = Composition::Invalid;
+class FrontendLayerBase {
+ public:
+  virtual ~FrontendLayerBase() = default;
 };
 
-}  // namespace hwc
-}  // namespace android
+class HwcLayer {
+ public:
+  struct Buffer {
+    BufferInfo bi;
+    std::shared_ptr<FbIdHandle> fb;
+    SharedFd fence;
+  };
+  // A set of properties to be validated.
+  struct LayerProperties {
+    std::optional<Buffer> buffer;
+    std::optional<BufferBlendMode> blend_mode;
+    std::optional<BufferColorEncoding> color_encoding;
+    std::optional<BufferSampleRange> sample_range;
+    std::optional<HwcColorspace> colorspace;
+    std::optional<TransferFunction> transfer_func;
+    std::optional<CompositionType> composition_type;
+    std::optional<DstRectInfo> display_frame;
+    std::optional<float> alpha;
+    std::optional<SrcRectInfo> source_crop;
+    std::optional<LayerTransform> transform;
+    std::optional<uint32_t> z_order;
+    std::optional<DamageInfo> damage;
+    std::optional<float> brightness;
+  };
 
-#endif  // HWC_HWC_LAYER_H
+  explicit HwcLayer(ICompositorDisplay *parent_display);
+  CompositionType GetSfType() const {
+    return sf_type_;
+  }
+  CompositionType GetValidatedType() const {
+    return validated_type_;
+  }
+  void AcceptTypeChange() {
+    sf_type_ = validated_type_;
+  }
+  void SetValidatedType(CompositionType type) {
+    validated_type_ = type;
+  }
+  bool IsTypeChanged() const {
+    // Occluded layers are exposed as client composited to
+    // SurfaceFlinger.
+    if (sf_type_ == CompositionType::kClient &&
+        validated_type_ == CompositionType::kDeviceOccluded) {
+      return false;
+    }
+
+    return sf_type_ != validated_type_;
+  }
+
+  bool GetPriorBufferScanOutFlag() const {
+    return prior_buffer_scanout_flag_;
+  }
+
+  void SetPriorBufferScanOutFlag(bool state) {
+    prior_buffer_scanout_flag_ = state;
+  }
+
+  uint32_t GetZOrder() const {
+    return z_order_;
+  }
+
+  const LayerData &GetLayerData() const {
+    return layer_data_;
+  }
+
+  void SetLayerProperties(const LayerProperties &layer_properties);
+
+  auto GetFrontendPrivateData() -> std::shared_ptr<FrontendLayerBase> {
+    return frontend_private_data_;
+  }
+
+  auto SetFrontendPrivateData(std::shared_ptr<FrontendLayerBase> data) {
+    frontend_private_data_ = std::move(data);
+  }
+
+  // Returns the number of pixel operations this layer would require if it were
+  // client-composited.
+  uint32_t GetPixOps() const;
+
+ private:
+  void PopulateLayerData();
+
+  friend class CompositorTestUtils;
+
+  // sf_type_ stores the initial type given to us by surfaceflinger,
+  // validated_type_ stores the type after running ValidateDisplay
+  CompositionType sf_type_ = CompositionType::kInvalid;
+  CompositionType validated_type_ = CompositionType::kInvalid;
+
+  uint32_t z_order_ = 0;
+  LayerData layer_data_;
+
+  /* The following buffer data can have 2 sources:
+   * 1 - Mapper@4 metadata API
+   * 2 - HWC@2 API
+   * We keep ability to have 2 sources in drm_hwc. It may be useful for CLIENT
+   * layer, at this moment HWC@2 API can't specify blending mode for this layer,
+   * but Mapper@4 can do that
+   */
+  BufferColorEncoding color_encoding_{};
+  BufferSampleRange sample_range_{};
+  BufferBlendMode blend_mode_{};
+  HwcColorspace colorspace_{};
+  TransferFunction transfer_func_{};
+  std::optional<float> brightness_{};
+
+  bool prior_buffer_scanout_flag_{};
+
+  ICompositorDisplay *const parent_;
+
+  std::shared_ptr<FrontendLayerBase> frontend_private_data_;
+
+  bool has_buffer_set_ = false;
+
+ public:
+  void InvalidateBuffer();
+  bool IsLayerUsableAsDevice() const;
+};
+
+}  // namespace android::drm_hwcomposer
