@@ -782,12 +782,20 @@ static int32_t GetHdrCapabilities(hwc2_device_t *device, hwc2_display_t display,
   for (auto &t : temp_types) {
     switch (t) {
       case ui::Hdr::HDR10:
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
-        types[i++] = HAL_HDR_HDR10;
+        /* Counted either way; written only where there is somewhere to write
+         * -- the counting asking, again, see GetColorModes. */
+        if (types != nullptr) {
+          // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
+          types[i] = HAL_HDR_HDR10;
+        }
+        i++;
         break;
       case ui::Hdr::HLG:
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
-        types[i++] = HAL_HDR_HLG;
+        if (types != nullptr) {
+          // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
+          types[i] = HAL_HDR_HLG;
+        }
+        i++;
         break;
       default:
         // Ignore any other HDR types
@@ -808,6 +816,14 @@ static int32_t GetReleaseFences(hwc2_device_t *device, hwc2_display_t display,
   GET_DISPLAY(display);
 
   auto hwc2display = GetHwc2DeviceDisplay(*idisplay);
+
+  /* The counting asking, again -- and here nothing may be handed out on it
+   * at all: the fences are given away, and giving them away twice would have
+   * the client close each of them twice. */
+  if (out_layers == nullptr || out_fences == nullptr) {
+    *out_num_elements = hwc2display->release_fences.size();
+    return static_cast<int32_t>(HWC2::Error::None);
+  }
 
   if (*out_num_elements < hwc2display->release_fences.size()) {
     ALOGW("Overflow num_elements %d/%zu", *out_num_elements,
@@ -911,6 +927,14 @@ static int32_t GetChangedCompositionTypes(hwc2_device_t *device,
   GET_DISPLAY(display);
 
   auto hwc2display = GetHwc2DeviceDisplay(*idisplay);
+
+  /* Asked twice, the first time only to learn how much room to make -- see
+   * the note in GetColorModes. The count is what is answered then, and the
+   * answer must survive until the second asking, so nothing is cleared. */
+  if (out_layers == nullptr || out_types == nullptr) {
+    *out_num_elements = hwc2display->changed_layers.size();
+    return static_cast<int32_t>(HWC2::Error::None);
+  }
 
   if (*out_num_elements < hwc2display->changed_layers.size()) {
     ALOGW("Overflow num_elements %d/%zu", *out_num_elements,
