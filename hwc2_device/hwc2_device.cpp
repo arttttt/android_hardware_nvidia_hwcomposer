@@ -1030,7 +1030,18 @@ static int32_t PresentDisplay(hwc2_device_t *device, hwc2_display_t display,
    */
   const SayIfSlow timed("present");
 
+  /* Taken separately from the work that follows, because waiting for it and
+   * doing something are different answers to "where did the frame go". The
+   * lock is the composer's one door: every call the client makes goes through
+   * it, and one that is already inside holds up the rest. */
+  const int64_t before_lock = GetTimeMonotonicNs();
   LOCK_COMPOSER(device);
+  const int64_t waited = GetTimeMonotonicNs() - before_lock;
+  if (waited > 1000000) {
+    HWC_LOGD("present waited %" PRId64 "us for the composer lock",
+             waited / 1000);
+  }
+
   GET_DISPLAY(display);
 
   auto hwc2display = GetHwc2DeviceDisplay(*idisplay);
