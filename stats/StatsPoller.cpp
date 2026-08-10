@@ -17,6 +17,7 @@
 #include "StatsPoller.h"
 
 #include <android-base/thread_annotations.h>
+#include <pthread.h>
 
 #include <chrono>
 #include <memory>
@@ -51,6 +52,8 @@ StatsPoller::~StatsPoller() {
 }
 
 void StatsPoller::PollFunc() {
+  pthread_setname_np(pthread_self(), "HwcStats");
+
   bool thread_exit = false;
   while (!thread_exit) {
     tracker_.ReportCompositionStats(

@@ -17,6 +17,7 @@
 #include "HdcpController.h"
 
 #include <android-base/thread_annotations.h>
+#include <pthread.h>
 
 #include <algorithm>
 #include <chrono>
@@ -144,6 +145,8 @@ void HdcpController::Terminate() {
 }
 
 void HdcpController::ThreadFn() {
+  pthread_setname_np(pthread_self(), "HwcHdcp");
+
   for (;;) {
     bool fire_callback = false;
     bool early_check = false;
