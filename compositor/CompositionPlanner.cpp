@@ -71,7 +71,7 @@ CompositionPlanner::GetFlattenedComposition(
   if (flatten_reason != last_reason || layers.size() != last_count) {
     last_reason = flatten_reason;
     last_count = layers.size();
-    HWC_LOGD("plan: all %zu layer(s) to the client -- %s", layers.size(),
+    HWC_LOGX("plan: all %zu layer(s) to the client -- %s", layers.size(),
              NameOf(flatten_reason));
   }
 

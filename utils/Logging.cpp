@@ -29,5 +29,10 @@ bool TracingWanted() {
     return wanted;
 }
 
+bool ExplanationWanted() {
+    static const bool wanted = property_get_bool("vendor.hwc.explain", 0) != 0;
+    return wanted;
+}
+
 }  // namespace hwc
 }  // namespace android

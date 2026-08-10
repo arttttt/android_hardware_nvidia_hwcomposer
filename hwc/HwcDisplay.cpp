@@ -371,7 +371,7 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
     static size_t last_offered = SIZE_MAX;
     if (layers_.size() != last_offered) {
       last_offered = layers_.size();
-      HWC_LOGD("client offered %zu layer(s)%s", layers_.size(),
+      HWC_LOGX("client offered %zu layer(s)%s", layers_.size(),
                IsInHeadlessMode() ? " (headless, nothing to show them on)"
                                   : "");
     }
@@ -1550,7 +1550,7 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
 
   const int64_t t4 = GetTimeMonotonicNs();
   if (t4 - t0 > 3000000) {
-    HWC_LOGD("slow commit: prepare %" PRId64 "us, describe %" PRId64
+    HWC_LOGX("slow commit: prepare %" PRId64 "us, describe %" PRId64
              "us, execute %" PRId64 "us, apply %" PRId64 "us",
              (t1 - t0) / 1000, (t2 - t1) / 1000, (t3 - t2) / 1000,
              (t4 - t3) / 1000);

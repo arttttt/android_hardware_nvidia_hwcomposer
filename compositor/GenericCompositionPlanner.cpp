@@ -167,7 +167,7 @@ auto GenericCompositionPlanner::ValidateDisplay(
     if (on_hardware != last_on_hardware || layers.size() != last_total) {
       last_on_hardware = on_hardware;
       last_total = layers.size();
-      HWC_LOGD("plan: %zu of %zu layer(s) on the hardware", on_hardware,
+      HWC_LOGX("plan: %zu of %zu layer(s) on the hardware", on_hardware,
                layers.size());
 
       /* And which, with what they are, because the count alone does not say
@@ -185,7 +185,7 @@ auto GenericCompositionPlanner::ValidateDisplay(
         const auto& src = pi.source_crop.f_rect;
         const auto& dst = pi.display_frame.i_rect;
 
-        HWC_LOGD("  z=%zu -> %-8s src=%.0fx%.0f dst=%dx%d+%d+%d%s", z,
+        HWC_LOGX("  z=%zu -> %-8s src=%.0fx%.0f dst=%dx%d+%d+%d%s", z,
                  client ? "client" : "hardware",
                  src ? src->Width() : 0.F, src ? src->Height() : 0.F,
                  dst ? dst->Width() : 0, dst ? dst->Height() : 0,

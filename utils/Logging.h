@@ -72,4 +72,34 @@ bool TracingWanted();
             ALOGD(__VA_ARGS__);                                               \
     } while (0)
 
+/* What is said once, when something changes -- which plan was chosen, why a
+ * frame went to the client, what the hardware said it could do.
+ *
+ * A separate switch from HWC_LOGD, and the distinction is not tidiness. What
+ * HWC_LOGD guards is said several times in every frame and costs milliseconds
+ * of that frame; what this guards is said when a scene changes, which is a
+ * handful of lines over a whole session. Sharing one switch meant that seeing
+ * why a plan was made cost the same as watching every buffer go by -- and
+ * every measurement taken with it on was taken through a slowdown the size of
+ * the thing being measured.
+ *
+ * So this one can be afforded when the other cannot:
+ *     setprop vendor.hwc.explain 1
+ */
+namespace android {
+namespace hwc {
+
+/* Whether the device asked to be told what the composer decided and why.
+ * Answered once; changing it takes a restart. */
+bool ExplanationWanted();
+
+}  // namespace hwc
+}  // namespace android
+
+#define HWC_LOGX(...)                                                         \
+    do {                                                                      \
+        if (HWC_TRACE_ENABLED && ::android::hwc::ExplanationWanted())         \
+            ALOGD(__VA_ARGS__);                                               \
+    } while (0)
+
 #endif  // UTILS_LOGGING_H
