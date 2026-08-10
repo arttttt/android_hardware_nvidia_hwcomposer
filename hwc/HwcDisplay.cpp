@@ -386,15 +386,6 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
     return {};
   }
 
-  /* In current drm_hwc design in case previous frame layer was not validated as
-   * a CLIENT, it is used by display controller (Front buffer). We have to store
-   * this state to provide the CLIENT with the release fences for such buffers.
-   */
-  for (auto &l : layers_) {
-    l.second.SetPriorBufferScanOutFlag(l.second.GetValidatedType() !=
-                                       CompositionType::kClient);
-  }
-
   // Notify the flattening controller of a new frame.
   if (layers_.size() <= 1) {
     flatcon_->DisableFlattening();
@@ -583,9 +574,16 @@ auto HwcDisplay::PresentStagedComposition(
 
   vsync_worker_->AddLastPresentFence(out_present_fence);
 
+  /* Only a layer the client has just handed a new buffer has anything to
+   * release, and it is told once. Clearing here is what keeps it to once: a
+   * layer left alone for the next several frames is still showing the same
+   * buffer, and saying "you may have it back" a second time would be saying
+   * it about a buffer the controller is still reading.
+   */
   for (auto &l : layers_) {
     if (l.second.GetPriorBufferScanOutFlag()) {
       out_release_fences.emplace_back(l.first, out_present_fence);
+      l.second.ClearPriorBufferScanOutFlag();
     }
   }
 

@@ -36,6 +36,18 @@ void HwcLayer::SetLayerProperties(const LayerProperties& layer_properties) {
       layer_data_.frame_time_history.AddFrameTime();
     }
 
+    /* A new buffer has arrived, so the one before it is about to stop being
+     * needed -- and only now is there anything to release. Whether the client
+     * must wait for that release depends on where the previous buffer went:
+     * if the display controller was given it, it is still being read out of
+     * memory and the client cannot draw over it yet.
+     *
+     * The type read here is the one the last validation settled on, which is
+     * what this layer did with its PREVIOUS buffer -- the client sets buffers
+     * before asking for a new validation.
+     */
+    prior_buffer_scanout_flag_ = validated_type_ != CompositionType::kClient;
+
     has_buffer_set_ = true;
     layer_data_.bi = layer_properties.buffer->bi;
     layer_data_.fb = layer_properties.buffer->fb;
