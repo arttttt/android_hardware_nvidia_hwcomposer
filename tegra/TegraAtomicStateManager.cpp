@@ -462,15 +462,29 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   if (handed_out_fence_) {
     const std::optional<int64_t> due = SignalTimeNs(handed_out_fence_);
     if (due) {
-      constexpr int64_t kOneRefreshNs = 16663327;
-      const int64_t late = *due - handed_out_ns_;
+      /* Against the flip that is supposed to make it due, not against the
+       * moment it was handed over.
+       *
+       * The fence given away belongs to the flip before this one, and what
+       * makes it due is this flip reaching the panel. So the question is how
+       * long after this flip was posted it arrived. One refresh is the honest
+       * answer -- a flip takes effect at the next blank. Two means the fence
+       * trails the frame it belongs to by a whole frame, and everything
+       * holding a buffer behind it waits that much longer for nothing.
+       *
+       * Measured the other way, from the hand-over, a frame that was itself
+       * late drags the fence along with it and the fence takes the blame for
+       * being a symptom.
+       */
+      constexpr int64_t kTwoRefreshesNs = 33326654;
+      const int64_t after_flip = *due - handed_out_ns_;
       /* Said outright rather than behind the trace switch. That switch guards
-       * the things said about every frame, which have to be paid for whether
-       * or not anything is wrong; this is said only when something is, which
-       * is what makes it affordable. */
-      if (late > kOneRefreshNs) {
-        HWC_LOGW("release fence came due %" PRId64 "us after it was handed out",
-                 late / 1000);
+       * what is said about every frame, which is paid for whether or not
+       * anything is wrong; this is said only when something is. */
+      if (after_flip > kTwoRefreshesNs) {
+        HWC_LOGW("release fence came due %" PRId64
+                 "us after the flip that frees it",
+                 after_flip / 1000);
       }
       handed_out_fence_ = {};
     }
@@ -478,7 +492,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
 
   if (!handed_out_fence_ && previous_post_fence_) {
     handed_out_fence_ = previous_post_fence_;
-    handed_out_ns_ = NowNs();
+    /* The flip posted in this same call is what makes it due. */
+    handed_out_ns_ = before_flip;
   }
 
   if (out_result != nullptr)
