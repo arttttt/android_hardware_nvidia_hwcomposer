@@ -464,8 +464,12 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
     if (due) {
       constexpr int64_t kOneRefreshNs = 16663327;
       const int64_t late = *due - handed_out_ns_;
+      /* Said outright rather than behind the trace switch. That switch guards
+       * the things said about every frame, which have to be paid for whether
+       * or not anything is wrong; this is said only when something is, which
+       * is what makes it affordable. */
       if (late > kOneRefreshNs) {
-        HWC_LOGD("release fence came due %" PRId64 "us after it was handed out",
+        HWC_LOGW("release fence came due %" PRId64 "us after it was handed out",
                  late / 1000);
       }
       handed_out_fence_ = {};
