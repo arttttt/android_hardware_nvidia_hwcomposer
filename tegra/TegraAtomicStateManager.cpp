@@ -18,6 +18,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <ndk/sync.h>
 #include <time.h>
 
 #include <optional>
@@ -71,6 +72,37 @@ int64_t NowNs() {
   struct timespec ts = {};
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return (static_cast<int64_t>(ts.tv_sec) * 1000000000) + ts.tv_nsec;
+}
+
+/* When a fence came due, or nothing if it has not yet.
+ *
+ * Read rather than waited on: the question is whether it was due by a given
+ * moment, and waiting to find out would change the answer. The time is the
+ * fence's own, so it says when the hardware finished rather than when this
+ * thread got round to asking.
+ */
+std::optional<int64_t> SignalTimeNs(const SharedFd &fence) {
+  if (!fence)
+    return std::nullopt;
+
+  struct sync_file_info *info = sync_file_info(*fence);
+  if (info == nullptr)
+    return std::nullopt;
+
+  if (info->status != 1) {
+    sync_file_info_free(info);
+    return std::nullopt;
+  }
+
+  int64_t latest = 0;
+  struct sync_fence_info *each = sync_get_fence_info(info);
+  for (size_t i = 0; i < info->num_fences; i++) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    latest = std::max(latest, static_cast<int64_t>(each[i].timestamp_ns));
+  }
+
+  sync_file_info_free(info);
+  return latest;
 }
 
 uint32_t BlendFor(BufferBlendMode mode) {
@@ -415,6 +447,36 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
    * first frame has no predecessor and so hands back nothing, which reads as
    * already presented -- it is.
    */
+  /* How late the fence this frame hands out actually comes due.
+   *
+   * It is the client's release fence as well as this frame's present fence,
+   * and the client cannot draw into the buffer behind it until it is due. If
+   * it comes due later than the frame it belongs to, the client waits -- with
+   * nothing to do and nothing to blame, because from its side a late fence and
+   * a slow application look the same.
+   *
+   * Asked of the fence handed out two frames ago, so that there has been time
+   * for it to come due, and said only when it took longer than the refresh it
+   * was supposed to arrive with. In the ordinary case that is silence.
+   */
+  if (handed_out_fence_) {
+    const std::optional<int64_t> due = SignalTimeNs(handed_out_fence_);
+    if (due) {
+      constexpr int64_t kOneRefreshNs = 16663327;
+      const int64_t late = *due - handed_out_ns_;
+      if (late > kOneRefreshNs) {
+        HWC_LOGD("release fence came due %" PRId64 "us after it was handed out",
+                 late / 1000);
+      }
+      handed_out_fence_ = {};
+    }
+  }
+
+  if (!handed_out_fence_ && previous_post_fence_) {
+    handed_out_fence_ = previous_post_fence_;
+    handed_out_ns_ = NowNs();
+  }
+
   if (out_result != nullptr)
     out_result->present_fence = std::move(previous_post_fence_);
 

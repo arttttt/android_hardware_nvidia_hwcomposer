@@ -156,6 +156,13 @@ class TegraAtomicStateManager : public AtomicStateManager {
 
   /* When the last flip was posted. Diagnostic only, read by the trace. */
   int64_t last_flip_ns_ = 0;
+
+  /* A copy of the fence given to the client, and the moment it was given.
+   * Kept so that a later frame can ask how long it actually took to come due:
+   * a fence handed out as this frame's and coming due two frames later is a
+   * client standing still with nothing to blame. Diagnostic only. */
+  SharedFd handed_out_fence_;
+  int64_t handed_out_ns_ = 0;
 };
 
 }  // namespace android::drm_hwcomposer
