@@ -19,6 +19,11 @@
 #include <fcntl.h>  // IWYU pragma: keep
 #include <unistd.h>
 
+#include <cerrno>
+#include <cstring>
+
+#include "utils/log.h"
+
 namespace android::drm_hwcomposer {
 
 static void CloseFd(const int *fd) {
@@ -46,11 +51,36 @@ auto MakeSharedFd(int fd) -> SharedFd {
 }
 
 auto DupFd(SharedFd const &fd) -> int {
+  /* No descriptor to copy is an ordinary answer, not a failure: a layer whose
+   * fence has already come due is handed out as -1. */
   if (!fd)
     return -1;
 
+  /* dup(), not fcntl(F_DUPFD_CLOEXEC), and the two are not interchangeable in
+   * practice. fcntl has been observed to refuse a descriptor a driver has
+   * only just handed back, while dup() on that same descriptor in that same
+   * moment succeeds -- and inserting a single log line between the two made
+   * the refusal go away, which is the signature of something in the kernel
+   * not yet being finished. Upstream reported it, could not get to the
+   * bottom of it, and settled on dup() everywhere.
+   *
+   * Nothing here needs the flag set atomically with the copy -- this process
+   * never execs -- so close-on-exec is a second step, and a failure to set it
+   * is worth saying but not worth losing the fence over.
+   */
+  const int dup_fd = dup(*fd);
+  if (dup_fd < 0) {
+    ALOGE("Cannot copy a fence descriptor: %s", strerror(errno));
+    return -1;
+  }
+
   // NOLINTNEXTLINE(misc-include-cleaner)
-  return fcntl(*fd, F_DUPFD_CLOEXEC, 0);
+  if (fcntl(dup_fd, F_SETFD, FD_CLOEXEC) < 0) {
+    ALOGW("Cannot mark a copied fence descriptor close-on-exec: %s",
+          strerror(errno));
+  }
+
+  return dup_fd;
 }
 
 }  // namespace android::drm_hwcomposer
