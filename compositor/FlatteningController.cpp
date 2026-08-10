@@ -32,6 +32,7 @@
 #include "FlatteningController.h"
 
 #include <android-base/thread_annotations.h>
+#include <pthread.h>
 
 #include <chrono>
 #include <mutex>
@@ -94,26 +95,44 @@ void FlatteningController::StopThread() {
 }
 
 void FlatteningController::ThreadFn() {
+  pthread_setname_np(pthread_self(), "HwcFlatCon");
+
   for (;;) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    base::ScopedLockAssertion lock_assertion(mutex_);
-    if (state_ == State::kExitThread) {
-      break;
+    /* The callback is decided under the lock and made outside it. It ends up
+     * in the client's refresh path, which takes the composer's main lock --
+     * while every entry point the framework calls takes that main lock first
+     * and can reach in here for this one. Holding both, in opposite orders,
+     * on two threads is a deadlock, and its symptom is the screen simply
+     * stopping.
+     *
+     * HdcpController's thread is already written this way; this brings the
+     * two into line rather than inventing anything.
+     */
+    bool trigger_now = false;
+
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      base::ScopedLockAssertion lock_assertion(mutex_);
+      if (state_ == State::kExitThread) {
+        break;
+      }
+
+      if (sleep_until_ <= std::chrono::system_clock::now() &&
+          (state_ == State::kActive)) {
+        SetState(State::kTriggeredCallback);
+        ALOGV("Timeout. Sending an event to compositor");
+        trigger_now = true;
+      } else if (state_ != State::kActive) {
+        ALOGV("Wait");
+        cv_.wait(lock);
+      } else {
+        ALOGV("Wait_until");
+        cv_.wait_until(lock, sleep_until_);
+      }
     }
 
-    if (sleep_until_ <= std::chrono::system_clock::now() &&
-        (state_ == State::kActive)) {
-      SetState(State::kTriggeredCallback);
-      ALOGV("Timeout. Sending an event to compositor");
+    if (trigger_now) {
       cbks_.trigger();
-    }
-
-    if (state_ != State::kActive) {
-      ALOGV("Wait");
-      cv_.wait(lock);
-    } else {
-      ALOGV("Wait_until");
-      cv_.wait_until(lock, sleep_until_);
     }
   }
 }
