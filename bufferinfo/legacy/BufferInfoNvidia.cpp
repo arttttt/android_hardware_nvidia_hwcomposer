@@ -20,12 +20,14 @@
 #include <sys/stat.h>
 #include <drm/drm_fourcc.h>
 
+#include <cstdio>
 #include <optional>
 
 #include "bufferinfo/BufferInfo.h"
 #include "bufferinfo/BufferInfoGetter.h"
 #include "bufferinfo/GrallocBufferHandle.h"
 #include "bufferinfo/NvGralloc.h"
+#include "utils/Logging.h"
 #include "utils/log.h"
 
 /* How this hardware arranges memory, said in the way everything else says it.
@@ -65,6 +67,33 @@
 namespace android::drm_hwcomposer {
 
 LEGACY_BUFFER_INFO_GETTER(BufferInfoNvidia);
+
+namespace {
+
+/* How the allocator arranged this buffer, in words rather than in a modifier
+ * code. Written into the caller's storage, since this is only ever handed
+ * straight to a log line. */
+void DescribeLayout(const NvGralloc::Surface &surface, char *out, size_t size) {
+  switch (surface.layout) {
+    case NvGralloc::kLayoutBlocklinear:
+      snprintf(out, size, "blocklinear, block height 2^%u, kind %u",
+               static_cast<unsigned>(surface.block_height_log2),
+               static_cast<unsigned>(surface.kind));
+      break;
+    case NvGralloc::kLayoutTiled:
+      snprintf(out, size, "tiled");
+      break;
+    case NvGralloc::kLayoutPitch:
+      snprintf(out, size, "pitch-linear");
+      break;
+    default:
+      snprintf(out, size, "layout %u, which nothing here recognises",
+               surface.layout);
+      break;
+  }
+}
+
+}  // namespace
 
 auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
     -> std::optional<BufferInfo> {
@@ -133,6 +162,25 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
    * that has the handle, so this is where it is kept.
    */
   bi.fds_shared = Import(handle);
+
+  /* What the allocator actually handed over. Said once per buffer rather than
+   * once per frame: this runs when a buffer is first seen, and the answer is
+   * then remembered for as long as the buffer lives.
+   *
+   * The layout is the part worth having and the one nothing else reports. The
+   * controller's fourth window reads pitch-linear only, so whether anything on
+   * this screen arrives pitch-linear decides whether that window can be used
+   * at all -- or whether reaching it would cost a copy of the layer every
+   * frame, which may well be dearer than letting the GPU take it.
+   */
+  char layout[64];
+  DescribeLayout(surface, layout, sizeof(layout));
+  HWC_LOGX("buffer %p: %ux%u %c%c%c%c pitch %u offset %u -- %s", handle,
+           bi.width, bi.height, static_cast<char>(bi.format),
+           static_cast<char>(bi.format >> 8),
+           static_cast<char>(bi.format >> 16),
+           static_cast<char>(bi.format >> 24), bi.pitches[0], bi.offsets[0],
+           layout);
 
   return bi;
 }
