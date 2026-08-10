@@ -173,14 +173,16 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
    * at all -- or whether reaching it would cost a copy of the layer every
    * frame, which may well be dearer than letting the GPU take it.
    */
-  char layout[64];
-  DescribeLayout(surface, layout, sizeof(layout));
-  HWC_LOGX("buffer %p: %ux%u %c%c%c%c pitch %u offset %u -- %s", handle,
-           bi.width, bi.height, static_cast<char>(bi.format),
-           static_cast<char>(bi.format >> 8),
-           static_cast<char>(bi.format >> 16),
-           static_cast<char>(bi.format >> 24), bi.pitches[0], bi.offsets[0],
-           layout);
+  if (HWC_TRACE_ENABLED && ::android::hwc::ExplanationWanted()) {
+    char layout[64];
+    DescribeLayout(surface, layout, sizeof(layout));
+    HWC_LOGX("buffer %p: %ux%u %c%c%c%c pitch %u offset %u -- %s", handle,
+             bi.width, bi.height, static_cast<char>(bi.format),
+             static_cast<char>(bi.format >> 8),
+             static_cast<char>(bi.format >> 16),
+             static_cast<char>(bi.format >> 24), bi.pitches[0], bi.offsets[0],
+             layout);
+  }
 
   return bi;
 }
