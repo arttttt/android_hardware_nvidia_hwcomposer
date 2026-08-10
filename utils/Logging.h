@@ -17,13 +17,15 @@
 #ifndef UTILS_LOGGING_H
 #define UTILS_LOGGING_H
 
-/* The platform's own logging. Named Logging.h rather than Log.h on purpose:
- * this directory is on the include path, so a file of ours called utils/Log.h
- * would shadow the system header and then include itself. */
-#include <utils/Log.h>
+/* Ours rather than the platform's, and deliberately: utils/log.h is where the
+ * platform's macros are redefined so that nothing is written unless the device
+ * asked for it. Reaching past it to <utils/Log.h> would get the ungated
+ * originals back. */
+#include "utils/log.h"
 
-/* Errors and one-off state changes. Always emitted -- they are rare, and a
- * composer that fails silently is a composer nobody can diagnose. */
+/* Errors and one-off state changes. Rare by nature, but still behind the
+ * switch in utils/log.h -- a fault that repeats turns a rare line into a
+ * per-frame one, and nothing here should be able to cost a frame unasked. */
 #define HWC_LOGE(...) ALOGE(__VA_ARGS__)
 #define HWC_LOGW(...) ALOGW(__VA_ARGS__)
 #define HWC_LOGI(...) ALOGI(__VA_ARGS__)

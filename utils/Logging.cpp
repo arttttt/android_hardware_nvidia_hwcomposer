@@ -34,5 +34,14 @@ bool ExplanationWanted() {
     return wanted;
 }
 
+bool LoggingWanted() {
+    /* Off unless asked. Everything this composer says passes through here --
+     * errors included -- so a device nobody is looking at writes nothing at
+     * all. Turn it on in /vendor/build.prop, which is read before the composer
+     * starts; setting it afterwards is too late, since the answer is kept. */
+    static const bool wanted = property_get_bool("vendor.hwc.log", 0) != 0;
+    return wanted;
+}
+
 }  // namespace hwc
 }  // namespace android
