@@ -19,6 +19,8 @@
 #include <linux/sync_file.h>
 #include <linux/time.h>
 #include <ndk/sync.h>
+#include <pthread.h>
+#include <sched.h>
 #include <utils/Trace.h>
 
 #include <algorithm>
@@ -222,6 +224,34 @@ int VSyncWorker::SyntheticWaitVBlank(int64_t *timestamp) {
 }
 
 void VSyncWorker::ThreadFn() {
+  pthread_setname_np(pthread_self(), "VSyncWorker");
+
+  /* This thread is the clock the whole frame is hung on: everything the
+   * framework schedules -- when an app is woken, when SurfaceFlinger latches,
+   * when the next flip is due -- is measured from the timestamp it hands out.
+   * A few milliseconds of waiting to be given a CPU therefore does not delay
+   * one thread, it shifts the entire timing grid, and the display shows it as
+   * an uneven rhythm rather than a lower rate.
+   *
+   * So it runs at the same real-time priority as the composer's own service
+   * thread, which the platform's HAL wrapper already sets for itself.
+   *
+   * It had this once and lost it: the priority came from the project's Worker
+   * base class, was not carried over when this thread was moved to
+   * std::thread, and disappeared entirely when that class was deleted.
+   *
+   * pthread_setschedparam RETURNS the error rather than setting errno, so it
+   * must not be reported through strerror(errno) -- that prints whatever the
+   * last unrelated failure happened to leave behind.
+   */
+  const sched_param param = {.sched_priority = 2};
+  const int prio_err = pthread_setschedparam(pthread_self(), SCHED_FIFO,
+                                             &param);
+  if (prio_err != 0) {
+    ALOGE("Cannot give the vsync thread real-time priority: %s",
+          strerror(prio_err));
+  }
+
   int ret = 0;
 
   for (;;) {
