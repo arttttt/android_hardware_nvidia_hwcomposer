@@ -162,7 +162,6 @@ LOCAL_SRC_FILES := \
     tegra/TegraDevice.cpp \
     tegra/TegraFormat.cpp \
     tegra/TegraPlane.cpp \
-    tegra/TegraCompositor.cpp \
     tegra/FbDevice.cpp \
     tegra/TegraDisplayPipeline.cpp \
     tegra/TegraVSyncSource.cpp

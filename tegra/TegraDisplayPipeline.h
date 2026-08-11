@@ -20,7 +20,6 @@
 #include <memory>
 #include <vector>
 
-#include "display/Compositor.h"
 #include "display/DisplayPipeline.h"
 #include "tegra/DcHead.h"
 #include "tegra/FbDevice.h"
@@ -58,16 +57,6 @@ public:
 
     DcHead &head() { return *mHead; }
 
-    /* The frame path this composer came up on, before plans and planes.
-     *
-     * Kept, and kept building, though nothing above reaches for it any more:
-     * it is the one path on this hardware seen to put a correct frame on the
-     * panel, and it costs a reference to hold on to. Where the new path is in
-     * doubt, this is what it is compared against.
-     */
-    Compositor &compositor() { return *mCompositor; }
-    void setCompositor(std::unique_ptr<Compositor> compositor);
-
 private:
     TegraDisplayPipeline(TegraConnector &connector,
                          std::unique_ptr<DcHead> head,
@@ -75,7 +64,6 @@ private:
 
     std::unique_ptr<DcHead> mHead;
     std::unique_ptr<TegraVSyncSource> mVSync;
-    std::unique_ptr<Compositor> mCompositor;
 
     /* Owned here and bound in the constructor, unlike the connector, which
      * belongs to the device. A head is not shared between displays and has

@@ -26,7 +26,6 @@
 #include "compositor/GenericLayerMapperCompositionPlanner.h"
 #include "tegra/FbDevice.h"
 #include "tegra/TegraAtomicStateManager.h"
-#include "tegra/TegraCompositor.h"
 
 #undef  LOG_TAG
 #define LOG_TAG "hwc-pipeline"
@@ -60,7 +59,6 @@ TegraDisplayPipeline::TegraDisplayPipeline(TegraConnector &tegraConnector,
                                            std::unique_ptr<TegraVSyncSource> vsync)
     : mHead(std::move(head)),
       mVSync(std::move(vsync)),
-      mCompositor(new TegraCompositor(*mHead)),
       mCrtc(tegraConnector.GetId()) {
     /* Binding is what says a piece of hardware is this display's. Nothing
      * else can claim these afterwards, and letting go of the binding is what
@@ -90,7 +88,6 @@ TegraDisplayPipeline::~TegraDisplayPipeline() {
     planner.reset();
     connector.reset();
     crtc.reset();
-    mCompositor.reset();
     mHead.reset();
 }
 
@@ -126,14 +123,6 @@ drm_hwcomposer::UsablePlanes TegraDisplayPipeline::GetUsablePlanes() const {
     }
 
     return usable;
-}
-
-void TegraDisplayPipeline::setCompositor(std::unique_ptr<Compositor> compositor) {
-    if (!compositor) {
-        HWC_LOGE("refusing a null compositor; keeping the current one");
-        return;
-    }
-    mCompositor = std::move(compositor);
 }
 
 }  // namespace hwc
