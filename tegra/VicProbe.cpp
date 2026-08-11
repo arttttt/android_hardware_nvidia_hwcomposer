@@ -25,6 +25,7 @@
 
 #include <cutils/properties.h>
 #include <ui/GraphicBufferMapper.h>
+#include <ui/Rect.h>
 
 #include "bufferinfo/NvGralloc.h"
 #include "tegra/ScratchPool.h"
@@ -105,7 +106,7 @@ void Run() {
   }
 
   auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
-  NvGralloc::Surface first{};
+  drm_hwcomposer::NvGralloc::Surface first{};
   if (gralloc == nullptr || !gralloc->DescribeSurface(handles[0], &first)) {
     ALOGE("cannot describe the first layer");
     return;
@@ -138,7 +139,7 @@ void Run() {
   bottom.acquire_fence = -1;
   layers.push_back(bottom);
 
-  NvGralloc::Surface second{};
+  drm_hwcomposer::NvGralloc::Surface second{};
   if (!gralloc->DescribeSurface(handles[1], &second)) {
     ALOGE("cannot describe the second layer");
     return;
