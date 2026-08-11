@@ -171,8 +171,8 @@ VicSession::~VicSession() {
    * the composer is going away anyway. */
 }
 
-SharedFd VicSession::Compose(buffer_handle_t target,
-                             const std::vector<Layer> &layers) {
+drm_hwcomposer::SharedFd VicSession::Compose(
+    buffer_handle_t target, const std::vector<Layer> &layers) {
   if (layers.empty() || layers.size() > kMaxLayers) {
     refused_++;
     return {};
@@ -301,7 +301,7 @@ SharedFd VicSession::Compose(buffer_handle_t target,
   }
 
   composed_++;
-  return MakeSharedFd(fd);
+  return drm_hwcomposer::MakeSharedFd(fd);
 }
 
 }  // namespace hwc

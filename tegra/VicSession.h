@@ -106,7 +106,8 @@ class VicSession {
    *
    * More than kMaxLayers layers is refused the same way.
    */
-  SharedFd Compose(buffer_handle_t target, const std::vector<Layer> &layers);
+  drm_hwcomposer::SharedFd Compose(buffer_handle_t target,
+                                   const std::vector<Layer> &layers);
 
   /* How many sets the engine has refused, and how many it has taken. What
    * decides whether a third way of merging is worth building at all. */
