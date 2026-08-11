@@ -42,9 +42,16 @@ namespace {
 
 constexpr char kOutput[] = "/data/local/tmp/vic_probe.rgba";
 
+/* Asked every time, not once.
+ *
+ * Everywhere else in this composer a property is read once and kept, because
+ * a question asked sixty times a second is a cost of its own. Here the cost
+ * is the point: the probe has to run when there is something on the screen,
+ * and the composer starts before there is. Reading it every frame is what
+ * lets the moment be chosen from outside -- bring the interface up, put
+ * something on it, then ask. */
 bool Wanted() {
-  static const bool wanted = property_get_bool("vendor.hwc.vic_probe", 0) != 0;
-  return wanted;
+  return property_get_bool("vendor.hwc.vic_probe", 0) != 0;
 }
 
 /* Two layers, and they have to be different ones.
