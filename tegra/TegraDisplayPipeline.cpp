@@ -79,6 +79,23 @@ TegraDisplayPipeline::TegraDisplayPipeline(TegraConnector &tegraConnector,
      * second. Null is not a fault -- it is what every device says until
      * someone asks for the engine by name. */
     mVic = VicSession::Create();
+
+    /* And somewhere for it to write, sized to the panel. Only when there is
+     * an engine to write it: three screens of memory is not a thing to hold
+     * on a device that will never merge anything. */
+    if (mVic) {
+        const auto &modes = tegraConnector.GetModes();
+        if (!modes.empty()) {
+            const auto &mode = modes.front().GetRawMode();
+            mScratch = ScratchPool::Create(mode.hdisplay, mode.vdisplay,
+                                           kScratchBuffers);
+        }
+
+        /* An engine with nowhere to write is no more use than no engine, and
+         * leaving it open would say otherwise to everything downstream. */
+        if (!mScratch)
+            mVic.reset();
+    }
 }
 
 TegraDisplayPipeline::~TegraDisplayPipeline() {
@@ -92,6 +109,7 @@ TegraDisplayPipeline::~TegraDisplayPipeline() {
      * stop before the devices it reads from do. */
     mVSync.reset();
     mVic.reset();
+    mScratch.reset();
     atomic_state_manager.reset();
     planner.reset();
     connector.reset();

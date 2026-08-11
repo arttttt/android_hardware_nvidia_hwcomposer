@@ -26,6 +26,7 @@
 #include "tegra/TegraConnector.h"
 #include "tegra/TegraCrtc.h"
 #include "tegra/TegraPlane.h"
+#include "tegra/ScratchPool.h"
 #include "tegra/TegraVSyncSource.h"
 #include "tegra/VicSession.h"
 
@@ -75,6 +76,16 @@ private:
      * to the hardware, and opening one per frame would be paying for the
      * channel sixty times a second to use it once. */
     std::unique_ptr<VicSession> mVic;
+
+    /* Three, which is what the display pipeline holds anyway: one being
+     * shown, one waiting to be, one being written. Two would work and would
+     * stall whenever a frame ran late; four would only cost another screen of
+     * memory. */
+    static constexpr size_t kScratchBuffers = 3;
+
+    /* Where the engine writes. Made only alongside it, and the two live and
+     * die together -- see the constructor. */
+    std::unique_ptr<ScratchPool> mScratch;
 
     /* Owned here and bound in the constructor, unlike the connector, which
      * belongs to the device. A head is not shared between displays and has
