@@ -27,6 +27,7 @@
 #include "tegra/TegraCrtc.h"
 #include "tegra/TegraPlane.h"
 #include "tegra/TegraVSyncSource.h"
+#include "tegra/VicSession.h"
 
 namespace android {
 namespace hwc {
@@ -64,6 +65,16 @@ private:
 
     std::unique_ptr<DcHead> mHead;
     std::unique_ptr<TegraVSyncSource> mVSync;
+
+    /* The engine that can merge layers the windows have no room for, or null
+     * on a device that was not asked for it -- which is every device until
+     * someone sets the property, and will stay that way until it has been
+     * shown to put the right pixels on the panel.
+     *
+     * Belongs to the display rather than to a frame: a session is a channel
+     * to the hardware, and opening one per frame would be paying for the
+     * channel sixty times a second to use it once. */
+    std::unique_ptr<VicSession> mVic;
 
     /* Owned here and bound in the constructor, unlike the connector, which
      * belongs to the device. A head is not shared between displays and has

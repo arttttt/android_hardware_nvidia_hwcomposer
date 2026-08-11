@@ -72,6 +72,13 @@ TegraDisplayPipeline::TegraDisplayPipeline(TegraConnector &tegraConnector,
 
     /* The planner is not built here. Which one runs is a decision the backend
      * makes from a property, and a pipeline has no business overriding it. */
+
+    /* Asked for once, here, rather than the first time a frame needs it: a
+     * failure to reach the engine is a fact about the device, and finding it
+     * out while assembling a frame would mean finding it out sixty times a
+     * second. Null is not a fault -- it is what every device says until
+     * someone asks for the engine by name. */
+    mVic = VicSession::Create();
 }
 
 TegraDisplayPipeline::~TegraDisplayPipeline() {
@@ -84,6 +91,7 @@ TegraDisplayPipeline::~TegraDisplayPipeline() {
      * The vertical blank reader goes first for the same reason -- it must
      * stop before the devices it reads from do. */
     mVSync.reset();
+    mVic.reset();
     atomic_state_manager.reset();
     planner.reset();
     connector.reset();
