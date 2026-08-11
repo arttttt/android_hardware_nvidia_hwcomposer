@@ -140,9 +140,23 @@ drm_hwcomposer::UsablePlanes TegraDisplayPipeline::GetUsablePlanes() const {
 
         /* A window that reads neither blocks nor anything resized is no use
          * for an ordinary layer -- everything the GPU draws is arranged in
-         * blocks -- but it is exactly what a cursor wants, and the planner
-         * looks for one. Offered as that rather than left idle. */
-        if (!plane->IsCursorCandidate())
+         * blocks. What becomes of it depends on whether there is an engine to
+         * draw for it.
+         *
+         * With one, it is the most valuable window on the controller rather
+         * than the least: what lands there is composed into a buffer of our
+         * own first, and that buffer is by construction the one shape this
+         * window can show. Offered as an ordinary plane, and the limits it
+         * answers by become the engine's.
+         *
+         * Without one, it is what it has always been -- the small unscaled
+         * thing a cursor wants, which is the only use it has. This tablet has
+         * no cursor, so that is a use in name only, but naming it is still
+         * better than leaving the window unaccounted for. */
+        if (plane->IsCursorCandidate() && mVic && mScratch)
+            plane->SetMerging();
+
+        if (!plane->IsCursorCandidate() || plane->IsMerging())
             usable.first.push_back(std::move(binding));
         else if (!usable.second)
             usable.second = std::move(binding);

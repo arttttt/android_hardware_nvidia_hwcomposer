@@ -54,9 +54,30 @@ class TegraPlane : public Plane {
     return !caps_.blocklinearLayout && !caps_.scaling;
   }
 
+  /* Say that what lands here is drawn by the image compositor before this
+   * window ever sees it.
+   *
+   * That changes what the plane can accept, and changes it completely: the
+   * window keeps its own narrow limits -- rows only, no resizing, simple
+   * colour -- but they are now limits on a buffer we produce, which is
+   * exactly that shape by construction. What arrives from a layer is judged
+   * by what the engine can read instead, and the engine reads blocks, resizes
+   * and blends.
+   *
+   * So the one window on this controller that could take nothing becomes the
+   * one that can take anything. */
+  void SetMerging() {
+    merging_ = true;
+  }
+
+  bool IsMerging() const {
+    return merging_;
+  }
+
  private:
   const uint32_t index_;
   const hwc::DcHead::WindowCapabilities &caps_;
+  bool merging_ = false;
 };
 
 }  // namespace android::drm_hwcomposer

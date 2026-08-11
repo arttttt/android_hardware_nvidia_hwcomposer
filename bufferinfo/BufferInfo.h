@@ -67,6 +67,20 @@ struct BufferInfo {
    * managed elsewhere. The shared_ptr is used to ensure that the fds are not
    * closed while the BufferInfo is still in use. */
   std::shared_ptr<PrimeFdsSharedBase> fds_shared;
+
+  /* What the allocator calls this buffer, for platforms that have to go back
+   * and ask it something.
+   *
+   * Everything else here is the answer to "what does this memory look like",
+   * which is all the display controller ever wants. A platform that composes
+   * with a second engine wants more than that -- it has to describe the
+   * buffer to that engine, and the only description that can be trusted is
+   * the allocator's own, which is fetched by handle and not by descriptor.
+   *
+   * Borrowed, never owned. It belongs to whoever handed the buffer over and
+   * is valid for exactly as long as they say; nothing here outlives a frame.
+   * Null on platforms that never look. */
+  buffer_handle_t handle = nullptr;
 };
 
 }  // namespace android::drm_hwcomposer

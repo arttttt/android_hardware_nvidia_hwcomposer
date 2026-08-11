@@ -109,11 +109,8 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
 
   /* The last place a layer is still known by the allocator's own handle.
    *
-   * Below here it travels as a descriptor for the memory and nothing else,
-   * which is all the controller wants and less than the image compositor
-   * needs -- it has to ask the allocator about the buffer, and the allocator
-   * answers about handles. Nothing but the probe wants this yet; carrying it
-   * further is a question for when the merge is real. */
+   * Everything below reads the description this builds, and the handle is
+   * now part of it -- see BufferInfo::handle. */
   hwc::VicProbe::Offer(handle);
 
   NvGralloc::Surface surface{};
@@ -127,6 +124,12 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
   }
 
   BufferInfo bi{};
+
+  /* Carried down for the image compositor, which cannot be told about a
+   * buffer by descriptor -- the allocator answers about handles. Borrowed:
+   * whoever handed the buffer over owns it, and nothing that reads this
+   * outlives the frame it was described for. */
+  bi.handle = handle;
 
   bi.width = surface.width;
   bi.height = surface.height;

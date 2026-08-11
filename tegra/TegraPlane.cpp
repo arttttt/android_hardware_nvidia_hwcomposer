@@ -33,6 +33,19 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
   const BufferInfo &bi = *layer->bi;
   const PresentInfo &pi = layer->pi;
 
+  /* Judged by the engine's reach rather than the window's, because the window
+   * will be shown a buffer of our own making and not this one. The engine
+   * reads memory arranged in blocks, resizes and blends; what it cannot do
+   * without is the allocator's own name for the buffer, since that is the
+   * only description of it anyone can be trusted to hand over. */
+  if (merging_) {
+    if (bi.handle == nullptr) {
+      ALOGV("plane %u: no handle to describe this buffer with", index_);
+      return false;
+    }
+    return true;
+  }
+
   /* Every refusal below is logged at the quietest level on purpose: this is
    * asked of every plane for every layer, and a plane saying no is the
    * ordinary way a plan is arrived at, not a fault. */
