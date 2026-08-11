@@ -113,6 +113,18 @@ int NvGralloc::GetMemFd(buffer_handle_t handle) const {
   return get_memfd_(handle);
 }
 
+bool NvGralloc::GetRawSurfaces(buffer_handle_t handle, const void **out,
+                               size_t *count) const {
+  *out = nullptr;
+  *count = 0;
+
+  if (!IsValid(handle))
+    return false;
+
+  get_surfaces_(handle, out, count);
+  return *out != nullptr && *count != 0;
+}
+
 bool NvGralloc::DescribeSurface(buffer_handle_t handle, Surface *out) const {
   const void *surfaces = nullptr;
   size_t count = 0;

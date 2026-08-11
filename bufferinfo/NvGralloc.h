@@ -77,6 +77,18 @@ class NvGralloc {
    * itself -- see the implementation for why that check is not paranoia. */
   bool DescribeSurface(buffer_handle_t handle, Surface *out) const;
 
+  /* The allocator's own descriptors, handed on untouched.
+   *
+   * For anything that has to give them back to another of this vendor's
+   * libraries rather than read them: the image compositor takes exactly this
+   * array, so passing it through means no part of the description is ever
+   * rebuilt by us -- which is where the same attempt in the camera went
+   * wrong. `out` belongs to the buffer and lives as long as the handle.
+   *
+   * False, quietly, if the buffer is not one of this allocator's. */
+  bool GetRawSurfaces(buffer_handle_t handle, const void **out,
+                      size_t *count) const;
+
   /* Puts the buffer into a state the display can read.
    *
    * The GPU on this hardware writes colour compressed, and the display

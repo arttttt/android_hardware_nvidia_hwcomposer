@@ -1,0 +1,179 @@
+/*
+ * Copyright (C) 2026 Artem Bambalov
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#ifndef TEGRA_VIC_SESSION_H
+#define TEGRA_VIC_SESSION_H
+
+#include <cstdint>
+#include <memory>
+#include <vector>
+
+#include <cutils/native_handle.h>
+
+#include "utils/fd.h"
+
+namespace android {
+namespace hwc {
+
+/* The image compositor this chip has, and the display controller does not.
+ *
+ * The controller can show a handful of buffers at once and no more -- three of
+ * its windows are usable here, and the buffer anything composited lands in
+ * takes one of them, so a frame carries two layers in hardware and everything
+ * else has to be merged first. Today that merge is done by SurfaceFlinger on
+ * the GPU, which is why a quarter of the pixels of an application opening go
+ * through the graphics core.
+ *
+ * This is the other engine that can do it. VIC is a fixed-function block on
+ * the host1x bus, made for exactly this: read several surfaces, scale them,
+ * blend them, write one. It is idle on this device -- nothing has ever opened
+ * it -- and using it means the graphics core is never woken for a merge.
+ *
+ * Reached through the libraries the board ships rather than built against
+ * them, for the same reason as the allocator in bufferinfo/NvGralloc.h: the
+ * vendor blob repository declares them by installation path rather than as
+ * modules, so there is nothing for a module here to link to.
+ */
+class VicSession {
+ public:
+  /* The compositor, or nullptr if this device has none it can reach, having
+   * logged what was missing. */
+  static std::unique_ptr<VicSession> Create();
+
+  ~VicSession();
+
+  VicSession(const VicSession &) = delete;
+  VicSession &operator=(const VicSession &) = delete;
+
+  /* How many surfaces the engine takes in one pass.
+   *
+   * Fixed rather than asked, and deliberately. The number the hardware
+   * reports lives inside the session structure, which would mean knowing that
+   * structure's layout -- the one thing this class is built to avoid. Five is
+   * what the interface reserves room for, and a set the engine will not take
+   * is refused at configure or execute time anyway, which is the answer we
+   * actually act on. */
+  static constexpr size_t kMaxLayers = 5;
+
+  /* One thing to draw into the merge. Rectangles are in the coordinates of
+   * the buffer being drawn into, which for a merge is the display. */
+  struct Layer {
+    buffer_handle_t handle;
+
+    float source_left;
+    float source_top;
+    float source_right;
+    float source_bottom;
+
+    int32_t display_left;
+    int32_t display_top;
+    int32_t display_right;
+    int32_t display_bottom;
+
+    /* Whether the colour in the buffer has already been multiplied by its own
+     * alpha. The engine is told which, rather than being left to assume, so
+     * that a layer arriving either way lands correctly. */
+    bool premultiplied;
+
+    /* Applied on top of whatever alpha the pixels carry. One means the layer
+     * contributes at its own opacity. */
+    float alpha;
+
+    /* Borrowed. The engine is told to wait on it before reading, and does not
+     * take ownership -- the caller closes it as it would have anyway. */
+    int acquire_fence;
+  };
+
+  /* Draws `layers` into `target`, bottom of the list first.
+   *
+   * Returns the fence to wait on before the result is read, or an empty one
+   * if the engine would not take this set -- which is not a fault and is
+   * counted rather than complained about: it is the signal that the merge has
+   * to go somewhere else. Nothing has been written to `target` in that case.
+   *
+   * More than kMaxLayers layers is refused the same way.
+   */
+  SharedFd Compose(buffer_handle_t target, const std::vector<Layer> &layers);
+
+  /* How many sets the engine has refused, and how many it has taken. What
+   * decides whether a third way of merging is worth building at all. */
+  uint64_t composed() const { return composed_; }
+  uint64_t refused() const { return refused_; }
+
+ private:
+  VicSession() = default;
+
+  bool Open();
+  bool Resolve();
+
+  /* Their settings structure, held as a plain run of bytes.
+   *
+   * Its fields are never touched here. The library has its own calls for
+   * filling them -- one for the target, one per source, one for blending --
+   * so what this class needs is somewhere to put the answer, not knowledge of
+   * where each answer goes. That is not laziness but the only safe reading:
+   * the structure belongs to the library and has no promise of stability, and
+   * the allocator on this same device has already been caught having grown a
+   * field since the last published version of its own (see NvGralloc.h).
+   *
+   * Sized well above what the published layout adds up to, and zeroed before
+   * every use, so that a structure which has since grown is still written
+   * inside memory that is ours. */
+  static constexpr size_t kConfigBytes = 16384;
+
+  void *nvrm_library_ = nullptr;
+  void *graphics_library_ = nullptr;
+  void *vic_library_ = nullptr;
+
+  /* Opaque on purpose -- see kConfigBytes. */
+  void *rm_device_ = nullptr;
+  void *session_ = nullptr;
+  std::vector<uint8_t> config_;
+
+  uint64_t composed_ = 0;
+  uint64_t refused_ = 0;
+
+  /* libnvrm.
+   *
+   * The opener is the one without a device number. The interface has both,
+   * and the one this device exports is the newer -- which on its own settles
+   * that the compositor shipped alongside these libraries could not be
+   * reused: it was built against the older name, which is gone. */
+  int (*rm_open_)(void **) = nullptr;
+  void (*rm_close_)(void *) = nullptr;
+
+  /* libnvrm_graphics -- turning the engine's own fences into descriptors the
+   * rest of the system understands, and back. */
+  int (*fence_from_fd_)(int32_t, void *, uint32_t *) = nullptr;
+  int (*fence_to_fd_)(const char *, const void *, uint32_t, int32_t *) = nullptr;
+
+  /* libnvddk_vic */
+  int (*create_session_)(void *, void **) = nullptr;
+  void (*free_session_)(void *) = nullptr;
+  int (*configure_)(void *, void *) = nullptr;
+  int (*execute_)(void *, void *, void *, uint32_t, void *) = nullptr;
+  int (*configure_source_)(void *, void *, uint32_t, const void *, uint32_t,
+                           const void *, const void *) = nullptr;
+  int (*configure_target_)(void *, void *, const void *, uint32_t,
+                           const void *) = nullptr;
+  void (*configure_blending_)(void *, void *, uint32_t, int, float) = nullptr;
+  int (*configure_clear_rects_)(void *, void *) = nullptr;
+};
+
+}  // namespace hwc
+}  // namespace android
+
+#endif  // TEGRA_VIC_SESSION_H
