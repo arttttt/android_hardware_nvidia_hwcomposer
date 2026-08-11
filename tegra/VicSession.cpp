@@ -149,7 +149,8 @@ bool VicSession::Open() {
     return false;
   }
 
-  err = create_session_(rm_device_, &session_);
+  /* Zero for the channel: let it open its own to the engine. */
+  err = create_session_(rm_device_, 0, &session_);
   if (err != kNvSuccess || session_ == nullptr) {
     ALOGE("cannot open a compositor session: %d (session %p)", err, session_);
     return false;

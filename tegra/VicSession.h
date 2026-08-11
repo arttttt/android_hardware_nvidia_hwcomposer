@@ -161,8 +161,20 @@ class VicSession {
   int (*fence_from_fd_)(int32_t, void *, uint32_t *) = nullptr;
   int (*fence_to_fd_)(const char *, const void *, uint32_t, int32_t *) = nullptr;
 
-  /* libnvddk_vic */
-  int (*create_session_)(void *, void **) = nullptr;
+  /* libnvddk_vic.
+   *
+   * The session maker takes three arguments here and only two in the last
+   * source drop published: a channel to the engine was added between the
+   * device and the answer. Passing zero for it is asking the library to open
+   * its own, which is what we want and what its own callers do.
+   *
+   * Getting this wrong was not a failure to compile but a failure to work.
+   * The second argument was the address of the answer, which is never zero,
+   * so the library took it for a channel that was already open, never opened
+   * one, and issued its commands against a descriptor read out of a stack
+   * address -- which came out as zero, hence a stream of them against
+   * standard input. Established by decompiling the shipped library. */
+  int (*create_session_)(void *, int, void **) = nullptr;
   void (*free_session_)(void *) = nullptr;
   int (*configure_)(void *, void *) = nullptr;
   int (*execute_)(void *, void *, void *, uint32_t, void *) = nullptr;
