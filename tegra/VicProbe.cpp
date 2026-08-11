@@ -198,6 +198,20 @@ void VicProbe::Offer(buffer_handle_t handle) {
     if (seen == handle)
       return;
 
+  /* Big ones only.
+   *
+   * Taking whatever came first got two overlays that were almost entirely
+   * transparent, and a merge of two transparent things is a black picture
+   * that proves the engine ran and nothing else. What is wanted is a layer
+   * with a picture in it -- the wallpaper, the launcher -- and on this
+   * display those are the ones the size of the panel. */
+  auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
+  drm_hwcomposer::NvGralloc::Surface surface{};
+  if (gralloc == nullptr || !gralloc->DescribeSurface(handle, &surface))
+    return;
+  if (surface.width < 1024 || surface.height < 1024)
+    return;
+
   handles.push_back(handle);
   if (handles.size() < 2)
     return;
