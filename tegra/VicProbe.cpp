@@ -1,0 +1,204 @@
+/*
+ * Copyright (C) 2026 Artem Bambalov
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "tegra/VicProbe.h"
+
+#include <fcntl.h>
+#include <sync/sync.h>
+#include <unistd.h>
+
+#include <memory>
+#include <vector>
+
+#include <cutils/properties.h>
+#include <ui/GraphicBufferMapper.h>
+
+#include "bufferinfo/NvGralloc.h"
+#include "tegra/ScratchPool.h"
+#include "tegra/VicSession.h"
+#include "utils/log.h"
+
+#undef  LOG_TAG
+#define LOG_TAG "hwc-vicprobe"
+
+namespace android {
+namespace hwc {
+
+namespace {
+
+constexpr char kOutput[] = "/data/local/tmp/vic_probe.rgba";
+
+bool Wanted() {
+  static const bool wanted = property_get_bool("vendor.hwc.vic_probe", 0) != 0;
+  return wanted;
+}
+
+/* Two layers, and they have to be different ones.
+ *
+ * Merging a buffer with itself would draw the same picture twice and say
+ * nothing about whether the second landed where it was told. */
+std::vector<buffer_handle_t> &Collected() {
+  static std::vector<buffer_handle_t> collected;
+  return collected;
+}
+
+/* Reads back what the engine wrote and puts it where it can be looked at.
+ *
+ * The buffer was asked for as one the processor reads often, so it is laid
+ * out in rows and this is a straight copy. Row by row rather than in one go
+ * because the allocator is free to pad a row, and the padding is not part of
+ * the picture. */
+bool WriteOut(buffer_handle_t handle, uint32_t width, uint32_t height,
+              uint32_t stride) {
+  void *pixels = nullptr;
+  auto &mapper = GraphicBufferMapper::get();
+
+  const status_t err = mapper.lock(handle, GRALLOC_USAGE_SW_READ_OFTEN,
+                                   Rect(static_cast<int32_t>(width),
+                                        static_cast<int32_t>(height)),
+                                   &pixels);
+  if (err != NO_ERROR || pixels == nullptr) {
+    ALOGE("cannot read the merge back: %d", err);
+    return false;
+  }
+
+  bool ok = true;
+  const int out = open(kOutput, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (out < 0) {
+    ALOGE("cannot write %s: %s", kOutput, strerror(errno));
+    ok = false;
+  } else {
+    const auto *row = static_cast<const uint8_t *>(pixels);
+    for (uint32_t y = 0; y < height && ok; y++) {
+      ok = write(out, row, size_t{width} * 4) == static_cast<ssize_t>(width) * 4;
+      row += size_t{stride} * 4;
+    }
+    if (!ok)
+      ALOGE("short write to %s: %s", kOutput, strerror(errno));
+    close(out);
+  }
+
+  mapper.unlock(handle);
+  return ok;
+}
+
+void Run() {
+  auto &handles = Collected();
+
+  auto session = VicSession::Create();
+  if (!session) {
+    ALOGE("no engine to probe with -- is vendor.hwc.vic set?");
+    return;
+  }
+
+  auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
+  NvGralloc::Surface first{};
+  if (gralloc == nullptr || !gralloc->DescribeSurface(handles[0], &first)) {
+    ALOGE("cannot describe the first layer");
+    return;
+  }
+
+  auto pool = ScratchPool::Create(first.width, first.height, 1);
+  if (!pool)
+    return;
+
+  buffer_handle_t target = pool->Next();
+  if (target == nullptr)
+    return;
+
+  /* The lower one fills the buffer; the upper one lands in the middle at half
+   * the size, blended. Both together are the question: is anything where it
+   * was told to be, and does what is underneath show through. */
+  const auto w = static_cast<int32_t>(pool->width());
+  const auto h = static_cast<int32_t>(pool->height());
+
+  std::vector<VicSession::Layer> layers;
+
+  VicSession::Layer bottom{};
+  bottom.handle = handles[0];
+  bottom.source_right = static_cast<float>(first.width);
+  bottom.source_bottom = static_cast<float>(first.height);
+  bottom.display_right = w;
+  bottom.display_bottom = h;
+  bottom.premultiplied = true;
+  bottom.alpha = 1.0F;
+  bottom.acquire_fence = -1;
+  layers.push_back(bottom);
+
+  NvGralloc::Surface second{};
+  if (!gralloc->DescribeSurface(handles[1], &second)) {
+    ALOGE("cannot describe the second layer");
+    return;
+  }
+
+  VicSession::Layer top{};
+  top.handle = handles[1];
+  top.source_right = static_cast<float>(second.width);
+  top.source_bottom = static_cast<float>(second.height);
+  top.display_left = w / 4;
+  top.display_top = h / 4;
+  top.display_right = w / 4 + w / 2;
+  top.display_bottom = h / 4 + h / 2;
+  top.premultiplied = true;
+  top.alpha = 0.75F;
+  top.acquire_fence = -1;
+  layers.push_back(top);
+
+  ALOGI("merging %ux%u over %ux%u into %ux%u", second.width, second.height,
+        first.width, first.height, pool->width(), pool->height());
+
+  auto fence = session->Compose(target, layers);
+  if (!fence) {
+    ALOGE("the engine would not take it (%llu refused)",
+          static_cast<unsigned long long>(session->refused()));
+    return;
+  }
+
+  if (sync_wait(*fence, 1000) < 0) {
+    ALOGE("the merge never finished");
+    return;
+  }
+
+  if (WriteOut(target, pool->width(), pool->height(), pool->stride()))
+    ALOGI("merge written to %s, %ux%u RGBA", kOutput, pool->width(),
+          pool->height());
+}
+
+}  // namespace
+
+void VicProbe::Offer(buffer_handle_t handle) {
+  static bool done = false;
+
+  if (done || !Wanted() || handle == nullptr)
+    return;
+
+  auto &handles = Collected();
+  for (auto *seen : handles)
+    if (seen == handle)
+      return;
+
+  handles.push_back(handle);
+  if (handles.size() < 2)
+    return;
+
+  /* Once, whatever happens. A probe that keeps trying on every frame would
+   * bury the answer under its own repetition. */
+  done = true;
+  Run();
+}
+
+}  // namespace hwc
+}  // namespace android

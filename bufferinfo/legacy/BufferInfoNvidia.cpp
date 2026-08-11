@@ -28,6 +28,7 @@
 #include "bufferinfo/GrallocBufferHandle.h"
 #include "bufferinfo/NvGralloc.h"
 #include "utils/Logging.h"
+#include "tegra/VicProbe.h"
 #include "utils/log.h"
 
 /* How this hardware arranges memory, said in the way everything else says it.
@@ -105,6 +106,15 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
     ALOGE("buffer %p is not one of the allocator's", handle);
     return {};
   }
+
+  /* The last place a layer is still known by the allocator's own handle.
+   *
+   * Below here it travels as a descriptor for the memory and nothing else,
+   * which is all the controller wants and less than the image compositor
+   * needs -- it has to ask the allocator about the buffer, and the allocator
+   * answers about handles. Nothing but the probe wants this yet; carrying it
+   * further is a question for when the merge is real. */
+  hwc::VicProbe::Offer(handle);
 
   NvGralloc::Surface surface{};
   if (!gralloc->DescribeSurface(handle, &surface))
