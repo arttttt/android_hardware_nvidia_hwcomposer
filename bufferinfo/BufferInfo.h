@@ -19,6 +19,8 @@
 #include <cstdint>
 #include <memory>
 
+#include <cutils/native_handle.h>
+
 namespace android::drm_hwcomposer {
 
 constexpr int kBufferMaxPlanes = 4;
