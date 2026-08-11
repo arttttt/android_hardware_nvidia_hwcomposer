@@ -26,6 +26,8 @@
 #include "display/AtomicStateManager.h"
 #include "display/DrmMode.h"
 #include "tegra/DcHead.h"
+#include "tegra/ScratchPool.h"
+#include "tegra/VicSession.h"
 
 namespace android::drm_hwcomposer {
 
@@ -43,14 +45,31 @@ namespace android::drm_hwcomposer {
  */
 class TegraAtomicRequest : public AtomicRequest {
  public:
+  /* What is to be drawn by the image compositor rather than shown straight,
+   * and which window slot the result goes to.
+   *
+   * Empty on every frame that needs no merge, which is most of them. */
+  struct Merge {
+    std::vector<hwc::VicSession::Layer> layers;
+    size_t slot = 0;
+    int32_t window = -1;
+    uint32_t depth = 0;
+  };
+
   TegraAtomicRequest(std::vector<hwc::DcHead::Window> windows,
                      std::vector<buffer_handle_t> handles,
                      bool has_composition,
-                     std::optional<PowerMode> power_mode)
+                     std::optional<PowerMode> power_mode,
+                     Merge merge = {})
       : windows_(std::move(windows)),
         handles_(std::move(handles)),
         has_composition_(has_composition),
-        power_mode_(power_mode) {
+        power_mode_(power_mode),
+        merge_(std::move(merge)) {
+  }
+
+  const Merge &GetMerge() const {
+    return merge_;
   }
 
   const std::vector<hwc::DcHead::Window> &GetWindows() const {
@@ -87,6 +106,7 @@ class TegraAtomicRequest : public AtomicRequest {
   const std::vector<buffer_handle_t> handles_;
   const bool has_composition_;
   const std::optional<PowerMode> power_mode_;
+  const Merge merge_;
 };
 
 /* Turns plans into frames on this controller.
@@ -97,10 +117,13 @@ class TegraAtomicRequest : public AtomicRequest {
  */
 class TegraAtomicStateManager : public AtomicStateManager {
  public:
-  /* Both `head` and `modes` belong to the pipeline and outlive this. */
+  /* All four belong to the pipeline and outlive this. `vic` and `scratch` are
+   * null together on a device that was not asked for the image compositor,
+   * which is every device by default; nothing then reaches the merge. */
   TegraAtomicStateManager(hwc::DcHead &head,
-                          const std::vector<DrmMode> &modes)
-      : head_(head), modes_(modes) {
+                          const std::vector<DrmMode> &modes,
+                          hwc::VicSession *vic, hwc::ScratchPool *scratch)
+      : head_(head), modes_(modes), vic_(vic), scratch_(scratch) {
   }
 
   std::unique_ptr<AtomicRequest> GetAtomicModeReqForArgs(
@@ -138,6 +161,11 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * in use -- but a request for another is a mistake worth refusing rather
    * than accepting and not carrying out. */
   const std::vector<DrmMode> &modes_;
+
+  /* The engine that draws what will not fit a window, and somewhere for it to
+   * write. Null together where the device was not asked for them. */
+  hwc::VicSession *const vic_ = nullptr;
+  hwc::ScratchPool *const scratch_ = nullptr;
 
   bool active_ = true;
 

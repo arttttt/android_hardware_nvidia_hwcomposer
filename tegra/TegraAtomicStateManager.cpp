@@ -16,6 +16,8 @@
 
 #include "tegra/TegraAtomicStateManager.h"
 
+#include "tegra/TegraPlane.h"
+
 #include <errno.h>
 #include <inttypes.h>
 #include <ndk/sync.h>
@@ -228,6 +230,54 @@ bool DescribeWindow(const LayerData &layer, uint32_t plane_id, uint32_t depth,
   return true;
 }
 
+/* One layer of a plan, said the way the image compositor takes it.
+ *
+ * Both rectangles are spelled out for the same reason they are in
+ * DescribeWindow: unsaid means the whole buffer and the whole panel, and
+ * neither the controller nor the engine has that shorthand.
+ *
+ * The fence is borrowed. The engine is told to wait on it and does not take
+ * it; the plan owns it and outlives the frame.
+ */
+hwc::VicSession::Layer MergeLayerFrom(const LayerData &layer) {
+  hwc::VicSession::Layer out{};
+
+  const BufferInfo &bi = *layer.bi;
+
+  out.handle = bi.handle;
+
+  if (layer.pi.source_crop.f_rect) {
+    const auto &src = *layer.pi.source_crop.f_rect;
+    out.source_left = src.left;
+    out.source_top = src.top;
+    out.source_right = src.right;
+    out.source_bottom = src.bottom;
+  } else {
+    out.source_right = static_cast<float>(bi.width);
+    out.source_bottom = static_cast<float>(bi.height);
+  }
+
+  if (layer.pi.display_frame.i_rect) {
+    const auto &dst = *layer.pi.display_frame.i_rect;
+    out.display_left = dst.left;
+    out.display_top = dst.top;
+    out.display_right = dst.right;
+    out.display_bottom = dst.bottom;
+  } else {
+    out.display_right = static_cast<int32_t>(bi.width);
+    out.display_bottom = static_cast<int32_t>(bi.height);
+  }
+
+  /* Coverage blending multiplies at draw time; premultiplied does not.
+   * Anything else means the layer carries no alpha worth honouring, and
+   * saying premultiplied of an opaque layer costs nothing. */
+  out.premultiplied = bi.blend_mode != BufferBlendMode::kCoverage;
+  out.alpha = layer.pi.alpha;
+  out.acquire_fence = layer.acquire_fence ? *layer.acquire_fence : -1;
+
+  return out;
+}
+
 }  // namespace
 
 std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
@@ -275,6 +325,8 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
    * handles this far. */
   std::vector<buffer_handle_t> handles(available.size(), nullptr);
 
+  TegraAtomicRequest::Merge merge;
+
   if (args.composition) {
     for (const auto &joining : args.composition->plan) {
       if (!joining.plane)
@@ -289,6 +341,21 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
       }
 
       const size_t slot = static_cast<size_t>(it - available.begin());
+
+      /* A layer bound for the merging plane is not described to the
+       * controller at all, because what that window will show is not this
+       * buffer. Set aside instead, to be drawn when the frame is executed --
+       * a plan is weighed several times before one is chosen, and drawing for
+       * each of those would cost more than the merge saves. */
+      const auto *plane = static_cast<const TegraPlane *>(joining.plane->Get());
+      if (plane->IsMerging()) {
+        merge.layers.push_back(MergeLayerFrom(joining.layer));
+        merge.slot = slot;
+        merge.window = static_cast<int32_t>(plane_id);
+        merge.depth = DepthForZPos(joining.z_pos);
+        continue;
+      }
+
       if (!DescribeWindow(joining.layer, plane_id,
                           DepthForZPos(joining.z_pos), &windows[slot]))
         return nullptr;
@@ -301,7 +368,8 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
   return std::make_unique<TegraAtomicRequest>(std::move(windows),
                                               std::move(handles),
                                               args.composition != nullptr,
-                                              args.power_mode);
+                                              args.power_mode,
+                                              std::move(merge));
 }
 
 bool TegraAtomicStateManager::Test(const AtomicRequest &request) {
@@ -352,6 +420,71 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
    */
   std::vector<hwc::DcHead::Window> windows = tegra.GetWindows();
   const std::vector<buffer_handle_t> &handles = tegra.GetHandles();
+
+  /* What would not fit a window is drawn now, into a buffer of our own, and
+   * the window is told to show that instead.
+   *
+   * Here rather than where the plan was described, because a plan is weighed
+   * several times before one is chosen and only one of those becomes a frame.
+   *
+   * The result is left out of the handles beside the windows on purpose: that
+   * list is what the flattening pass below walks, and this buffer was never
+   * drawn by the GPU, so there is nothing in it to flatten.
+   */
+  SharedFd merged;
+  const auto &merge = tegra.GetMerge();
+  if (!merge.layers.empty()) {
+    if (vic_ == nullptr || scratch_ == nullptr) {
+      ALOGE("a frame was planned for an engine this display has not got");
+      return -EINVAL;
+    }
+
+    buffer_handle_t target = scratch_->Next();
+    if (target == nullptr)
+      return -EBUSY;
+
+    merged = vic_->Compose(target, merge.layers);
+    if (!merged) {
+      /* The engine would not take it. Nothing has been written, so the honest
+       * thing is to drop the frame rather than show a window whatever it held
+       * before -- and the planner will be asked again for the next one. */
+      ALOGE("the engine refused a frame of %zu layer(s)", merge.layers.size());
+      return -EINVAL;
+    }
+
+    auto *gralloc = NvGralloc::GetInstance();
+    NvGralloc::Surface surface{};
+    const int fd = gralloc != nullptr ? gralloc->GetMemFd(target) : -1;
+    if (fd < 0 || !gralloc->DescribeSurface(target, &surface)) {
+      ALOGE("cannot describe the buffer the engine just drew");
+      return -EINVAL;
+    }
+
+    hwc::DcHead::Window &window = windows[merge.slot];
+    window = hwc::DcHead::Window{};
+    window.index = merge.window;
+    window.bufferFd = fd;
+    window.offset = surface.offset;
+    window.stride = surface.pitch;
+
+    /* Ours to know rather than to ask about: this buffer was allocated by
+     * this composer, as thirty-two bit colour laid out in rows, which is the
+     * one shape the window it is bound for can show. */
+    window.pixelFormat = TEGRA_DC_EXT_FMT_R8G8B8A8;
+    window.flags = 0;
+    window.blockHeightLog2 = 0;
+
+    /* Shown whole and unresized. Everything about where each layer went is
+     * already in the pixels; the window's only job is to put them on the
+     * panel and blend them over what is underneath. */
+    window.sourceWidth = static_cast<float>(surface.width);
+    window.sourceHeight = static_cast<float>(surface.height);
+    window.outWidth = static_cast<int32_t>(surface.width);
+    window.outHeight = static_cast<int32_t>(surface.height);
+    window.z = merge.depth;
+    window.blend = TEGRA_DC_EXT_BLEND_PREMULT;
+    window.preFence = *merged;
+  }
 
   /* Held until the flip has been made. The controller waits on these before
    * reading, and a fence closed while it is still waited on is a frame shown
@@ -416,6 +549,14 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   int err = head_.flip(windows, &post_fence);
   if (err)
     return err;
+
+  /* Said even when the flip failed would be wrong -- nothing is showing that
+   * buffer then, and holding it back would cost a frame for nothing. Said
+   * here, with the fence this flip returned: the buffer is free to be drawn
+   * into again once the display has finished reading it, and that is what
+   * this fence means. */
+  if (merged && scratch_ != nullptr)
+    scratch_->Presented(MakeSharedFd(::dup(*post_fence)));
 
   /* Only when the two together did not fit comfortably inside a refresh --
    * the rest is the ordinary case and says nothing. */

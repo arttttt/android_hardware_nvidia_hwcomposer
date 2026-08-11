@@ -66,13 +66,6 @@ TegraDisplayPipeline::TegraDisplayPipeline(TegraConnector &tegraConnector,
     connector = tegraConnector.BindPipeline(this);
     crtc = mCrtc.BindPipeline(this);
 
-    atomic_state_manager =
-        std::make_unique<drm_hwcomposer::TegraAtomicStateManager>(
-            *mHead, tegraConnector.GetModes());
-
-    /* The planner is not built here. Which one runs is a decision the backend
-     * makes from a property, and a pipeline has no business overriding it. */
-
     /* Asked for once, here, rather than the first time a frame needs it: a
      * failure to reach the engine is a fact about the device, and finding it
      * out while assembling a frame would mean finding it out sixty times a
@@ -96,6 +89,16 @@ TegraDisplayPipeline::TegraDisplayPipeline(TegraConnector &tegraConnector,
         if (!mScratch)
             mVic.reset();
     }
+
+    /* After the engine, and it has to be: the state manager is handed both
+     * and would otherwise be handed nothing on the very boot where they were
+     * wanted. */
+    atomic_state_manager =
+        std::make_unique<drm_hwcomposer::TegraAtomicStateManager>(
+            *mHead, tegraConnector.GetModes(), mVic.get(), mScratch.get());
+
+    /* The planner is not built here. Which one runs is a decision the backend
+     * makes from a property, and a pipeline has no business overriding it. */
 }
 
 TegraDisplayPipeline::~TegraDisplayPipeline() {
@@ -108,9 +111,9 @@ TegraDisplayPipeline::~TegraDisplayPipeline() {
      * The vertical blank reader goes first for the same reason -- it must
      * stop before the devices it reads from do. */
     mVSync.reset();
+    atomic_state_manager.reset();
     mVic.reset();
     mScratch.reset();
-    atomic_state_manager.reset();
     planner.reset();
     connector.reset();
     crtc.reset();
