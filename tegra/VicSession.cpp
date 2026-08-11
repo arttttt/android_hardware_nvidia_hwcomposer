@@ -138,14 +138,20 @@ bool VicSession::Open() {
   if (!Resolve())
     return false;
 
-  if (rm_open_(&rm_device_) != kNvSuccess || rm_device_ == nullptr) {
-    ALOGE("cannot open the resource manager");
+  /* Their error numbers are reported as they come back. They are worth
+   * printing rather than reducing to a yes or no: this whole path is reached
+   * through recovered signatures, and the difference between "the engine says
+   * no" and "the engine was handed something it did not expect" is the
+   * difference between a wrong plan and a wrong call. */
+  int err = rm_open_(&rm_device_);
+  if (err != kNvSuccess || rm_device_ == nullptr) {
+    ALOGE("cannot open the resource manager: %d (handle %p)", err, rm_device_);
     return false;
   }
 
-  if (create_session_(rm_device_, &session_) != kNvSuccess ||
-      session_ == nullptr) {
-    ALOGE("cannot open a compositor session");
+  err = create_session_(rm_device_, &session_);
+  if (err != kNvSuccess || session_ == nullptr) {
+    ALOGE("cannot open a compositor session: %d (session %p)", err, session_);
     return false;
   }
 
