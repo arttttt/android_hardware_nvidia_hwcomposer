@@ -51,9 +51,9 @@ class TegraAtomicRequest : public AtomicRequest {
    * Empty on every frame that needs no merge, which is most of them. */
   struct Merge {
     std::vector<hwc::VicSession::Layer> layers;
-    size_t slot = 0;
-    int32_t window = -1;
-    uint32_t depth = 0;
+    size_t slot;
+    int32_t window;
+    uint32_t depth;
   };
 
   TegraAtomicRequest(std::vector<hwc::DcHead::Window> windows,

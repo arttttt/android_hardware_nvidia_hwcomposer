@@ -555,8 +555,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
    * here, with the fence this flip returned: the buffer is free to be drawn
    * into again once the display has finished reading it, and that is what
    * this fence means. */
-  if (merged && scratch_ != nullptr)
-    scratch_->Presented(MakeSharedFd(::dup(*post_fence)));
+  if (merged && scratch_ != nullptr && post_fence)
+    scratch_->Presented(MakeSharedFd(::dup(post_fence.get())));
 
   /* Only when the two together did not fit comfortably inside a refresh --
    * the rest is the ordinary case and says nothing. */
