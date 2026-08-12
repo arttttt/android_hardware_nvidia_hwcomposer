@@ -131,6 +131,29 @@ drm_hwcomposer::UsablePlanes TegraDisplayPipeline::GetUsablePlanes() const {
 
             mPlanes.push_back(
                 std::make_unique<drm_hwcomposer::TegraPlane>(index, *caps));
+
+            /* The merging window is offered several times over.
+             *
+             * A planner gives one layer to one plane, and there is no way to
+             * tell it that a plane takes more -- so it is told there are more
+             * planes. All of these name the same window, and everything that
+             * lands on any of them is drawn into the one buffer that window
+             * shows.
+             *
+             * That is not a lie it can be caught in. Planes are handed out in
+             * the order they appear here, so these, coming last, take the
+             * topmost layers -- which is exactly the group a single buffer can
+             * hold, because a merged buffer occupies one place in the stack
+             * and anything above it would have to be inside it.
+             *
+             * As many as the engine draws in one pass and no more.
+             */
+            if (mVic && mScratch && caps->pitchLayout && !caps->scaling) {
+                for (size_t i = 1; i < VicSession::kMaxLayers; i++)
+                    mPlanes.push_back(
+                        std::make_unique<drm_hwcomposer::TegraPlane>(index,
+                                                                     *caps));
+            }
         }
     }
 

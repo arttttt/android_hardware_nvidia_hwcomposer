@@ -349,10 +349,17 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
        * each of those would cost more than the merge saves. */
       const auto *plane = static_cast<const TegraPlane *>(joining.plane->Get());
       if (plane->IsMerging()) {
+        /* Several planes can name the same window -- that is how a planner
+         * which gives one layer to one plane is told that this one takes
+         * more. They arrive in order of height, so the first is the bottom of
+         * the group, and its place in the stack is the merged buffer's: what
+         * is above it in the group is above it inside the buffer. */
+        if (merge.layers.empty()) {
+          merge.slot = slot;
+          merge.window = static_cast<int32_t>(plane_id);
+          merge.depth = DepthForZPos(joining.z_pos);
+        }
         merge.layers.push_back(MergeLayerFrom(joining.layer));
-        merge.slot = slot;
-        merge.window = static_cast<int32_t>(plane_id);
-        merge.depth = DepthForZPos(joining.z_pos);
         continue;
       }
 
