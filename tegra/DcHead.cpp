@@ -150,9 +150,16 @@ bool DcHead::tryClaimWindow(uint32_t index) {
 }
 
 const DcHead::WindowCapabilities *DcHead::capabilities(uint32_t index) {
+    /* Remembered only once it has been answered. What the windows can do is a
+     * fact about the silicon and does not change -- but the controller will
+     * only recite it while it is running, so a refusal describes the moment,
+     * not the hardware. Latching one would leave a head that happened to be
+     * asked a fraction too early unable to show anything for as long as the
+     * composer lives. */
     if (!mCapabilitiesRead) {
-        mCapabilitiesRead = true;
-        if (!readCapabilities())
+        if (readCapabilities())
+            mCapabilitiesRead = true;
+        else
             HWC_LOGE("head %d would not say what its windows can do", mIndex);
     }
 
@@ -181,15 +188,36 @@ bool DcHead::readCapabilities() {
 
     struct tegra_dc_ext_feature request;
     memset(&request, 0, sizeof(request));
-    request.length = kMaxEntries;
     request.entries = reinterpret_cast<__u32 *>(entries.data());
+
+    /* The length is left at zero on the way in, and that is the whole of the
+     * check below.
+     *
+     * This call fills the table only while the controller is running. When it
+     * is not, the driver writes nothing at all -- not the entries, not the
+     * length -- and returns success. So a caller that put the size of its own
+     * buffer in that field would read its own number back, conclude the table
+     * was that long, and parse a run of zeros: a head whose every window reads
+     * no formats and is no pixels wide, described with complete confidence.
+     *
+     * Which is exactly what happened the first time SurfaceFlinger came back
+     * to a composer that had outlived it. Zero going in makes the driver's
+     * silence audible.
+     */
+    request.length = 0;
 
     if (ioctl(mFd.get(), TEGRA_DC_EXT_GET_FEATURES, &request) < 0) {
         HWC_LOGE("head %d: GET_FEATURES: %s", mIndex, strerror(errno));
         return false;
     }
 
-    if (request.length == 0 || request.length > kMaxEntries) {
+    if (request.length == 0) {
+        HWC_LOGE("head %d described nothing, which is what it does while it "
+                 "is off", mIndex);
+        return false;
+    }
+
+    if (request.length > kMaxEntries) {
         HWC_LOGE("head %d: feature table of %u entries", mIndex,
                  request.length);
         return false;
