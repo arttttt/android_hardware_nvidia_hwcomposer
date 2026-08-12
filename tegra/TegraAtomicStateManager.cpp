@@ -682,6 +682,15 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
    */
   if (handed_out_fence_) {
     const std::optional<int64_t> due = SignalTimeNs(handed_out_fence_);
+
+    /* Free: the asking has already been done for the warning below. */
+    if (count_fences_) {
+      if (due)
+        fences_.due_a_frame_later++;
+      else
+        fences_.still_not_due++;
+    }
+
     constexpr int64_t kTwoRefreshesNs = 33326654;
     if (due && *due - handed_out_ns_ > kTwoRefreshesNs) {
       /* Said outright rather than behind the trace switch. That switch guards
@@ -715,7 +724,9 @@ std::string TegraAtomicStateManager::DumpState() {
      << "  frames                  : " << c.frames << "\n"
      << "  already due when given  : " << c.already_due << "\n"
      << "  not yet due when given  : " << c.not_yet_due << "\n"
-     << "  no fence given at all   : " << c.without_fence << "\n";
+     << "  no fence given at all   : " << c.without_fence << "\n"
+     << "  due one frame later     : " << c.due_a_frame_later << "\n"
+     << "  still not due then      : " << c.still_not_due << "\n";
   if (c.could_not_ask != 0)
     ss << "  could not be asked      : " << c.could_not_ask << "\n";
 

@@ -234,6 +234,15 @@ class TegraAtomicStateManager : public AtomicStateManager {
     uint64_t not_yet_due = 0;
     uint64_t without_fence = 0;
     uint64_t could_not_ask = 0;
+
+    /* The same question asked a frame later, which is what tells a fence that
+     * is genuinely slow from a question that cannot be answered. If nothing is
+     * ever due at hand-over and everything is due a frame later, the fence
+     * simply needs longer than a flip interval and the client is right to
+     * wait. If nothing is ever due at either moment, it is the asking that is
+     * broken, and every number above it means nothing. */
+    uint64_t due_a_frame_later = 0;
+    uint64_t still_not_due = 0;
   };
   FenceCounters fences_;
 
