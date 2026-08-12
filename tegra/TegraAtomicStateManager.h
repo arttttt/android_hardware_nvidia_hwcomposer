@@ -21,6 +21,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "display/AtomicStateManager.h"
@@ -125,6 +126,7 @@ class TegraAtomicStateManager : public AtomicStateManager {
                           hwc::VicSession *vic, hwc::ScratchPool *scratch)
       : head_(head), modes_(modes), vic_(vic), scratch_(scratch) {
     present_fence_source_ = PresentFenceFromProperty();
+    count_fences_ = CountFencesFromProperty();
   }
 
   std::unique_ptr<AtomicRequest> GetAtomicModeReqForArgs(
@@ -154,6 +156,8 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * job: the controller posts frames and has no say over whether the display
    * is lit, so this goes to the framebuffer device on the same hardware. */
   int SetPowered(bool powered);
+
+  std::string DumpState() override;
 
   hwc::DcHead &head_;
 
@@ -208,6 +212,34 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * costs is the one thing being measured here, and a measurement that adds
    * to it is worth nothing. */
   static PresentFence PresentFenceFromProperty();
+  static bool CountFencesFromProperty();
+
+  /* Had the fence handed out already come due when it was handed out?
+   *
+   * Counted rather than reasoned about, because reasoning has failed twice.
+   * The kernel's own trace says a flip's fence comes due 10.5 ms after that
+   * flip, and flips through the slow transition are 19.2 ms apart -- so the
+   * fence handed over, belonging to the flip before, should have been due
+   * some eight milliseconds before anyone received it, and nobody should
+   * wait. The client waits anyway, fourteen milliseconds a frame. One of
+   * those two measurements is wrong about something, and only this side of
+   * the boundary can say which.
+   *
+   * Read and reset by the dump, so a caller can bracket one transition
+   * between two of them -- the same way the composition statistics are read.
+   */
+  struct FenceCounters {
+    uint64_t frames = 0;
+    uint64_t already_due = 0;
+    uint64_t not_yet_due = 0;
+    uint64_t without_fence = 0;
+    uint64_t could_not_ask = 0;
+  };
+  FenceCounters fences_;
+
+  /* Off unless asked for. The question costs one call into the kernel per
+   * frame, and a frame is the thing being measured. */
+  bool count_fences_ = false;
 
   /* The fence the previous flip returned. */
   SharedFd previous_post_fence_;

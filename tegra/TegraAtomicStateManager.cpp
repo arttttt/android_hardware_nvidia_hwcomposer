@@ -24,6 +24,8 @@
 #include <time.h>
 
 #include <optional>
+#include <sstream>
+#include <string>
 
 #include <algorithm>
 #include <memory>
@@ -83,6 +85,29 @@ int64_t NowNs() {
  * fence's own, so it says when the hardware finished rather than when this
  * thread got round to asking.
  */
+/* Has this fence come due yet?
+ *
+ * Separate from SignalTimeNs, which answers "not yet" and "could not ask" with
+ * the same empty result. For a warning that is fine -- neither is worth
+ * saying. For counting it is not: a column of frames that could not be asked
+ * about, read as a column of frames that waited, would answer the question
+ * this counting exists to settle, and answer it wrongly.
+ */
+enum class Due { kYes, kNotYet, kCouldNotAsk };
+
+Due FenceDue(const SharedFd &fence) {
+  if (!fence)
+    return Due::kCouldNotAsk;
+
+  struct sync_file_info *info = sync_file_info(*fence);
+  if (info == nullptr)
+    return Due::kCouldNotAsk;
+
+  const Due answer = info->status == 1 ? Due::kYes : Due::kNotYet;
+  sync_file_info_free(info);
+  return answer;
+}
+
 std::optional<int64_t> SignalTimeNs(const SharedFd &fence) {
   if (!fence)
     return std::nullopt;
@@ -621,6 +646,26 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
 
   previous_post_fence_ = std::move(this_post_fence);
 
+  /* Was it already due when it was given away? */
+  if (count_fences_) {
+    fences_.frames++;
+    if (out_result == nullptr || !out_result->present_fence) {
+      fences_.without_fence++;
+    } else {
+      switch (FenceDue(out_result->present_fence)) {
+        case Due::kYes:
+          fences_.already_due++;
+          break;
+        case Due::kNotYet:
+          fences_.not_yet_due++;
+          break;
+        case Due::kCouldNotAsk:
+          fences_.could_not_ask++;
+          break;
+      }
+    }
+  }
+
   /* How late the fence just handed out comes due, asked one frame later.
    *
    * It is the client's release fence as well as this frame's present fence,
@@ -653,6 +698,32 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   handed_out_ns_ = before_flip;
 
   return 0;
+}
+
+std::string TegraAtomicStateManager::DumpState() {
+  if (!count_fences_)
+    return {};
+
+  const FenceCounters c = fences_;
+  /* Read and reset, so that two dumps around one transition describe that
+   * transition and nothing else -- which is how the composition statistics
+   * beside it are already read. */
+  fences_ = {};
+
+  std::stringstream ss;
+  ss << "Fences handed to the framework since last dumpsys request:\n"
+     << "  frames                  : " << c.frames << "\n"
+     << "  already due when given  : " << c.already_due << "\n"
+     << "  not yet due when given  : " << c.not_yet_due << "\n"
+     << "  no fence given at all   : " << c.without_fence << "\n";
+  if (c.could_not_ask != 0)
+    ss << "  could not be asked      : " << c.could_not_ask << "\n";
+
+  return ss.str();
+}
+
+bool TegraAtomicStateManager::CountFencesFromProperty() {
+  return property_get_bool("vendor.hwc.fencestats", 0) != 0;
 }
 
 TegraAtomicStateManager::PresentFence

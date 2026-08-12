@@ -80,6 +80,16 @@ std::string DumpDisplayStats(const HwcDisplay *display,
      << DumpStats(stats) << "\n\n"
      << "Statistics since last dumpsys request:\n"
      << DumpStats(delta) << "\n\n";
+
+  /* And whatever the platform's flip machinery counts, which nothing above it
+   * can see. Silence from a platform that counts nothing prints nothing. */
+  auto &state_manager = display->GetPipe().atomic_state_manager;
+  if (state_manager) {
+    const std::string platform = state_manager->DumpState();
+    if (!platform.empty())
+      ss << platform << "\n";
+  }
+
   return ss.str();
 }
 }  // namespace

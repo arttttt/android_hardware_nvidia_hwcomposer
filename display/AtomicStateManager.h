@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 
 #include "compositor/DisplayInfo.h"
 #include "display/DrmMode.h"
@@ -89,6 +90,22 @@ class AtomicStateManager {
       AtomicCommitArgs &args) = 0;
   virtual bool IsActive() const = 0;
   virtual void WaitLastFrame() = 0;
+
+  /* What this platform's flip machinery has to say in a dump.
+   *
+   * Empty by default, which is the honest answer for a state manager that
+   * counts nothing. It exists because the numbers worth having about a flip --
+   * whether the fence handed back had already come due, how many frames went
+   * out without one -- are known only where the flip is made, and nowhere
+   * above here can ask for them.
+   *
+   * Read-and-reset is left to the implementation. Both callers of a dump want
+   * the same thing the composition statistics already give: what happened
+   * since the last time anyone asked.
+   */
+  virtual std::string DumpState() {
+    return {};
+  }
 };
 
 }  // namespace android::drm_hwcomposer
