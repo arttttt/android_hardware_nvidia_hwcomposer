@@ -41,6 +41,25 @@ std::unique_ptr<TegraDisplayPipeline> TegraDisplayPipeline::create(
     if (!head)
         return nullptr;
 
+    /* Lit before it is asked anything.
+     *
+     * At boot this changes nothing: the panel is already on, with the boot
+     * animation on it. It matters the second time round. A composer outlives
+     * the SurfaceFlinger it serves, and a SurfaceFlinger blanks the panel on
+     * its way out -- so the next one to arrive inherits a dark controller.
+     *
+     * A dark controller is not merely idle, it is misleading. It describes its
+     * windows as reading no formats and being no pixels wide, and it refuses
+     * every flip. Worse, nothing later undoes it: the state manager starts out
+     * believing the panel is on, so the very request that would have lit it is
+     * taken for a no-op, and the display stays dark for as long as the process
+     * lives.
+     *
+     * Whatever power mode SurfaceFlinger actually wants arrives moments later
+     * and is obeyed. This only makes the starting point true.
+     */
+    setPanelPowered(index, true);
+
     /* Both devices, because a blank takes both: the head is what is asked to
      * report them, the control device is where they come out. The head index
      * doubles as the event handle -- the controller reports blanks against
