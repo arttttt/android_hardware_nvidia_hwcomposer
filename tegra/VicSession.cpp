@@ -224,11 +224,29 @@ drm_hwcomposer::SharedFd VicSession::Compose(
   std::memset(config_.data(), 0, config_.size());
   void *config = config_.data();
 
+  /* The whole buffer, every time, and never the part a layer happens to
+   * cover.
+   *
+   * What falls outside this rectangle the engine does not touch, and these
+   * buffers are taken in turn -- so an untouched corner still holds what was
+   * drawn there two frames ago. On a still picture that is invisible; on an
+   * animation, where the layer moves and resizes every frame, it is a trail
+   * of the frame before last left standing around the edges.
+   *
+   * Asked of the allocator rather than derived from the layers for the same
+   * reason: the answer must be about the buffer, not about what is being put
+   * in it. */
+  drm_hwcomposer::NvGralloc::Surface target_surface{};
+  if (!gralloc->DescribeSurface(target, &target_surface)) {
+    refused_++;
+    return {};
+  }
+
   const NvRect target_rect = {
       .left = 0,
       .top = 0,
-      .right = layers.front().display_right,
-      .bottom = layers.front().display_bottom,
+      .right = static_cast<int32_t>(target_surface.width),
+      .bottom = static_cast<int32_t>(target_surface.height),
   };
 
   if (configure_target_(session_, config, target_surfaces,
