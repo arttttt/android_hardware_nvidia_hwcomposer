@@ -17,7 +17,6 @@
 #include "tegra/ScratchPool.h"
 
 #include <hardware/gralloc.h>
-#include <sync/sync.h>
 #include <ui/GraphicBufferAllocator.h>
 #include <ui/PixelFormat.h>
 
@@ -39,28 +38,6 @@ namespace {
  * on the class for why rows are what the merge wants. */
 constexpr uint64_t kUsage = GRALLOC_USAGE_HW_COMPOSER |
                             GRALLOC_USAGE_SW_READ_OFTEN;
-
-/* Asked, not waited for.
- *
- * This runs inside the assembling of a frame, and a frame is the one thing
- * here that must not be made to wait. With three buffers a slot comes round
- * again two frames after it was shown, so by the time it is wanted the display
- * has long finished with it and the question is answered immediately -- but
- * "almost always immediately" is not the same as "never blocks", and on the
- * path a frame takes only the second one will do.
- *
- * Every other implementation is built the same way round: Samsung moves
- * framebuffer teardown, buffer release and reallocation onto three separate
- * threads for exactly this reason, and Intel hands its own teardown to the
- * compositor thread. None of them lets the caller of a commit wait for
- * housekeeping.
- *
- * So the slot is polled. Still busy means the merge is skipped for this frame
- * and the layers go their ordinary way, which is what the caller already does
- * with a refusal -- a frame late by one composition, rather than a frame late
- * by however long the wait took.
- */
-constexpr int kNoWait = 0;
 
 }  // namespace
 
@@ -110,50 +87,29 @@ ScratchPool::~ScratchPool() {
       allocator.free(slot.handle);
 }
 
-buffer_handle_t ScratchPool::Next() {
-  /* Whichever is free, rather than whichever is next.
+buffer_handle_t ScratchPool::Next(drm_hwcomposer::SharedFd *ready) {
+  if (slots_.empty())
+    return nullptr;
+
+  /* Strictly in turn, over every buffer there is.
    *
-   * Taking them strictly in turn means asking for one particular buffer and
-   * accepting whatever state it happens to be in -- so a slot that went out
-   * two frames ago and has long since come back is passed over in favour of
-   * the one that was shown last, purely because its number came up. Starting
-   * from the one after the last used keeps them evenly worn when they are all
-   * free, which is the ordinary case; the rest of the round is there for when
-   * they are not.
-   */
-  for (size_t tried = 0; tried < slots_.size(); ++tried) {
-    const size_t at = (at_ + 1 + tried) % slots_.size();
-    Slot &slot = slots_[at];
-
-    /* What is on screen is not a candidate at any price. Nothing has replaced
-     * it yet, so there is no fence that could say when it comes free, and
-     * drawing into it would be drawing into the picture. */
-    if (slot.showing)
-      continue;
-
-    /* Asked and not waited for -- see kNoWait. A slot whose replacement has
-     * not reached the panel is simply not this frame's slot. */
-    if (slot.freed_when && sync_wait(*slot.freed_when, kNoWait) < 0)
-      continue;
-
-    slot.freed_when = {};
-    at_ = at;
-    return slot.handle;
-  }
-
-  /* Every buffer this pool has is still somewhere between here and the panel.
-   * One is being shown and one may be waiting behind it, so a third that is
-   * also unavailable means the display is further behind than it can be while
-   * anything here is working -- not a slow frame but a stuck one.
+   * Nothing is held back and nothing is inspected: the buffer three frames
+   * ago is the buffer whose turn it is, and whether the display has finished
+   * with it is a question for the fence handed out beside it rather than for
+   * this call. That is what keeps all three in the rotation.
    *
-   * Nothing good can be done with it. Writing into a buffer the display is
-   * reading would tear it, and waiting for one would only add this frame to a
-   * queue that is already too long. The caller drops the frame, which is the
-   * one response that lets the pipeline drain.
+   * Choosing instead -- passing over what is on screen, testing the rest and
+   * taking the first whose fence is due -- looks safer and is not: a pool of
+   * three then lends out two, and it turns a frame that would merely have
+   * been drawn a little later into a frame that is not drawn at all.
    */
-  ALOGE("all %zu scratch buffers are still on their way to the panel",
-        slots_.size());
-  return nullptr;
+  at_ = (at_ + 1) % slots_.size();
+  Slot &slot = slots_[at_];
+
+  if (ready != nullptr)
+    *ready = slot.freed_when;
+
+  return slot.handle;
 }
 
 void ScratchPool::Presented(const drm_hwcomposer::SharedFd &fence) {
@@ -167,13 +123,12 @@ void ScratchPool::Presented(const drm_hwcomposer::SharedFd &fence) {
    * belongs to, the pool started handing back the buffer the display was
    * reading and the engine drew over the picture.
    */
-  if (anything_showing_ && showing_ < slots_.size()) {
-    Slot &previous = slots_[showing_];
-    previous.showing = false;
-    previous.freed_when = fence;
-  }
+  if (anything_showing_ && showing_ < slots_.size())
+    slots_[showing_].freed_when = fence;
 
-  slots_[at_].showing = true;
+  /* Nothing can say when this one comes free: the frame that will replace it
+   * has not been posted. It is answered three turns from now, by which time
+   * the frame above will have named it. */
   slots_[at_].freed_when = {};
   showing_ = at_;
   anything_showing_ = true;

@@ -63,12 +63,23 @@ class ScratchPool {
   ScratchPool(const ScratchPool &) = delete;
   ScratchPool &operator=(const ScratchPool &) = delete;
 
-  /* A buffer nothing is reading, to draw the next frame into. Null when there
-   * is no such buffer, which the caller answers by dropping the frame.
+  /* The next buffer to draw into, and the fence saying when it may be drawn
+   * into -- which is not the same as saying it is ready now.
    *
-   * Asks rather than waits -- see the note in the source on why a frame is
-   * never made to wait here. */
-  buffer_handle_t Next();
+   * Every buffer stays in the rotation, including the one on screen. What
+   * keeps that safe is the fence handed out beside it: it comes due when the
+   * frame that replaced this buffer appears, and whoever draws is expected to
+   * wait for it rather than for this call to return.
+   *
+   * The alternative -- holding a buffer back until its fence is due -- means
+   * a pool of three lends out two, and the frame that finds nothing free is
+   * simply lost. Which is the whole difference between this and the vendor's
+   * own, whose scratch set hands its buffer over with exactly this fence as
+   * the acquire fence of the composition.
+   *
+   * `ready` is left empty when the buffer has never been shown. Null return
+   * only if the pool holds nothing at all. */
+  buffer_handle_t Next(drm_hwcomposer::SharedFd *ready);
 
   /* Says that a frame has been posted, against the fence it will appear on.
    *
@@ -90,13 +101,10 @@ class ScratchPool {
   struct Slot {
     buffer_handle_t handle = nullptr;
 
-    /* On screen, or on its way there, and not yet replaced by anything. No
-     * fence can say when such a buffer comes free, because the frame that
-     * will free it has not been posted yet. */
-    bool showing = false;
-
-    /* Once it has been replaced: when the frame that replaced it appears,
-     * which is the moment the display stops reading this one. */
+    /* When the frame that replaced this buffer appears, which is the moment
+     * the display stops reading this one. Empty while it is still the newest
+     * thing posted, and while it has never been shown at all -- in both cases
+     * there is no such frame yet to name. */
     drm_hwcomposer::SharedFd freed_when;
   };
 

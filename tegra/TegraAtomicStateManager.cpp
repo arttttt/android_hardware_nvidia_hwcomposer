@@ -472,11 +472,15 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       return -EINVAL;
     }
 
-    buffer_handle_t target = scratch_->Next();
+    /* The buffer and, separately, when it may be written to. The engine is
+     * told the second and waits for it itself; nothing here does. */
+    SharedFd target_ready;
+    buffer_handle_t target = scratch_->Next(&target_ready);
     if (target == nullptr)
       return -EBUSY;
 
-    merged = vic_->Compose(target, merge.layers);
+    merged = vic_->Compose(target, merge.layers,
+                           target_ready ? *target_ready : -1);
     if (!merged) {
       /* The engine would not take it. Nothing has been written, so the honest
        * thing is to drop the frame rather than show a window whatever it held

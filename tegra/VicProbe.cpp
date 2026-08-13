@@ -123,7 +123,8 @@ void Run() {
   if (!pool)
     return;
 
-  buffer_handle_t target = pool->Next();
+  /* Never shown, so nothing is waiting on it and the fence is empty. */
+  buffer_handle_t target = pool->Next(nullptr);
   if (target == nullptr)
     return;
 

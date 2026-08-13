@@ -99,6 +99,18 @@ class VicSession {
 
   /* Draws `layers` into `target`, bottom of the list first.
    *
+   * `target_ready` says when the target may be written to -- it is the fence
+   * of the frame that replaced whatever `target` was last showing, and until
+   * it comes due the display is still reading that buffer. Handed to the
+   * engine rather than waited for: the engine is perfectly able to wait, it
+   * does so without occupying a thread, and it is the only way every buffer
+   * can stay in rotation. Waiting on it here instead, or refusing to offer a
+   * buffer until it is due, costs exactly the buffers it protects -- which is
+   * why the vendor's own composer passes it along the same way, as the
+   * acquire fence of its scratch surface.
+   *
+   * Borrowed like the layers' own: read, not taken.
+   *
    * Returns the fence to wait on before the result is read, or an empty one
    * if the engine would not take this set -- which is not a fault and is
    * counted rather than complained about: it is the signal that the merge has
@@ -107,7 +119,8 @@ class VicSession {
    * More than kMaxLayers layers is refused the same way.
    */
   drm_hwcomposer::SharedFd Compose(buffer_handle_t target,
-                                   const std::vector<Layer> &layers);
+                                   const std::vector<Layer> &layers,
+                                   int target_ready = -1);
 
   /* How many sets the engine has refused, and how many it has taken. What
    * decides whether a third way of merging is worth building at all. */

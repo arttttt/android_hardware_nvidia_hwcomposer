@@ -194,7 +194,8 @@ VicSession::~VicSession() {
 }
 
 drm_hwcomposer::SharedFd VicSession::Compose(
-    buffer_handle_t target, const std::vector<Layer> &layers) {
+    buffer_handle_t target, const std::vector<Layer> &layers,
+    int target_ready) {
   if (layers.empty() || layers.size() > kMaxLayers) {
     refused_++;
     return {};
@@ -260,7 +261,20 @@ drm_hwcomposer::SharedFd VicSession::Compose(
   exec.output = target_surfaces;
 
   std::vector<NvRmFence> waits;
-  waits.reserve(layers.size());
+  waits.reserve(layers.size() + 1);
+
+  /* The target first: until this comes due the display is still reading the
+   * buffer we are about to draw into. Given to the engine exactly as the
+   * layers' own are -- see the note on target_ready for why waiting here
+   * instead would cost the buffers this protects. */
+  if (target_ready >= 0) {
+    NvRmFence from_fd[8] = {};
+    auto n = static_cast<uint32_t>(std::size(from_fd));
+    if (fence_from_fd_(target_ready, from_fd, &n) == kNvSuccess) {
+      for (uint32_t f = 0; f < n; f++)
+        waits.push_back(from_fd[f]);
+    }
+  }
 
   for (size_t i = 0; i < layers.size(); i++) {
     const Layer &layer = layers[i];
