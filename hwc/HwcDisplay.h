@@ -470,6 +470,27 @@ class HwcDisplay : public ICompositorDisplay {
   std::unique_ptr<BacklightController> backlight_controller_;
 
   PresentedCompositionCache last_presented_composition_;
+
+  /* Which buffers a frame handed to an engine instead of to the display, and
+   * when that engine finished reading them.
+   *
+   * Two frames' worth, because a release fence is not about the buffer a layer
+   * has now -- it is about the one the layer has just given up, which was read
+   * while the frame before this one was being built. So the frame just
+   * committed fills the first of these, and the answers handed out this time
+   * come from the second.
+   */
+  struct EngineReads {
+    SharedFd fence;
+    std::vector<buffer_handle_t> buffers;
+  };
+
+  /* The fence saying when `prior` stopped being read, or nothing if the
+   * display was the one reading it and the frame's own fence is the answer. */
+  auto EngineFenceFor(buffer_handle_t prior) const -> std::optional<SharedFd>;
+
+  EngineReads engine_this_frame_;
+  EngineReads engine_last_frame_;
 };
 
 }  // namespace android::drm_hwcomposer

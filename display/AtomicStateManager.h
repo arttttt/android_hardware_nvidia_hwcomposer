@@ -16,10 +16,13 @@
 
 #pragma once
 
+#include <cutils/native_handle.h>
+
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "compositor/DisplayInfo.h"
 #include "display/DrmMode.h"
@@ -73,6 +76,23 @@ struct AtomicCommitArgs {
 struct AtomicCommitResult {
   SharedFd writeback_complete_fence;
   SharedFd present_fence;
+
+  /* Buffers this frame was not shown from, and when they stopped being read.
+   *
+   * A buffer the display is given is read for as long as it is on screen, so
+   * it is not free until the frame after it appears -- which is what the
+   * present fence says and why every layer is told to wait for it.
+   *
+   * A buffer some other engine was given is read once, while the frame is
+   * being put together, and is free the moment that engine is finished. That
+   * is sooner than the frame reaches the panel, by however long the frame
+   * then waits for the display, and telling its owner otherwise keeps a
+   * buffer out of their hands for no reason at all.
+   *
+   * Empty on a frame the display composed by itself, which is most of them.
+   */
+  SharedFd engine_fence;
+  std::vector<buffer_handle_t> engine_read;
 };
 
 class AtomicRequest {

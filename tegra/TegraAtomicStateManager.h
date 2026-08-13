@@ -128,6 +128,7 @@ class TegraAtomicStateManager : public AtomicStateManager {
     present_fence_source_ = PresentFenceFromProperty();
     count_fences_ = CountFencesFromProperty();
     throttle_to_one_frame_ = ThrottleFromProperty();
+    report_engine_reads_ = EngineReadsFromProperty();
   }
 
   std::unique_ptr<AtomicRequest> GetAtomicModeReqForArgs(
@@ -222,12 +223,22 @@ class TegraAtomicStateManager : public AtomicStateManager {
    */
   bool throttle_to_one_frame_ = true;
 
+  /* Whether to say which buffers the engine read rather than the display.
+   *
+   * On by default, because it is the vendor's documented contract rather than
+   * an idea of ours, and off is the old behaviour of telling every layer to
+   * wait for the flip. Kept switchable only so the two can be measured against
+   * each other on the panel without building twice.
+   */
+  bool report_engine_reads_ = true;
+
   /* Asked of the system once, at construction. Not in Execute: what a frame
    * costs is the one thing being measured here, and a measurement that adds
    * to it is worth nothing. */
   static PresentFence PresentFenceFromProperty();
   static bool CountFencesFromProperty();
   static bool ThrottleFromProperty();
+  static bool EngineReadsFromProperty();
 
   /* Had the fence handed out already come due when it was handed out?
    *

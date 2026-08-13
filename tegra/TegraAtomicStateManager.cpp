@@ -643,6 +643,30 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       case PresentFence::kNone:
         break;
     }
+
+    /* What the engine read, said separately from what the display was given.
+     *
+     * These buffers were drawn into a scratch buffer of ours and the display
+     * was handed that instead, so nothing on the panel is reading them. They
+     * stopped being read when the engine finished, which this fence names --
+     * and the display has not even started by then, since the flip above was
+     * told to wait for this very fence before touching the result.
+     *
+     * The vendor's own composer did exactly this, and its interface required
+     * it in as many words: the fence a composition returns "will be signalled
+     * once composition is complete", and the client "is responsible for
+     * updating each layer" with it. Ours handed every layer the flip's fence
+     * instead, which for these is one to two frames further off than the
+     * truth -- and a buffer withheld that long from a client with three of
+     * them leaves it drawing into two.
+     */
+    if (report_engine_reads_ && merged && !merge.layers.empty()) {
+      out_result->engine_fence = merged;
+      out_result->engine_read.reserve(merge.layers.size());
+      for (const auto &layer : merge.layers)
+        if (layer.handle != nullptr)
+          out_result->engine_read.push_back(layer.handle);
+    }
   }
 
   previous_post_fence_ = std::move(this_post_fence);
@@ -743,6 +767,12 @@ bool TegraAtomicStateManager::ThrottleFromProperty() {
    * an unbounded flip queue is hard to defend whatever it turns out to cost
    * here. Off is for measuring it. */
   return property_get_bool("vendor.hwc.throttle", 1) != 0;
+}
+
+bool TegraAtomicStateManager::EngineReadsFromProperty() {
+  /* On unless told otherwise. Off restores what this did before: every layer
+   * waits for the flip, whether or not the display ever read it. */
+  return property_get_bool("vendor.hwc.enginefence", 1) != 0;
 }
 
 TegraAtomicStateManager::PresentFence

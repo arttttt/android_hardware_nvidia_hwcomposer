@@ -582,12 +582,40 @@ auto HwcDisplay::PresentStagedComposition(
    */
   for (auto &l : layers_) {
     if (l.second.GetPriorBufferScanOutFlag()) {
-      out_release_fences.emplace_back(l.first, out_present_fence);
+      /* Told when it is actually free, which is not the same answer for every
+       * layer. One the display was given is read for as long as it is on
+       * screen, so it is free when this frame replaces it -- the present
+       * fence. One that went to an engine was read once while the last frame
+       * was built, and has been free since that engine finished.
+       *
+       * Getting this wrong is not visible; it is only slow. The buffer comes
+       * back late, the client draws into one fewer than it owns, and a client
+       * with three of them that is handed back one late is drawing into two.
+       */
+      out_release_fences.emplace_back(l.first,
+                                      EngineFenceFor(l.second.GetPriorBuffer())
+                                          .value_or(out_present_fence));
       l.second.ClearPriorBufferScanOutFlag();
     }
   }
 
+  /* This frame's answers become the ones handed out next time. */
+  engine_last_frame_ = std::move(engine_this_frame_);
+  engine_this_frame_ = {};
+
   return true;
+}
+
+auto HwcDisplay::EngineFenceFor(buffer_handle_t prior) const
+    -> std::optional<SharedFd> {
+  if (prior == nullptr || !engine_last_frame_.fence)
+    return {};
+
+  const auto &read = engine_last_frame_.buffers;
+  if (std::find(read.begin(), read.end(), prior) == read.end())
+    return {};
+
+  return engine_last_frame_.fence;
 }
 
 auto HwcDisplay::GetRawEdid() const -> std::vector<uint8_t> {
@@ -1544,6 +1572,10 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
   const int64_t t3 = GetTimeMonotonicNs();
 
   out_present_fence = result->present_fence;
+
+  /* Put by for the next frame rather than used now -- see EngineReads. */
+  engine_this_frame_ = {result->engine_fence, result->engine_read};
+
   ApplyCommitChanges(*a_args, result.value());
 
   const int64_t t4 = GetTimeMonotonicNs();

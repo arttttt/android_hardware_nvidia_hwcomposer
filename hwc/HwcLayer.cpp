@@ -48,6 +48,13 @@ void HwcLayer::SetLayerProperties(const LayerProperties& layer_properties) {
      */
     prior_buffer_scanout_flag_ = validated_type_ != CompositionType::kClient;
 
+    /* Which buffer that was, taken before it is written over. Not every layer
+     * given to the display is read by it -- some are drawn into a buffer of
+     * the composer's own by a separate engine first, and those stop being read
+     * as soon as that engine is done rather than when the frame is shown. The
+     * two are told apart afterwards by recognising this. */
+    prior_buffer_ = layer_data_.bi ? layer_data_.bi->handle : nullptr;
+
     has_buffer_set_ = true;
     layer_data_.bi = layer_properties.buffer->bi;
     layer_data_.fb = layer_properties.buffer->fb;

@@ -90,6 +90,20 @@ class HwcLayer {
 
   void ClearPriorBufferScanOutFlag() {
     prior_buffer_scanout_flag_ = false;
+    prior_buffer_ = nullptr;
+  }
+
+  /* The buffer this layer has just given up, which is the one the release
+   * fence is about -- the current one is only now being composed.
+   *
+   * Compared, never followed: it is here to be recognised in a list of the
+   * buffers the last frame was built from, and nothing reads through it. It
+   * stays valid for exactly as long as it needs to, because the client cannot
+   * take it back until told the fence this decides, and it is dropped the
+   * moment that is said.
+   */
+  buffer_handle_t GetPriorBuffer() const {
+    return prior_buffer_;
   }
 
   uint32_t GetZOrder() const {
@@ -142,6 +156,9 @@ class HwcLayer {
   std::optional<float> brightness_{};
 
   bool prior_buffer_scanout_flag_{};
+
+  /* Set beside the flag above and cleared with it -- see GetPriorBuffer. */
+  buffer_handle_t prior_buffer_{};
 
   ICompositorDisplay *const parent_;
 
