@@ -131,6 +131,12 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
    * outlives the frame it was described for. */
   bi.handle = handle;
 
+  /* Carried along so that whatever caches this can key on the buffer rather
+   * than on the address of something describing it. Computed here because this
+   * is where the allocator is already being asked about the memory. */
+  if (auto id = GetUniqueId(handle))
+    bi.unique_id = *id;
+
   bi.width = surface.width;
   bi.height = surface.height;
   bi.prime_fds[0] = fd;

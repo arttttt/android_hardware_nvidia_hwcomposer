@@ -45,26 +45,28 @@ class TegraFbImporter : public FbImporter {
     if (bo == nullptr || bo->prime_fds[0] < 0)
       return {};
 
-    /* Got before it is created, which is what the name has always promised
-     * and what this did not do: it made a fresh copy of the descriptor for
-     * every layer of every frame, and a layer showing the same buffer for a
-     * second is a hundred of them.
+    /* Got before it is created, which is what the name promises.
      *
-     * Recognised by the object holding the buffer alive alongside its
-     * description, rather than by the descriptor number -- numbers are handed
-     * out again after they are closed, and the same number twice would be two
-     * different buffers. That object is one per buffer and lives exactly as
-     * long as the description does.
+     * Recognised by the buffer, which is how Samsung and Intel both do it --
+     * Samsung keys a framebuffer cache by buffer id, format and secure flag,
+     * Intel by the handle it re-imports. Neither keys on the address of
+     * something that describes the buffer, and this used to: the object it
+     * looked at is built afresh every time a buffer is described, so the key
+     * was new on every frame and the cache never once hit. A copy of the
+     * descriptor was made for every layer of every frame.
+     *
+     * A buffer that cannot say which one it is stays out of the cache rather
+     * than joining every other such buffer under nought.
      */
-    const auto *key = bo->fds_shared.get();
-    if (key != nullptr) {
+    const uint64_t key = bo->unique_id;
+    if (key != 0) {
       auto it = fbs_.find(key);
       if (it != fbs_.end()) {
         if (auto held = it->second.lock())
           return held;
 
-        /* The buffer went away and took its copy with it. Whatever is at
-         * this address now is something else. */
+        /* Nothing holds it any more, so the buffer it belonged to is gone.
+         * The identity may since have been reissued to another. */
         fbs_.erase(it);
       }
     }
@@ -77,7 +79,7 @@ class TegraFbImporter : public FbImporter {
 
     auto fb = std::make_shared<TegraFbIdHandle>(MakeSharedFd(fd));
 
-    if (key != nullptr)
+    if (key != 0)
       fbs_[key] = fb;
 
     return fb;
@@ -86,8 +88,8 @@ class TegraFbImporter : public FbImporter {
  private:
   /* Weakly, so that a buffer nobody is showing any more takes its copy of the
    * descriptor with it. What is left behind is an entry that will not lock,
-   * which is removed when its address comes round again. */
-  std::map<const void *, std::weak_ptr<FbIdHandle>> fbs_;
+   * which is removed when its identity comes round again. */
+  std::map<uint64_t, std::weak_ptr<FbIdHandle>> fbs_;
 };
 
 }  // namespace android::drm_hwcomposer
