@@ -762,10 +762,42 @@ int TegraAtomicStateManager::SetPowered(bool powered) {
 }
 
 void TegraAtomicStateManager::WaitLastFrame() {
-  /* Nothing to wait for that anyone is waiting on. The flip call does not
-   * block, and what it hands back is a fence the caller already holds -- so
-   * whoever needs the frame to have landed waits on that, and there is no
-   * second notion of "the last frame" to keep here. */
+  /* Keep one frame in the air, no more.
+   *
+   * This used to do nothing, on the reasoning that the flip does not block and
+   * the fence it hands back is the caller's to wait on. Both halves of that are
+   * true and the conclusion still does not follow: the flip is queued, and
+   * nothing else in this composer bounds how deep that queue may get. Left
+   * alone, we run ahead of the panel -- and then a window's syncpoint maximum
+   * stands not one step above its minimum but as many as there are flips
+   * waiting, so the fence of any one of them needs that many frames rather than
+   * one. The frame the framework is holding a buffer for is not the frame the
+   * panel is about to show.
+   *
+   * It is measurable from the other side: with this empty, the recents surface
+   * sits at queued-frames=2 through the transition, its producer two frames
+   * ahead of the display with nothing free to draw into.
+   *
+   * Everyone else does this. Upstream waits on the prior present fence before
+   * every commit; Intel calls it "in-flight frames to 1"; Samsung waits up to
+   * five refreshes on the previous retire fence before submitting a config.
+   * This composer was the only one of the four with no bound at all.
+   *
+   * The caller waits here, after the next frame has been described and before
+   * it is posted, which is where upstream waits too. Describing a frame
+   * therefore overlaps the previous one reaching the panel; only the posting
+   * of it waits.
+   *
+   * Half a second, matching upstream: long enough that no honest frame ever
+   * reaches it, short enough that a display which has stopped answering does
+   * not take the composer down with it.
+   */
+  if (!previous_post_fence_)
+    return;
+
+  constexpr int kTimeoutMs = 500;
+  if (sync_wait(*previous_post_fence_, kTimeoutMs) < 0)
+    HWC_LOGE("the frame before this one never reached the panel");
 }
 
 }  // namespace android::drm_hwcomposer
