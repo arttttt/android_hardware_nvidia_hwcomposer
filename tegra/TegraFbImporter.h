@@ -16,19 +16,13 @@
 
 #pragma once
 
-#include <inttypes.h>
 #include <memory>
 #include <unistd.h>
-
-#include <map>
-
-#include <cutils/properties.h>
 
 #include "bufferinfo/BufferInfo.h"
 #include "display/FbImporter.h"
 #include "tegra/TegraFbIdHandle.h"
 #include "utils/fd.h"
-#include "utils/log.h"
 
 namespace android::drm_hwcomposer {
 
@@ -49,71 +43,24 @@ class TegraFbImporter : public FbImporter {
     if (bo == nullptr || bo->prime_fds[0] < 0)
       return {};
 
-    /* Got before it is created, which is what the name promises.
+    /* A copy of the descriptor, per frame.
      *
-     * Recognised by the buffer, which is how Samsung and Intel both do it --
-     * Samsung keys a framebuffer cache by buffer id, format and secure flag,
-     * Intel by the handle it re-imports. Neither keys on the address of
-     * something that describes the buffer, and this used to: the object it
-     * looked at is built afresh every time a buffer is described, so the key
-     * was new on every frame and the cache never once hit. A copy of the
-     * descriptor was made for every layer of every frame.
+     * Keying this on the buffer's identity so that the same copy could be
+     * handed back was tried and reverted: it takes hold of what the hardware
+     * scans out, and got it wrong -- the picture came apart into rows within
+     * seconds and SurfaceFlinger fell over. What is wrong about it is not yet
+     * understood, and until it is, the cheap thing is not worth the display.
      *
-     * A buffer that cannot say which one it is stays out of the cache rather
-     * than joining every other such buffer under nought.
+     * The saving that was after lives one level up instead, in what the
+     * allocator is asked about a buffer, which does not touch the hardware at
+     * all. See BufferInfoNvidia.
      */
-    const uint64_t key = bo->unique_id;
-    if (key != 0) {
-      auto it = fbs_.find(key);
-      if (it != fbs_.end()) {
-        if (auto held = it->second.lock()) {
-          /* Said only when asked for, and then about every buffer of every
-           * frame -- this is a question about what the cache is actually
-           * doing, and the answer is only useful in full. */
-          if (diagnose_)
-            ALOGE("buf %" PRIu64 " hit: fd %d (cached %d) %ux%u pitch %u "
-                  "offset %u mod %" PRIx64,
-                  key, bo->prime_fds[0],
-                  static_cast<int>(held->GetFbId()), bo->width, bo->height,
-                  bo->pitches[0], bo->offsets[0], bo->modifiers[0]);
-          return held;
-        }
-
-        /* Nothing holds it any more, so the buffer it belonged to is gone.
-         * The identity may since have been reissued to another. */
-        fbs_.erase(it);
-      }
-    }
-
-    /* Duplicated rather than taken: the description this came from does not
-     * own its descriptor and may be read again for another frame. */
     const int fd = ::dup(bo->prime_fds[0]);
     if (fd < 0)
       return {};
 
-    auto fb = std::make_shared<TegraFbIdHandle>(MakeSharedFd(fd));
-
-    if (diagnose_)
-      ALOGE("buf %" PRIu64 " MISS: fd %d -> %d, %ux%u pitch %u offset %u "
-            "mod %" PRIx64 ", handle %p",
-            key, bo->prime_fds[0], fd, bo->width, bo->height, bo->pitches[0],
-            bo->offsets[0], bo->modifiers[0], bo->handle);
-
-    if (key != 0)
-      fbs_[key] = fb;
-
-    return fb;
+    return std::make_shared<TegraFbIdHandle>(MakeSharedFd(fd));
   }
-
- private:
-  /* Weakly, so that a buffer nobody is showing any more takes its copy of the
-   * descriptor with it. What is left behind is an entry that will not lock,
-   * which is removed when its identity comes round again. */
-  std::map<uint64_t, std::weak_ptr<FbIdHandle>> fbs_;
-
-  /* Says what every buffer of every frame did here. Off unless asked for --
-   * it is a question, not a running commentary. */
-  const bool diagnose_ = property_get_bool("vendor.hwc.bufdiag", 0) != 0;
 };
 
 }  // namespace android::drm_hwcomposer
