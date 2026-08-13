@@ -777,13 +777,19 @@ bool TegraAtomicStateManager::EngineReadsFromProperty() {
 
 TegraAtomicStateManager::PresentFence
 TegraAtomicStateManager::PresentFenceFromProperty() {
-  switch (property_get_int32("vendor.hwc.fence", 0)) {
-    case 1:
-      return PresentFence::kThisFlip;
+  /* This flip unless told otherwise. Handing out the one before it was a way
+   * of living with a driver that came due late: a fence a frame stale is a
+   * fence already signalled, so nothing ever waited and nothing ever showed
+   * that the answer was a frame early. Now that a flip's fence comes due at
+   * the vblank it belongs to, early is early, and the client draws into a
+   * buffer the display is still reading. */
+  switch (property_get_int32("vendor.hwc.fence", 1)) {
+    case 0:
+      return PresentFence::kPreviousFlip;
     case 2:
       return PresentFence::kNone;
     default:
-      return PresentFence::kPreviousFlip;
+      return PresentFence::kThisFlip;
   }
 }
 
