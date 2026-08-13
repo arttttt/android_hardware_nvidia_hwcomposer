@@ -16,19 +16,15 @@
 
 #pragma once
 
-#include <inttypes.h>
 #include <memory>
 #include <unistd.h>
 
 #include <map>
 
-#include <cutils/properties.h>
-
 #include "bufferinfo/BufferInfo.h"
 #include "display/FbImporter.h"
 #include "tegra/TegraFbIdHandle.h"
 #include "utils/fd.h"
-#include "utils/log.h"
 
 namespace android::drm_hwcomposer {
 
@@ -66,18 +62,8 @@ class TegraFbImporter : public FbImporter {
     if (key != 0) {
       auto it = fbs_.find(key);
       if (it != fbs_.end()) {
-        if (auto held = it->second.lock()) {
-          /* Said only when asked for, and then about every buffer of every
-           * frame -- this is a question about what the cache is actually
-           * doing, and the answer is only useful in full. */
-          if (diagnose_)
-            ALOGD("buf %" PRIu64 " hit: fd %d (cached %d) %ux%u pitch %u "
-                  "offset %u mod %" PRIx64,
-                  key, bo->prime_fds[0],
-                  static_cast<int>(held->GetFbId()), bo->width, bo->height,
-                  bo->pitches[0], bo->offsets[0], bo->modifiers[0]);
+        if (auto held = it->second.lock())
           return held;
-        }
 
         /* Nothing holds it any more, so the buffer it belonged to is gone.
          * The identity may since have been reissued to another. */
@@ -93,12 +79,6 @@ class TegraFbImporter : public FbImporter {
 
     auto fb = std::make_shared<TegraFbIdHandle>(MakeSharedFd(fd));
 
-    if (diagnose_)
-      ALOGD("buf %" PRIu64 " miss: fd %d -> %d, %ux%u pitch %u offset %u "
-            "mod %" PRIx64 ", handle %p",
-            key, bo->prime_fds[0], fd, bo->width, bo->height, bo->pitches[0],
-            bo->offsets[0], bo->modifiers[0], bo->handle);
-
     if (key != 0)
       fbs_[key] = fb;
 
@@ -110,10 +90,6 @@ class TegraFbImporter : public FbImporter {
    * descriptor with it. What is left behind is an entry that will not lock,
    * which is removed when its identity comes round again. */
   std::map<uint64_t, std::weak_ptr<FbIdHandle>> fbs_;
-
-  /* Says what every buffer of every frame did here. Off unless asked for --
-   * it is a question, not a running commentary. */
-  const bool diagnose_ = property_get_bool("vendor.hwc.bufdiag", 0) != 0;
 };
 
 }  // namespace android::drm_hwcomposer
