@@ -18,7 +18,6 @@
 
 #include <cutils/native_handle.h>
 
-#include <map>
 #include <optional>
 
 #include "bufferinfo/BufferInfoGetter.h"
@@ -54,36 +53,6 @@ class BufferInfoNvidia : public LegacyBufferInfoGetter {
    */
   auto GetUniqueId(buffer_handle_t handle)
       -> std::optional<BufferUniqueId> override;
-
- private:
-  /* What a buffer looks like, which is settled when it is allocated.
-   *
-   * Size, arrangement and the format the display knows it by do not change
-   * while a buffer exists, and a layer draws into a small ring of buffers in
-   * turn -- so asking the allocator about the same handful over and over, once
-   * per layer per frame, is the same question answered the same way sixty
-   * times a second.
-   *
-   * Only this. What the allocator hands back alongside -- the descriptor of
-   * the memory, and the caller's own handle -- is borrowed for the frame it
-   * was asked in, and is taken again every time. Keeping those was tried and
-   * took the picture apart; keeping only the shape cannot, because nothing
-   * here reaches the hardware.
-   */
-  struct Shape {
-    uint32_t width;
-    uint32_t height;
-    uint32_t pitch;
-    uint32_t offset;
-    uint32_t format;
-    uint64_t modifier;
-  };
-
-  /* Bounded, so that a layer handed a new buffer every frame cannot remember
-   * all of them for as long as it lives. Larger than any ring this composer
-   * will meet, and cheap to throw away whole. */
-  static constexpr size_t kMostToRemember = 32;
-  std::map<BufferUniqueId, Shape> shapes_;
 };
 
 }  // namespace android::drm_hwcomposer

@@ -113,9 +113,9 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
    * now part of it -- see BufferInfo::handle. */
   hwc::VicProbe::Offer(handle);
 
-  /* Asked first, because it is what says whether the rest has to be asked at
-   * all. */
-  const auto id = GetUniqueId(handle);
+  NvGralloc::Surface surface{};
+  if (!gralloc->DescribeSurface(handle, &surface))
+    return {};
 
   const int fd = gralloc->GetMemFd(handle);
   if (fd < 0) {
@@ -131,62 +131,15 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
    * outlives the frame it was described for. */
   bi.handle = handle;
 
-  if (id)
+  /* Carried along so that whatever caches this can key on the buffer rather
+   * than on the address of something describing it. Computed here because this
+   * is where the allocator is already being asked about the memory. */
+  if (auto id = GetUniqueId(handle))
     bi.unique_id = *id;
-
-  bi.prime_fds[0] = fd;
-
-  /* The buffer as the allocator knows it, carried along with the reading of
-   * it. Everything else here is told in the vocabulary the composer shares
-   * with a DRM driver -- a descriptor, a pitch, a layout -- and that is enough
-   * to hand a frame to the display. It is not enough to ask the allocator to
-   * do anything to the buffer, which takes its own handle and nothing else,
-   * and one thing does have to be asked of it: undoing the compression this
-   * display cannot read.
-   *
-   * That question is asked much later, once the plan has settled and it is
-   * known which buffers the display will actually read. This is the last place
-   * that has the handle, so this is where it is kept.
-   *
-   * Taken every time, alongside the descriptor and the handle: all three are
-   * this frame's, whether or not the shape below came from memory. */
-  bi.fds_shared = Import(handle);
-
-  /* The shape, from memory if this buffer has been seen before.
-   *
-   * Everything below the descriptor is settled when a buffer is allocated and
-   * cannot change while it exists, so a buffer recognised by its identity does
-   * not have to be described again. A layer draws into a small ring of them in
-   * turn: without this, the same handful are described from scratch, once per
-   * layer, sixty times a second.
-   */
-  if (id) {
-    auto seen = shapes_.find(*id);
-    if (seen != shapes_.end()) {
-      const Shape &s = seen->second;
-      bi.width = s.width;
-      bi.height = s.height;
-      bi.pitches[0] = s.pitch;
-      bi.offsets[0] = s.offset;
-      bi.format = s.format;
-      bi.modifiers[0] = s.modifier;
-      return bi;
-    }
-  }
-
-  /* The last place a layer is still known by the allocator's own handle.
-   *
-   * Offered only when the buffer is actually being described, which is once
-   * per buffer rather than once per frame -- the probe wants a picture, not a
-   * hundred of the same one. */
-  hwc::VicProbe::Offer(handle);
-
-  NvGralloc::Surface surface{};
-  if (!gralloc->DescribeSurface(handle, &surface))
-    return {};
 
   bi.width = surface.width;
   bi.height = surface.height;
+  bi.prime_fds[0] = fd;
   bi.pitches[0] = surface.pitch;
   bi.offsets[0] = surface.offset;
 
@@ -227,25 +180,7 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
    * known which buffers the display will actually read. This is the last place
    * that has the handle, so this is where it is kept.
    */
-  /* Remembered, so that the next frame showing this buffer asks nothing.
-   *
-   * Thrown away whole when it grows past what any ring of buffers needs: a
-   * layer handed a fresh buffer every frame would otherwise keep every one of
-   * them for as long as it lives, and nothing here is worth a bookkeeping
-   * scheme of its own. */
-  if (id) {
-    if (shapes_.size() >= kMostToRemember)
-      shapes_.clear();
-
-    shapes_[*id] = Shape{
-        .width = bi.width,
-        .height = bi.height,
-        .pitch = bi.pitches[0],
-        .offset = bi.offsets[0],
-        .format = bi.format,
-        .modifier = bi.modifiers[0],
-    };
-  }
+  bi.fds_shared = Import(handle);
 
   /* What the allocator actually handed over. Said once per buffer rather than
    * once per frame: this runs when a buffer is first seen, and the answer is
