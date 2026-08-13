@@ -568,11 +568,16 @@ auto HwcDisplay::PresentStagedComposition(
 
   ++frame_no_;
 
-  if (!out_present_fence) {
-    return true;
+  /* Only the timing of the frame depends on there being a present fence. What
+   * a layer is told about its buffer does not, and used to be skipped along
+   * with it -- so withholding the fence from the client, which is a question
+   * about timing, silently withheld every release fence as well, which is a
+   * question about safety. The two look alike and answer to different things;
+   * they were told apart in the commit that split them, and this is the last
+   * place that still ran them together. */
+  if (out_present_fence) {
+    vsync_worker_->AddLastPresentFence(out_present_fence);
   }
-
-  vsync_worker_->AddLastPresentFence(out_present_fence);
 
   /* Only a layer the client has just handed a new buffer has anything to
    * release, and it is told once. Clearing here is what keeps it to once: a
