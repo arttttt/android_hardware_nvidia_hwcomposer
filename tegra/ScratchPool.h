@@ -63,17 +63,21 @@ class ScratchPool {
   ScratchPool(const ScratchPool &) = delete;
   ScratchPool &operator=(const ScratchPool &) = delete;
 
-  /* The next buffer to write into, waiting first for the display to be done
-   * with what it held before. Null only if the wait failed.
+  /* A buffer nothing is reading, to draw the next frame into. Null when there
+   * is no such buffer, which the caller answers by dropping the frame.
    *
-   * The wait is a real one and it does block. With three buffers it should
-   * never actually stop here -- the frame two before this one has long been
-   * on screen -- and if it does, that is worth knowing rather than papering
-   * over, so it is logged. */
+   * Asks rather than waits -- see the note in the source on why a frame is
+   * never made to wait here. */
   buffer_handle_t Next();
 
-  /* Says when the display is finished with whatever Next() last returned.
-   * Called with the fence the frame was presented against. */
+  /* Says that a frame has been posted, against the fence it will appear on.
+   *
+   * Which is not the same as saying that the buffer this frame was drawn into
+   * is free at that fence -- it is the opposite. A frame's fence comes due
+   * when the display starts showing it, and from then until the frame after
+   * it appears, that buffer is being read out of memory continuously. What
+   * this fence frees is the buffer of the frame *before*, which this one has
+   * just replaced. */
   void Presented(const drm_hwcomposer::SharedFd &fence);
 
   uint32_t width() const { return width_; }
@@ -85,12 +89,26 @@ class ScratchPool {
 
   struct Slot {
     buffer_handle_t handle = nullptr;
-    drm_hwcomposer::SharedFd busy_until;
+
+    /* On screen, or on its way there, and not yet replaced by anything. No
+     * fence can say when such a buffer comes free, because the frame that
+     * will free it has not been posted yet. */
+    bool showing = false;
+
+    /* Once it has been replaced: when the frame that replaced it appears,
+     * which is the moment the display stops reading this one. */
+    drm_hwcomposer::SharedFd freed_when;
   };
 
   uint32_t width_ = 0;
   uint32_t height_ = 0;
   uint32_t stride_ = 0;
+
+  /* The slot the last frame was drawn into, which the next frame posted will
+   * replace on screen. Past the end until a frame has been posted. */
+  size_t showing_ = 0;
+  bool anything_showing_ = false;
+
   size_t at_ = 0;
   std::vector<Slot> slots_;
 };

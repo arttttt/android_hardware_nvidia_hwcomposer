@@ -125,12 +125,18 @@ buffer_handle_t ScratchPool::Next() {
     const size_t at = (at_ + 1 + tried) % slots_.size();
     Slot &slot = slots_[at];
 
-    /* Asked and not waited for -- see kNoWait. A slot whose frame has not
-     * reached the panel is simply not this frame's slot. */
-    if (slot.busy_until && sync_wait(*slot.busy_until, kNoWait) < 0)
+    /* What is on screen is not a candidate at any price. Nothing has replaced
+     * it yet, so there is no fence that could say when it comes free, and
+     * drawing into it would be drawing into the picture. */
+    if (slot.showing)
       continue;
 
-    slot.busy_until = {};
+    /* Asked and not waited for -- see kNoWait. A slot whose replacement has
+     * not reached the panel is simply not this frame's slot. */
+    if (slot.freed_when && sync_wait(*slot.freed_when, kNoWait) < 0)
+      continue;
+
+    slot.freed_when = {};
     at_ = at;
     return slot.handle;
   }
@@ -151,7 +157,26 @@ buffer_handle_t ScratchPool::Next() {
 }
 
 void ScratchPool::Presented(const drm_hwcomposer::SharedFd &fence) {
-  slots_[at_].busy_until = fence;
+  /* This frame replaces whatever was on screen, so that one is finished with
+   * as soon as this frame appears -- which is what its fence says.
+   *
+   * What stood here gave the buffer this frame was drawn into the fence of
+   * the very frame it belongs to, which reads as "free the moment it goes
+   * up". It survived only because the driver signalled that fence late enough
+   * for the mistake not to show; once the fence came due at the vblank it
+   * belongs to, the pool started handing back the buffer the display was
+   * reading and the engine drew over the picture.
+   */
+  if (anything_showing_ && showing_ < slots_.size()) {
+    Slot &previous = slots_[showing_];
+    previous.showing = false;
+    previous.freed_when = fence;
+  }
+
+  slots_[at_].showing = true;
+  slots_[at_].freed_when = {};
+  showing_ = at_;
+  anything_showing_ = true;
 }
 
 }  // namespace hwc
