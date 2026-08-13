@@ -127,6 +127,7 @@ class TegraAtomicStateManager : public AtomicStateManager {
       : head_(head), modes_(modes), vic_(vic), scratch_(scratch) {
     present_fence_source_ = PresentFenceFromProperty();
     count_fences_ = CountFencesFromProperty();
+    throttle_to_one_frame_ = ThrottleFromProperty();
   }
 
   std::unique_ptr<AtomicRequest> GetAtomicModeReqForArgs(
@@ -208,11 +209,25 @@ class TegraAtomicStateManager : public AtomicStateManager {
   };
   PresentFence present_fence_source_ = PresentFence::kPreviousFlip;
 
+  /* Whether to keep only one frame in the air.
+   *
+   * A switch rather than a decision, because the decision has not been earned.
+   * Upstream and every vendor bound the flip queue and we did not, which is a
+   * good reason to add the bound and no reason at all to believe what it does
+   * here -- the first measurement that said it helped turned out to be my own
+   * metric misreading a broken-up animation as a fast one.
+   *
+   * So it can be turned off from the outside, and the two arrangements compared
+   * on the panel rather than argued about.
+   */
+  bool throttle_to_one_frame_ = true;
+
   /* Asked of the system once, at construction. Not in Execute: what a frame
    * costs is the one thing being measured here, and a measurement that adds
    * to it is worth nothing. */
   static PresentFence PresentFenceFromProperty();
   static bool CountFencesFromProperty();
+  static bool ThrottleFromProperty();
 
   /* Had the fence handed out already come due when it was handed out?
    *

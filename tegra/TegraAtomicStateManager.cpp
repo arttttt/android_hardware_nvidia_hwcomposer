@@ -738,6 +738,13 @@ bool TegraAtomicStateManager::CountFencesFromProperty() {
   return property_get_bool("vendor.hwc.fencestats", 0) != 0;
 }
 
+bool TegraAtomicStateManager::ThrottleFromProperty() {
+  /* On unless told otherwise: it is what upstream and every vendor does, and
+   * an unbounded flip queue is hard to defend whatever it turns out to cost
+   * here. Off is for measuring it. */
+  return property_get_bool("vendor.hwc.throttle", 1) != 0;
+}
+
 TegraAtomicStateManager::PresentFence
 TegraAtomicStateManager::PresentFenceFromProperty() {
   switch (property_get_int32("vendor.hwc.fence", 0)) {
@@ -793,7 +800,7 @@ void TegraAtomicStateManager::WaitLastFrame() {
    * reaches it, short enough that a display which has stopped answering does
    * not take the composer down with it.
    */
-  if (!previous_post_fence_)
+  if (!throttle_to_one_frame_ || !previous_post_fence_)
     return;
 
   constexpr int kTimeoutMs = 500;
