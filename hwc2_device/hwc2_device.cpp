@@ -134,76 +134,38 @@ static auto GetHwc2DeviceDisplay(HwcDisplay &display)
 
 class Hwc2DeviceLayer : public FrontendLayerBase {
  public:
-  /* What a buffer is, read once per buffer and kept.
-   *
-   * A description does not change while a buffer exists -- size, format,
-   * arrangement and the descriptors behind it are settled when it is
-   * allocated. A client cycles a handful of them round and round, so reading
-   * each one once and recognising it thereafter is the whole of what is needed
-   * here.
-   *
-   * What stood here tried to work out a swapchain's slot order instead, and
-   * could not: GetSlotNumber called SwChainReassemble only when the buffer was
-   * unknown, while the one branch that declared the chain reassembled required
-   * it to be known. The flag was never set, no slot was ever returned, and
-   * every layer of every frame went the long way round -- a full gralloc
-   * describe, a fresh set of descriptors, a fresh import. It came to us that
-   * way from upstream, which deleted the whole idea rather than repair it: on
-   * HWC3 the framework hands the slot over and there is nothing to guess. This
-   * is HWC2 and it does not, so the guessing is replaced with remembering
-   * rather than removed.
-   *
-   * Keyed by the buffer's own identity, which is what the vendors do -- Samsung
-   * keys a framebuffer cache by buffer id, format and secure flag; Intel by the
-   * re-imported handle.
-   *
-   * It also repairs a second cache downstream. TegraFbImporter keys its own by
-   * the address of the descriptor set, and that set used to be allocated afresh
-   * on every describe -- so the key was new every frame and that cache missed
-   * every time too. Holding the description holds the descriptors with it, and
-   * the address stops moving.
-   */
+  /* The layer no longer keeps a buffer per slot of its own -- that went from
+   * HwcLayer after this file was written -- so what a slot saves is a reading
+   * of the buffer rather than a place to put it. A description is read once
+   * per slot and handed over again each frame with that frame's fence. */
   auto HandleNextBuffer(buffer_handle_t buffer_handle, int32_t fence_fd,
                         FbImporter &importer)
       -> std::pair<std::optional<HwcLayer::LayerProperties>,
                    bool /* not a swapchain */> {
+    auto slot = GetSlotNumber(buffer_handle);
+
     if (invalid_) {
       return std::make_pair(std::nullopt, true);
     }
 
-    auto unique_id = BufferInfoGetter::GetInstance()->GetUniqueId(
-        buffer_handle);
-    if (!unique_id) {
-      /* Without an identity there is nothing to recognise it by later, so it
-       * is described again every time. Correct, merely slow, and it does not
-       * poison the cache for the buffers that do have one. */
-      auto bo_info = BufferInfoGetter::GetInstance()->GetBoInfo(buffer_handle);
-      if (!bo_info) {
-        invalid_ = true;
-        return std::make_pair(std::nullopt, true);
-      }
-      uncached_ = bo_info.value();
-      return DescribedBuffer(&uncached_, fence_fd, importer);
+    bool buffer_provided = false;
+    bool not_a_swapchain = true;
+    int32_t slot_id = 0;
+
+    if (slot.has_value()) {
+      buffer_provided = swchain_slots_.count(slot.value()) != 0;
+      slot_id = slot.value();
+      not_a_swapchain = true;
     }
 
-    auto known = described_.find(*unique_id);
-    if (known == described_.end()) {
+    if (!buffer_provided) {
       auto bo_info = BufferInfoGetter::GetInstance()->GetBoInfo(buffer_handle);
       if (!bo_info) {
         invalid_ = true;
         return std::make_pair(std::nullopt, true);
       }
 
-      /* Bounded, because a layer that is handed a new buffer every frame --
-       * a video surface, a client target that keeps being resized -- would
-       * otherwise remember all of them for as long as it lives. Eight is more
-       * than any swapchain this composer will meet and small enough that
-       * clearing it out is never worth a thought. */
-      constexpr size_t kMostToRemember = 8;
-      if (described_.size() >= kMostToRemember)
-        described_.clear();
-
-      known = described_.emplace(*unique_id, bo_info.value()).first;
+      swchain_slots_[slot_id] = bo_info.value();
     }
 
     /* What the GPU draws is compressed, and this display cannot read that --
@@ -217,41 +179,66 @@ class Hwc2DeviceLayer : public FrontendLayerBase {
      * It is undone where that is known instead -- when the plan is turned into
      * windows of the controller, which is exactly the set of buffers the
      * display will read. See TegraAtomicStateManager. */
-    return DescribedBuffer(&known->second, fence_fd, importer);
-  }
-
-  void SwChainClearCache() {
-    described_.clear();
-  }
-
- private:
-  /* The description and its framebuffer, handed over with this frame's fence.
-   *
-   * Taken by pointer rather than by value because the importer keys its own
-   * cache on where the descriptors live: a copy would be a new address and a
-   * miss every time.
-   */
-  auto DescribedBuffer(BufferInfo *bi, int32_t fence_fd, FbImporter &importer)
-      -> std::pair<std::optional<HwcLayer::LayerProperties>, bool> {
     HwcLayer::LayerProperties lp;
     lp.buffer = HwcLayer::Buffer{
-        .bi = *bi,
-        .fb = importer.GetOrCreateFbId(bi),
+        .bi = swchain_slots_[slot_id],
+        .fb = importer.GetOrCreateFbId(&swchain_slots_[slot_id]),
         .fence = MakeSharedFd(fence_fd),
     };
 
-    return std::make_pair(lp, true);
+    return std::make_pair(lp, not_a_swapchain);
+  }
+
+  void SwChainClearCache() {
+    swchain_lookup_table_.clear();
+    swchain_slots_.clear();
+    swchain_reassembled_ = false;
+  }
+
+ private:
+  auto GetSlotNumber(buffer_handle_t buffer_handle) -> std::optional<int32_t> {
+    auto unique_id = BufferInfoGetter::GetInstance()->GetUniqueId(
+        buffer_handle);
+    if (!unique_id) {
+      ALOGE("Failed to get unique id for buffer handle %p", buffer_handle);
+      return std::nullopt;
+    }
+
+    if (swchain_lookup_table_.count(*unique_id) == 0) {
+      SwChainReassemble(*unique_id);
+      return std::nullopt;
+    }
+
+    if (!swchain_reassembled_) {
+      return std::nullopt;
+    }
+
+    return swchain_lookup_table_[*unique_id];
+  }
+
+  void SwChainReassemble(BufferUniqueId unique_id) {
+    if (swchain_lookup_table_.count(unique_id) != 0) {
+      if (swchain_lookup_table_[unique_id] ==
+          int(swchain_lookup_table_.size()) - 1) {
+        /* Skip same buffer */
+        return;
+      }
+      if (swchain_lookup_table_[unique_id] == 0) {
+        swchain_reassembled_ = true;
+        return;
+      }
+      /* Tracking error */
+      SwChainClearCache();
+      return;
+    }
+
+    swchain_lookup_table_[unique_id] = int(swchain_lookup_table_.size());
   }
 
   bool invalid_{}; /* Layer is invalid and should be skipped */
-
-  /* Read once per buffer, recognised by the buffer's own identity thereafter. */
-  std::map<BufferUniqueId, BufferInfo> described_;
-
-  /* For the buffers that have no identity to be recognised by. Held rather
-   * than made on the stack because the importer wants an address that outlives
-   * the call. */
-  BufferInfo uncached_;
+  std::map<BufferUniqueId, int /*slot*/> swchain_lookup_table_;
+  std::map<int /*slot*/, BufferInfo /*already read*/> swchain_slots_;
+  bool swchain_reassembled_{};
 };
 
 static auto GetHwc2DeviceLayer(HwcLayer &layer)
