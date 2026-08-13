@@ -71,7 +71,7 @@ class TegraFbImporter : public FbImporter {
            * frame -- this is a question about what the cache is actually
            * doing, and the answer is only useful in full. */
           if (diagnose_)
-            ALOGE("buf %" PRIu64 " hit: fd %d (cached %d) %ux%u pitch %u "
+            ALOGD("buf %" PRIu64 " hit: fd %d (cached %d) %ux%u pitch %u "
                   "offset %u mod %" PRIx64,
                   key, bo->prime_fds[0],
                   static_cast<int>(held->GetFbId()), bo->width, bo->height,
@@ -94,7 +94,7 @@ class TegraFbImporter : public FbImporter {
     auto fb = std::make_shared<TegraFbIdHandle>(MakeSharedFd(fd));
 
     if (diagnose_)
-      ALOGE("buf %" PRIu64 " MISS: fd %d -> %d, %ux%u pitch %u offset %u "
+      ALOGD("buf %" PRIu64 " miss: fd %d -> %d, %ux%u pitch %u offset %u "
             "mod %" PRIx64 ", handle %p",
             key, bo->prime_fds[0], fd, bo->width, bo->height, bo->pitches[0],
             bo->offsets[0], bo->modifiers[0], bo->handle);
