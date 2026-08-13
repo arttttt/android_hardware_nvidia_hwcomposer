@@ -19,6 +19,9 @@
 #include <errno.h>
 #include <stdio.h>
 
+#include <cutils/properties.h>
+
+#include <iterator>
 #include <utility>
 
 #include "utils/Logging.h"
@@ -178,6 +181,36 @@ drm_hwcomposer::UsablePlanes TegraDisplayPipeline::GetUsablePlanes() const {
 
     drm_hwcomposer::UsablePlanes usable;
 
+    /* Which end of the stack the merge takes.
+     *
+     * Planes are handed out in the order they are offered, and layers are
+     * asked for in order of height -- so whichever end these are offered from
+     * is the end that gets merged. It has always been the top, for the honest
+     * reason that the topmost layers are the ones a single buffer can hold
+     * without anything having to be inside it.
+     *
+     * But which layers are merged decides something else entirely, and that
+     * something matters more. A layer given to a window is read by the display
+     * for as long as it is on screen, so its buffer is not free until the next
+     * frame replaces it. A layer given to the engine is read once and is free
+     * as soon as the engine is done -- a whole frame earlier.
+     *
+     * The topmost layers are the status bar and the navigation bar. They are
+     * drawn once and then stand still for minutes: handing their buffers back
+     * early is worth precisely nothing. Underneath them are the launcher and
+     * whatever app is opening, redrawn every frame of every transition, and
+     * those are the ones measured standing in dequeueBuffer for a third of
+     * every frame -- 6.7 ms of 16 for the launcher, 9.9 ms for the app.
+     *
+     * So the merge is offered from the bottom instead, where the buffers that
+     * are actually short of time live. Nothing extra is drawn either way:
+     * there are five layers in a transition and three windows, so the engine
+     * runs regardless. The only question is whose buffers it frees.
+     */
+    const bool merge_low = property_get_bool("vendor.hwc.mergelow", 0) != 0;
+
+    drm_hwcomposer::UsablePlanes::first_type merging;
+
     for (const auto &plane : mPlanes) {
         auto binding = plane->BindPipeline(this, true);
         if (!binding)
@@ -201,10 +234,20 @@ drm_hwcomposer::UsablePlanes TegraDisplayPipeline::GetUsablePlanes() const {
         if (plane->IsCursorCandidate() && mVic && mScratch)
             plane->SetMerging();
 
-        if (!plane->IsCursorCandidate() || plane->IsMerging())
+        if (merge_low && plane->IsMerging())
+            merging.push_back(std::move(binding));
+        else if (!plane->IsCursorCandidate() || plane->IsMerging())
             usable.first.push_back(std::move(binding));
         else if (!usable.second)
             usable.second = std::move(binding);
+    }
+
+    /* Ahead of the windows, so the lowest layers reach them first. */
+    if (!merging.empty()) {
+        merging.insert(merging.end(),
+                       std::make_move_iterator(usable.first.begin()),
+                       std::make_move_iterator(usable.first.end()));
+        usable.first = std::move(merging);
     }
 
     return usable;
