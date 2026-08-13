@@ -594,7 +594,7 @@ auto HwcDisplay::PresentStagedComposition(
        */
       out_release_fences.emplace_back(l.first,
                                       EngineFenceFor(l.second.GetPriorBuffer())
-                                          .value_or(out_present_fence));
+                                          .value_or(release_fence_));
       l.second.ClearPriorBufferScanOutFlag();
     }
   }
@@ -1572,6 +1572,10 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
   const int64_t t3 = GetTimeMonotonicNs();
 
   out_present_fence = result->present_fence;
+
+  /* Kept apart from the one above, which the client may be told loosely on
+   * purpose. This one answers when a buffer comes free and cannot be. */
+  release_fence_ = result->release_fence;
 
   /* Put by for the next frame rather than used now -- see EngineReads. */
   engine_this_frame_ = {result->engine_fence, result->engine_read};

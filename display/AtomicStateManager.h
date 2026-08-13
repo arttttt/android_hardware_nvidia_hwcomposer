@@ -75,7 +75,24 @@ struct AtomicCommitArgs {
 
 struct AtomicCommitResult {
   SharedFd writeback_complete_fence;
+
+  /* When this frame appears, as told to the client.
+   *
+   * The client reads it for two things at once, and they do not want the same
+   * answer. It is the timing of the frame, which is this flip; and it is the
+   * client's own permission to keep going, because a frame whose fence has
+   * not come due by the next refresh is a frame the client concludes it
+   * missed and answers by skipping the refresh entirely. */
   SharedFd present_fence;
+
+  /* When the buffers this frame replaced stop being read.
+   *
+   * The same instant, said for a different purpose, and it must be this
+   * flip's whatever the one above is: a buffer handed back before the display
+   * has finished with it is drawn over while it is on screen. Told apart from
+   * the present fence because only one of the two can be answered loosely,
+   * and it is not this one. */
+  SharedFd release_fence;
 
   /* Buffers this frame was not shown from, and when they stopped being read.
    *

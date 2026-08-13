@@ -491,6 +491,13 @@ class HwcDisplay : public ICompositorDisplay {
 
   EngineReads engine_this_frame_;
   EngineReads engine_last_frame_;
+
+  /* When the buffers this frame replaced come free -- always the flip just
+   * posted, never the one before it. Separate from the fence handed to the
+   * client as the present fence, which is allowed to name an older frame so
+   * that the client does not treat a fence cutting it fine as a frame it
+   * missed. See AtomicCommitResult. */
+  SharedFd release_fence_;
 };
 
 }  // namespace android::drm_hwcomposer
