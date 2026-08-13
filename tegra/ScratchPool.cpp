@@ -40,10 +40,27 @@ namespace {
 constexpr uint64_t kUsage = GRALLOC_USAGE_HW_COMPOSER |
                             GRALLOC_USAGE_SW_READ_OFTEN;
 
-/* Long enough that reaching it means something is wrong rather than slow. The
- * display is at sixty frames a second; a buffer still held after a fifth of a
- * second is not late, it is stuck. */
-constexpr int kWaitMs = 200;
+/* Asked, not waited for.
+ *
+ * This runs inside the assembling of a frame, and a frame is the one thing
+ * here that must not be made to wait. With three buffers a slot comes round
+ * again two frames after it was shown, so by the time it is wanted the display
+ * has long finished with it and the question is answered immediately -- but
+ * "almost always immediately" is not the same as "never blocks", and on the
+ * path a frame takes only the second one will do.
+ *
+ * Every other implementation is built the same way round: Samsung moves
+ * framebuffer teardown, buffer release and reallocation onto three separate
+ * threads for exactly this reason, and Intel hands its own teardown to the
+ * compositor thread. None of them lets the caller of a commit wait for
+ * housekeeping.
+ *
+ * So the slot is polled. Still busy means the merge is skipped for this frame
+ * and the layers go their ordinary way, which is what the caller already does
+ * with a refusal -- a frame late by one composition, rather than a frame late
+ * by however long the wait took.
+ */
+constexpr int kNoWait = 0;
 
 }  // namespace
 
@@ -94,22 +111,43 @@ ScratchPool::~ScratchPool() {
 }
 
 buffer_handle_t ScratchPool::Next() {
-  at_ = (at_ + 1) % slots_.size();
-  Slot &slot = slots_[at_];
+  /* Whichever is free, rather than whichever is next.
+   *
+   * Taking them strictly in turn means asking for one particular buffer and
+   * accepting whatever state it happens to be in -- so a slot that went out
+   * two frames ago and has long since come back is passed over in favour of
+   * the one that was shown last, purely because its number came up. Starting
+   * from the one after the last used keeps them evenly worn when they are all
+   * free, which is the ordinary case; the rest of the round is there for when
+   * they are not.
+   */
+  for (size_t tried = 0; tried < slots_.size(); ++tried) {
+    const size_t at = (at_ + 1 + tried) % slots_.size();
+    Slot &slot = slots_[at];
 
-  if (slot.busy_until) {
-    const int err = sync_wait(*slot.busy_until, kWaitMs);
-    if (err < 0) {
-      /* Nothing good can be done here. Writing anyway would tear whatever is
-       * still on the panel, and skipping the merge is what the caller does
-       * with a null. */
-      ALOGE("scratch %zu still held after %d ms", at_, kWaitMs);
-      return nullptr;
-    }
+    /* Asked and not waited for -- see kNoWait. A slot whose frame has not
+     * reached the panel is simply not this frame's slot. */
+    if (slot.busy_until && sync_wait(*slot.busy_until, kNoWait) < 0)
+      continue;
+
     slot.busy_until = {};
+    at_ = at;
+    return slot.handle;
   }
 
-  return slot.handle;
+  /* Every buffer this pool has is still somewhere between here and the panel.
+   * One is being shown and one may be waiting behind it, so a third that is
+   * also unavailable means the display is further behind than it can be while
+   * anything here is working -- not a slow frame but a stuck one.
+   *
+   * Nothing good can be done with it. Writing into a buffer the display is
+   * reading would tear it, and waiting for one would only add this frame to a
+   * queue that is already too long. The caller drops the frame, which is the
+   * one response that lets the pipeline drain.
+   */
+  ALOGE("all %zu scratch buffers are still on their way to the panel",
+        slots_.size());
+  return nullptr;
 }
 
 void ScratchPool::Presented(const drm_hwcomposer::SharedFd &fence) {
