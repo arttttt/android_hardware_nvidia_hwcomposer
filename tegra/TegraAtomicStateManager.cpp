@@ -21,6 +21,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <ndk/sync.h>
+#include <sync/sync.h>
 #include <time.h>
 
 #include <optional>
