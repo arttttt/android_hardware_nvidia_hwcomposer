@@ -83,20 +83,6 @@ struct BufferInfo {
    * is valid for exactly as long as they say; nothing here outlives a frame.
    * Null on platforms that never look. */
   buffer_handle_t handle = nullptr;
-
-  /* Which buffer this is, as opposed to what it looks like.
-   *
-   * Two descriptions of the same memory carry the same value here, and a
-   * description of different memory carries a different one, for as long as
-   * that memory exists. That is the only thing a cache can safely be keyed on:
-   * neither the handle nor the descriptor will do, because the framework hands
-   * over a fresh one whenever it pleases and the numbers are reissued after
-   * they are closed.
-   *
-   * Zero when the platform cannot say, which is not an identity and must not
-   * be treated as one -- everything that caches by this has to leave such
-   * buffers uncached rather than let them all collide on nought. */
-  uint64_t unique_id = 0;
 };
 
 }  // namespace android::drm_hwcomposer
