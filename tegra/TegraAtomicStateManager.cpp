@@ -616,51 +616,32 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
    * has replaced the previous buffer on the display". Both name one instant,
    * and that instant belongs to this flip.
    *
-   * What stood here handed out the flip before this one, on the grounds that
-   * the driver builds a flip's fence one step past the counter that flip
-   * advances -- so it would not come due until the following flip finished,
-   * which with two buffers is a deadlock rather than a pessimism: the frame
-   * that would release the buffer is the frame that cannot start.
+   * This used to be a switch, because the true answer once cost whole frames:
+   * a fence still pending at the client's next wake-up made it drop the frame
+   * outright, with no grace at all. That check is off now (the device's
+   * system.prop turns it off), the kernel raises the fence from the vblank
+   * itself, and the panel has said its piece: fed the true fence every frame,
+   * the client's model of the refresh stops being torn down and rebuilt twice
+   * a second, and a run of transitions comes out the same length every time.
    *
-   * Measured against the panel, that is not what this driver does. Over
-   * sixty-four flips the gap from posting a flip to its own fence coming due
-   * averaged 11.5 ms and stayed inside a single refresh five times in six. The
-   * fence does not wait for the next flip. Which makes the shift a fence handed
-   * over a frame after it came due -- early rather than late, and early is the
-   * wrong side of a contract that other things read for their own timing.
+   * The loose answers turned out to have prices of their own. The flip before
+   * is a fence already come due -- and the framework frees a dying layer's
+   * last buffer with exactly this fence, so a stale one hands the buffer back
+   * while the panel is still reading it. No fence at all reads as "already
+   * free" and frees it the same way. The true fence is also the safe one.
    *
-   * Kept as a switch until the panel says which is better. Either way the
-   * first frame has no predecessor and hands back nothing, which reads as
+   * The first frame has no predecessor and hands back nothing, which reads as
    * already presented -- it is.
    */
   SharedFd this_post_fence = post_fence ? MakeSharedFd(post_fence.release())
                                         : SharedFd{};
 
   if (out_result != nullptr) {
-    switch (present_fence_source_) {
-      case PresentFence::kPreviousFlip:
-        out_result->present_fence = previous_post_fence_;
-        break;
-      case PresentFence::kThisFlip:
-        out_result->present_fence = this_post_fence;
-        break;
-      case PresentFence::kNone:
-        break;
-    }
+    out_result->present_fence = this_post_fence;
 
-    /* Never the flip before, whatever the switch above says.
-     *
-     * Both fences name the same instant and for a long time this handed out one
-     * fence for both. That is what the switch is: the flip before is a fence
-     * already come due, so the client never waits on it and never skips a
-     * refresh over it -- which is the whole of why the panel looks smooth
-     * with it. As an answer to "when is this buffer free" it is a frame early,
-     * and a buffer handed back a frame early is drawn over while the display
-     * is still reading it.
-     *
-     * So the loose answer is kept for the one question that tolerates it, and
-     * this question gets the true one.
-     */
+    /* The same instant, so the same fence. When these two answers differed,
+     * a paragraph stood here reconciling them; with both questions answered
+     * truly there is nothing left to reconcile. */
     out_result->release_fence = this_post_fence;
 
     /* What the engine read, said separately from what the display was given.
@@ -792,34 +773,6 @@ bool TegraAtomicStateManager::EngineReadsFromProperty() {
   /* On unless told otherwise. Off restores what this did before: every layer
    * waits for the flip, whether or not the display ever read it. */
   return property_get_bool("vendor.hwc.enginefence", 1) != 0;
-}
-
-TegraAtomicStateManager::PresentFence
-TegraAtomicStateManager::PresentFenceFromProperty() {
-  /* Which flip the client is told about. Only that -- what frees a buffer is
-   * decided elsewhere and is not a matter of taste; see release_fence.
-   *
-   * The flip before, by default, and the reason is not the contract but what
-   * the client does with the answer. A frame whose fence has not come due by
-   * the next refresh is a frame the client concludes it missed, and it
-   * responds by skipping that refresh outright -- so a fence that is merely
-   * cutting it fine costs a whole frame rather than part of one. Measured
-   * over five runs each: this flip, 3.5 to 8.1 per cent of refreshes skipped;
-   * the flip before, none at all, five times out of five.
-   *
-   * That is not this driver being slow. The instant a flip's fence comes due
-   * is the instant the client asks about it, and asking about the flip before
-   * moves the question off the boundary. The frame it names is a real frame
-   * that really appeared; it is simply one further back.
-   */
-  switch (property_get_int32("vendor.hwc.fence", 0)) {
-    case 1:
-      return PresentFence::kThisFlip;
-    case 2:
-      return PresentFence::kNone;
-    default:
-      return PresentFence::kPreviousFlip;
-  }
 }
 
 int TegraAtomicStateManager::SetPowered(bool powered) {

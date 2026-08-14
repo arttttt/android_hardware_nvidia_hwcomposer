@@ -125,7 +125,6 @@ class TegraAtomicStateManager : public AtomicStateManager {
                           const std::vector<DrmMode> &modes,
                           hwc::VicSession *vic, hwc::ScratchPool *scratch)
       : head_(head), modes_(modes), vic_(vic), scratch_(scratch) {
-    present_fence_source_ = PresentFenceFromProperty();
     count_fences_ = CountFencesFromProperty();
     throttle_to_one_frame_ = ThrottleFromProperty();
     report_engine_reads_ = EngineReadsFromProperty();
@@ -185,31 +184,6 @@ class TegraAtomicStateManager : public AtomicStateManager {
    */
   std::map<int32_t, buffer_handle_t> last_flattened_;
 
-  /* Which flip's fence a present is answered with.
-   *
-   * The contract has one answer -- HWC2 says the present fence signals "at the
-   * vsync when the result of composition of this frame starts to appear", and
-   * a release fence signals once the device "has finished reading from the
-   * buffer presented in the prior frame", which is the same instant. Both are
-   * this flip's fence.
-   *
-   * It is a switch anyway, because what this composer has always done is the
-   * other thing, and the reason given for it is a claim about the hardware
-   * that wants testing against the panel rather than against reason. Read once
-   * at construction: nothing here belongs in the path a frame takes.
-   */
-  enum class PresentFence {
-    /* The flip before this one. What was done until now. */
-    kPreviousFlip,
-    /* This flip. What the contract asks for. */
-    kThisFlip,
-    /* None at all -- which the contract reads as "already free", so the client
-     * never waits. Diagnostic: it says whether waiting is what costs us,
-     * at the price of drawing into a buffer still being read. */
-    kNone,
-  };
-  PresentFence present_fence_source_ = PresentFence::kPreviousFlip;
-
   /* Whether to keep only one frame in the air.
    *
    * A switch rather than a decision, because the decision has not been earned.
@@ -235,7 +209,6 @@ class TegraAtomicStateManager : public AtomicStateManager {
   /* Asked of the system once, at construction. Not in Execute: what a frame
    * costs is the one thing being measured here, and a measurement that adds
    * to it is worth nothing. */
-  static PresentFence PresentFenceFromProperty();
   static bool CountFencesFromProperty();
   static bool ThrottleFromProperty();
   static bool EngineReadsFromProperty();
