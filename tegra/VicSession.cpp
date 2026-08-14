@@ -83,6 +83,50 @@ struct ExecParameters {
   const void *inputs[VicSession::kMaxLayers][kSurfacesPerLayer];
 };
 
+/* Every wait a descriptor carries, appended to |waits| -- or the truth that
+ * they could not be had.
+ *
+ * Two calls, by the library's own design: asked without an array it only
+ * counts, and skips the capacity check while doing so, so the count is exact
+ * and no fence is too wide to take. The old single call took at most eight
+ * points and treated any failure as nothing to wait for -- which let the
+ * engine read buffers it had just been told were not ready.
+ *
+ * An empty descriptor is a success carrying zero waits: already come due.
+ */
+static bool AppendWaits(int (*fence_from_fd)(int32_t, void *, uint32_t *),
+                        int32_t fd, std::vector<NvRmFence> &waits) {
+  uint32_t count = 0;
+  int err = fence_from_fd(fd, nullptr, &count);
+  if (err != kNvSuccess) {
+    ALOGE("unreadable fence fd %d: %d", fd, err);
+    return false;
+  }
+
+  /* The library on the device is newer than any source of it we can read,
+   * so its answer is checked rather than believed: a descriptor names a
+   * handful of points, and a count beyond any sane fence means the library
+   * and we disagree about what was asked. Refused, not sized to a
+   * misunderstanding. */
+  constexpr uint32_t kSaneWaits = 64;
+  if (count > kSaneWaits) {
+    ALOGE("fence fd %d claims %u waits; refusing", fd, count);
+    return false;
+  }
+  if (count == 0)
+    return true;
+
+  const size_t have = waits.size();
+  waits.resize(have + count);
+  err = fence_from_fd(fd, &waits[have], &count);
+  if (err != kNvSuccess) {
+    ALOGE("fence fd %d would not read back: %d", fd, err);
+    return false;
+  }
+  waits.resize(have + count);
+  return true;
+}
+
 template <typename Fn>
 bool ResolveOne(void *library, const char *name, Fn *slot) {
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
@@ -267,13 +311,9 @@ drm_hwcomposer::SharedFd VicSession::Compose(
    * buffer we are about to draw into. Given to the engine exactly as the
    * layers' own are -- see the note on target_ready for why waiting here
    * instead would cost the buffers this protects. */
-  if (target_ready >= 0) {
-    NvRmFence from_fd[8] = {};
-    auto n = static_cast<uint32_t>(std::size(from_fd));
-    if (fence_from_fd_(target_ready, from_fd, &n) == kNvSuccess) {
-      for (uint32_t f = 0; f < n; f++)
-        waits.push_back(from_fd[f]);
-    }
+  if (target_ready >= 0 && !AppendWaits(fence_from_fd_, target_ready, waits)) {
+    refused_++;
+    return {};
   }
 
   for (size_t i = 0; i < layers.size(); i++) {
@@ -316,13 +356,10 @@ drm_hwcomposer::SharedFd VicSession::Compose(
 
     /* The engine waits on these itself, so nothing here blocks. The
      * descriptor stays the caller's -- it is read, not taken. */
-    if (layer.acquire_fence >= 0) {
-      NvRmFence from_fd[8] = {};
-      auto n = static_cast<uint32_t>(std::size(from_fd));
-      if (fence_from_fd_(layer.acquire_fence, from_fd, &n) == kNvSuccess) {
-        for (uint32_t f = 0; f < n; f++)
-          waits.push_back(from_fd[f]);
-      }
+    if (layer.acquire_fence >= 0 &&
+        !AppendWaits(fence_from_fd_, layer.acquire_fence, waits)) {
+      refused_++;
+      return {};
     }
   }
 
