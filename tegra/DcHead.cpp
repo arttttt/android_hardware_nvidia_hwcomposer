@@ -507,8 +507,12 @@ bool DcHead::setColorMatrix(const float matrix[9]) {
         if (f < 0.F)
             f = 0.F;
         long v = lroundf(f * 256.F);
-        if (v > 0x3ff)
-            v = 0x3ff;
+        /* The field is ten bits of two's complement, Q1.8: the positive
+         * half ends at 511, and a larger value written as if the field
+         * were unsigned would come out the other side as a negative --
+         * a coefficient of 2.5 read back as roughly -1.5. */
+        if (v > 0x1ff)
+            v = 0x1ff;
         cmu.csc[i] = static_cast<__u16>(v);
     }
 

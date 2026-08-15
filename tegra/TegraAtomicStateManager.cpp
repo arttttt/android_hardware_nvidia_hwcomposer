@@ -1254,11 +1254,16 @@ void TegraAtomicStateManager::ProgramColorMatrix(
   /* The framework's matrix is meant for gamma-encoded values -- that is how
    * the GPU fallback applies it -- while this matrix stage sits between a
    * degamma and a regamma table and multiplies linear light. For a diagonal
-   * matrix the two domains reconcile exactly on a pure power law: raising
-   * the factor to the display gamma makes scale-then-encode equal
-   * encode-then-scale, sRGB's linear toe aside. Cross-channel terms have no
-   * such bridge and go in as they are: right shape, close shade. */
-  constexpr float kDisplayGamma = 2.4F;
+   * matrix the two domains reconcile on a power law: raising the factor to
+   * an exponent makes scale-then-encode track encode-then-scale. The
+   * exponent is fit, not read off sRGB: minimising the worst mismatch
+   * against the GPU's own application across the full level range puts it
+   * at 2.1 -- the transfer's linear toe drags it below the curve's 2.4 --
+   * for a worst case of ~5 of 255 at the strongest night tint, half of
+   * what 2.4 leaves. Cross-channel terms have no such bridge and go in as
+   * they are: multiplying linear light is the colourimetrically honest
+   * reading of the transform, the GPU's gamma-space habit notwithstanding. */
+  constexpr float kDisplayGamma = 2.1F;
   const bool diagonal = fabsf(rm[1]) < kEps && fabsf(rm[2]) < kEps &&
                         fabsf(rm[3]) < kEps && fabsf(rm[5]) < kEps &&
                         fabsf(rm[6]) < kEps && fabsf(rm[7]) < kEps;
