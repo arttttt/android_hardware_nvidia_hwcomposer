@@ -386,6 +386,9 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
           merge.depth = DepthForZPos(joining.z_pos);
         }
         merge.layers.push_back(MergeLayerFrom(joining.layer));
+        merge.source_ids.push_back(joining.layer.bi
+                                       ? joining.layer.bi->unique_id
+                                       : 0);
         continue;
       }
 
@@ -435,6 +438,77 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
 bool TegraAtomicStateManager::Test(const AtomicRequest &request) {
   const auto &tegra = static_cast<const TegraAtomicRequest &>(request);
   return head_.test(tegra.GetWindows()) == 0;
+}
+
+bool TegraAtomicStateManager::RecognisesMerge(
+    const TegraAtomicRequest::Merge &merge) {
+  if (last_merge_window_ < 0) {
+    merges_.first_sight++;
+    return false;
+  }
+
+  if (merge.window != last_merge_window_ ||
+      merge.depth != last_merge_depth_ ||
+      merge.layers.size() != last_merge_sources_.size() ||
+      merge.source_ids.size() != merge.layers.size()) {
+    merges_.changed_shape++;
+    return false;
+  }
+
+  for (size_t i = 0; i < merge.layers.size(); ++i) {
+    const hwc::VicSession::Layer &l = merge.layers[i];
+    const MergedSource &s = last_merge_sources_[i];
+
+    if (merge.source_ids[i] == 0) {
+      merges_.nameless++;
+      return false;
+    }
+    if (merge.source_ids[i] != s.id) {
+      merges_.changed_identity++;
+      return false;
+    }
+
+    /* Exact comparison on purpose, floats included: both sides came out of
+     * the same description untouched, so anything unequal really is a
+     * different frame. */
+    if (l.source_left != s.source_left || l.source_top != s.source_top ||
+        l.source_right != s.source_right ||
+        l.source_bottom != s.source_bottom ||
+        l.display_left != s.display_left || l.display_top != s.display_top ||
+        l.display_right != s.display_right ||
+        l.display_bottom != s.display_bottom) {
+      merges_.changed_geometry++;
+      return false;
+    }
+    if (l.premultiplied != s.premultiplied || l.alpha != s.alpha) {
+      merges_.changed_blend++;
+      return false;
+    }
+  }
+
+  return true;
+}
+
+void TegraAtomicStateManager::RememberMerge(
+    const TegraAtomicRequest::Merge &merge,
+    const hwc::DcHead::Window &described, const SharedFd &drawn) {
+  last_merge_sources_.clear();
+  last_merge_sources_.reserve(merge.layers.size());
+
+  const bool named = merge.source_ids.size() == merge.layers.size();
+  for (size_t i = 0; i < merge.layers.size(); ++i) {
+    const hwc::VicSession::Layer &l = merge.layers[i];
+    last_merge_sources_.push_back(
+        MergedSource{named ? merge.source_ids[i] : 0, l.source_left,
+                     l.source_top, l.source_right, l.source_bottom,
+                     l.display_left, l.display_top, l.display_right,
+                     l.display_bottom, l.premultiplied, l.alpha});
+  }
+
+  last_merge_window_ = merge.window;
+  last_merge_depth_ = merge.depth;
+  last_merge_described_ = described;
+  last_merge_fence_ = drawn;
 }
 
 int TegraAtomicStateManager::Execute(const AtomicRequest &request,
@@ -499,60 +573,82 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       return -EINVAL;
     }
 
-    /* The buffer and, separately, when it may be written to. The engine is
-     * told the second and waits for it itself; nothing here does. */
-    SharedFd target_ready;
-    buffer_handle_t target = scratch_->Next(&target_ready);
-    if (target == nullptr)
-      return -EBUSY;
+    if (merge_cache_ && RecognisesMerge(merge)) {
+      /* The group is the one already drawn, so the window is shown the
+       * buffer it is already showing. No buffer changes hands: the pool is
+       * not advanced, nothing is described again, and the layers' own fences
+       * need no heeding -- a buffer that kept its identity was not drawn
+       * into, or the client would have had to queue a different one for at
+       * least the frame in between. The fence below came due when the
+       * original drawing finished, so the flip's wait on it is a no-op. */
+      merges_.reused++;
+      windows[merge.slot] = last_merge_described_;
+      windows[merge.slot].preFence = last_merge_fence_ ? *last_merge_fence_
+                                                       : -1;
+    } else {
+      /* The buffer and, separately, when it may be written to. The engine is
+       * told the second and waits for it itself; nothing here does. */
+      SharedFd target_ready;
+      buffer_handle_t target = scratch_->Next(&target_ready);
+      if (target == nullptr)
+        return -EBUSY;
 
-    const int64_t before_merge = NowNs();
-    merged = vic_->Compose(target, merge.layers,
-                           target_ready ? *target_ready : -1);
-    if (!merged) {
-      /* The engine would not take it. Nothing has been written, so the honest
-       * thing is to drop the frame rather than show a window whatever it held
-       * before -- and the planner will be asked again for the next one. */
-      ALOGE("the engine refused a frame of %zu layer(s)", merge.layers.size());
-      return -EINVAL;
+      const int64_t before_merge = NowNs();
+      merged = vic_->Compose(target, merge.layers,
+                             target_ready ? *target_ready : -1);
+      if (!merged) {
+        /* The engine would not take it. Nothing has been written, so the
+         * honest thing is to drop the frame rather than show a window
+         * whatever it held before -- and the planner will be asked again for
+         * the next one. What was remembered stays remembered: it still
+         * describes the frame genuinely on the window. */
+        ALOGE("the engine refused a frame of %zu layer(s)",
+              merge.layers.size());
+        return -EINVAL;
+      }
+
+      const int64_t took = NowNs() - before_merge;
+      merges_.frames++;
+      merges_.layers += merge.layers.size();
+      merges_.engine_ns += took;
+      if (took > merges_.engine_ns_max)
+        merges_.engine_ns_max = took;
+
+      auto *gralloc = NvGralloc::GetInstance();
+      NvGralloc::Surface surface{};
+      const int fd = gralloc != nullptr ? gralloc->GetMemFd(target) : -1;
+      if (fd < 0 || !gralloc->DescribeSurface(target, &surface)) {
+        ALOGE("cannot describe the buffer the engine just drew");
+        return -EINVAL;
+      }
+
+      hwc::DcHead::Window &window = windows[merge.slot];
+      window = hwc::DcHead::Window{};
+      window.index = merge.window;
+      window.bufferFd = fd;
+      window.offset = surface.offset;
+      window.stride = surface.pitch;
+
+      /* Ours to know rather than to ask about: this buffer was allocated by
+       * this composer, as thirty-two bit colour laid out in rows, which is
+       * the one shape the window it is bound for can show. */
+      window.pixelFormat = TEGRA_DC_EXT_FMT_R8G8B8A8;
+      window.flags = 0;
+      window.blockHeightLog2 = 0;
+
+      /* Shown whole and unresized. Everything about where each layer went is
+       * already in the pixels; the window's only job is to put them on the
+       * panel and blend them over what is underneath. */
+      window.sourceWidth = static_cast<float>(surface.width);
+      window.sourceHeight = static_cast<float>(surface.height);
+      window.outWidth = static_cast<int32_t>(surface.width);
+      window.outHeight = static_cast<int32_t>(surface.height);
+      window.z = merge.depth;
+      window.blend = TEGRA_DC_EXT_BLEND_PREMULT;
+      window.preFence = *merged;
+
+      RememberMerge(merge, window, merged);
     }
-
-    merges_.frames++;
-    merges_.layers += merge.layers.size();
-    merges_.engine_ns += NowNs() - before_merge;
-
-    auto *gralloc = NvGralloc::GetInstance();
-    NvGralloc::Surface surface{};
-    const int fd = gralloc != nullptr ? gralloc->GetMemFd(target) : -1;
-    if (fd < 0 || !gralloc->DescribeSurface(target, &surface)) {
-      ALOGE("cannot describe the buffer the engine just drew");
-      return -EINVAL;
-    }
-
-    hwc::DcHead::Window &window = windows[merge.slot];
-    window = hwc::DcHead::Window{};
-    window.index = merge.window;
-    window.bufferFd = fd;
-    window.offset = surface.offset;
-    window.stride = surface.pitch;
-
-    /* Ours to know rather than to ask about: this buffer was allocated by
-     * this composer, as thirty-two bit colour laid out in rows, which is the
-     * one shape the window it is bound for can show. */
-    window.pixelFormat = TEGRA_DC_EXT_FMT_R8G8B8A8;
-    window.flags = 0;
-    window.blockHeightLog2 = 0;
-
-    /* Shown whole and unresized. Everything about where each layer went is
-     * already in the pixels; the window's only job is to put them on the
-     * panel and blend them over what is underneath. */
-    window.sourceWidth = static_cast<float>(surface.width);
-    window.sourceHeight = static_cast<float>(surface.height);
-    window.outWidth = static_cast<int32_t>(surface.width);
-    window.outHeight = static_cast<int32_t>(surface.height);
-    window.z = merge.depth;
-    window.blend = TEGRA_DC_EXT_BLEND_PREMULT;
-    window.preFence = *merged;
   }
 
   /* Held until the flip has been made. The controller waits on these before
@@ -778,12 +874,21 @@ std::string TegraAtomicStateManager::DumpState() {
     merges_ = {};
 
     ss << "Merges since last dumpsys request:\n"
-       << "  frames merged           : " << m.frames << "\n";
+       << "  frames merged           : " << m.frames << "\n"
+       << "  shown from memory       : " << m.reused << "\n";
     if (m.frames != 0)
       ss << "  layers per merge (avg)  : "
          << (m.layers / m.frames) << "\n"
          << "  engine us per merge     : "
-         << (m.engine_ns / 1000 / static_cast<int64_t>(m.frames)) << "\n";
+         << (m.engine_ns / 1000 / static_cast<int64_t>(m.frames)) << "\n"
+         << "  engine us worst         : " << (m.engine_ns_max / 1000)
+         << "\n";
+    if (m.frames != 0 || m.reused != 0)
+      ss << "  drawn because           : first " << m.first_sight
+         << ", shape " << m.changed_shape << ", buffer "
+         << m.changed_identity << ", geometry " << m.changed_geometry
+         << ", blend " << m.changed_blend << ", nameless " << m.nameless
+         << "\n";
     ss << "Engine over its lifetime:\n"
        << "  frames accepted         : " << vic_->composed() << "\n"
        << "  frames refused          : " << vic_->refused() << "\n\n";
@@ -826,6 +931,13 @@ bool TegraAtomicStateManager::EngineReadsFromProperty() {
   /* On unless told otherwise. Off restores what this did before: every layer
    * waits for the flip, whether or not the display ever read it. */
   return property_get_bool("vendor.hwc.enginefence", 1) != 0;
+}
+
+bool TegraAtomicStateManager::MergeCacheFromProperty() {
+  /* On unless told otherwise. Off draws the merge afresh on every frame,
+   * which is what this did before -- kept switchable only so the two can be
+   * measured against each other on the panel without building twice. */
+  return property_get_bool("vendor.hwc.mergecache", 1) != 0;
 }
 
 int TegraAtomicStateManager::SetPowered(bool powered) {

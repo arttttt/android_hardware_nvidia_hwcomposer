@@ -52,6 +52,14 @@ class TegraAtomicRequest : public AtomicRequest {
    * Empty on every frame that needs no merge, which is most of them. */
   struct Merge {
     std::vector<hwc::VicSession::Layer> layers;
+
+    /* Whose pixels each layer's are, in step with `layers`. The engine has
+     * no use for this; it is what lets the drawn result be recognised when
+     * the same group comes back the next frame. Nought where the platform
+     * could not name the buffer, and a group with a nameless member is drawn
+     * fresh every time. */
+    std::vector<uint64_t> source_ids;
+
     size_t slot;
     int32_t window;
     uint32_t depth;
@@ -128,6 +136,7 @@ class TegraAtomicStateManager : public AtomicStateManager {
     count_fences_ = CountFencesFromProperty();
     throttle_to_one_frame_ = ThrottleFromProperty();
     report_engine_reads_ = EngineReadsFromProperty();
+    merge_cache_ = MergeCacheFromProperty();
   }
 
   std::unique_ptr<AtomicRequest> GetAtomicModeReqForArgs(
@@ -254,9 +263,62 @@ class TegraAtomicStateManager : public AtomicStateManager {
     uint64_t frames = 0;
     uint64_t layers = 0;
     int64_t engine_ns = 0;
+    int64_t engine_ns_max = 0;
+
+    /* Frames on which the window was shown the buffer it was already
+     * showing, because the group had not changed. The engine never woke. */
+    uint64_t reused = 0;
+
+    /* Why a frame was drawn rather than shown again, one count per drawn
+     * frame. The breakdown is what decides the next step: an identity miss
+     * is a content update no cleverness avoids, while a geometry miss is an
+     * animation living inside the group -- the one case a smarter choice of
+     * group could take out of the engine's hands. */
+    uint64_t first_sight = 0;
+    uint64_t changed_shape = 0; /* group size, window or stacking depth */
+    uint64_t changed_identity = 0;
+    uint64_t changed_geometry = 0;
+    uint64_t changed_blend = 0;
+    uint64_t nameless = 0;
   };
   FenceCounters fences_;
   MergeCounters merges_;
+
+  /* The last thing the engine drew, kept to be shown again.
+   *
+   * A merged frame is a pure function of who its layers are and where they
+   * go; while neither changes, the buffer already written is the frame, and
+   * showing it again costs nothing. Compared against the previous frame
+   * only, which is what makes it sound: pixels cannot change under an
+   * identity, because drawing again means queueing, and queueing puts a
+   * different buffer on the layer for at least a frame in between.
+   *
+   * On a reuse the scratch pool is deliberately left alone -- no Next(), no
+   * Presented() -- so it goes on believing, truly, that the same slot is on
+   * screen.
+   */
+  struct MergedSource {
+    uint64_t id;
+    float source_left, source_top, source_right, source_bottom;
+    int32_t display_left, display_top, display_right, display_bottom;
+    bool premultiplied;
+    float alpha;
+  };
+  std::vector<MergedSource> last_merge_sources_;
+  int32_t last_merge_window_ = -1; /* -1: nothing remembered yet */
+  uint32_t last_merge_depth_ = 0;
+  hwc::DcHead::Window last_merge_described_{};
+  SharedFd last_merge_fence_;
+
+  /* Does this group name the frame already on the window? Counts the reason
+   * whenever the answer is no. */
+  bool RecognisesMerge(const TegraAtomicRequest::Merge &merge);
+  void RememberMerge(const TegraAtomicRequest::Merge &merge,
+                     const hwc::DcHead::Window &described,
+                     const SharedFd &drawn);
+
+  bool merge_cache_ = true;
+  static bool MergeCacheFromProperty();
 
   /* Off unless asked for. The question costs one call into the kernel per
    * frame, and a frame is the thing being measured. */
