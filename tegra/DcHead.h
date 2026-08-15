@@ -222,26 +222,34 @@ public:
      *
      * The head ends in a colour pipeline the whole output passes through --
      * every window and the cursor, after blending: a degamma table, a 3x3
-     * matrix, a regamma table. It boots as a net no-op and the tables stay
-     * exactly as booted; only the matrix is written here, so the values act
-     * in the pipeline's own linear domain, between the two tables.
+     * matrix, a regamma table. It boots as a net no-op, and the tables stay
+     * at that boot state here: the matrix multiplies linear light between
+     * them, which keeps a third more distinguishable shadow levels than
+     * collapsing the tables would, so a caller with gamma-domain semantics
+     * translates its coefficients rather than its domain. The uniform
+     * `offset` -- an addition the matrix stage does not have -- is folded
+     * into the regamma table as a shift of its output values.
      *
-     * `matrix` is row-major, out = M * in, as fractions of unity. The
-     * hardware keeps a coefficient in ten bits with unity at 256, so the
-     * reachable range is [0, 4): values are clamped to it here because the
-     * driver writes the register unmasked and an oversized value would
-     * silently lose its high bits -- 2.0 wrapping to zero is a black channel
-     * nobody asked for. Whether the field has a sign is untested; negatives
-     * are refused until it is.
+     * `matrix` is row-major, out = M * in, as fractions of unity. A
+     * coefficient lives in ten bits of two's complement Q1.8 -- [-2, 2)
+     * with unity at 256 -- and is clamped to that range here because the
+     * driver writes the register unmasked: a value past either end would
+     * come out the other side.
      *
      * The write lands at the next frame boundary, never mid-scan, and does
      * not block: the driver keeps a shadow copy and folds the difference in
-     * during the following vertical blank. The head remembers the matrix it
-     * booted with the first time either of these is called, and reset puts
-     * it back. Both return false only when the kernel refused.
+     * during the following vertical blank. Reset puts the boot pipeline
+     * back. All three return false only when the kernel refused.
      */
-    bool setColorMatrix(const float matrix[9]);
+    bool setColorMatrix(const float matrix[9], float offset);
     bool resetColorMatrix();
+
+    /* Shows every colour as its distance from white: the per-channel flip,
+     * exact in this hardware where the framework's own cross-channel
+     * inversion cannot run at all -- the matrix's sums reach the regamma as
+     * an unsigned index, so mixed-sign arithmetic folds to zero. `white` is
+     * the level a black pixel becomes, 1.0 for the full flip. */
+    bool setInversion(float white);
 
 private:
     /* Out of line: a member unique_ptr of the forward-declared snapshot
@@ -262,6 +270,11 @@ private:
     /* Reads the live colour pipeline and keeps it as the state to restore.
      * Done once, before the first write ever changes it. */
     bool rememberBootCmu();
+
+    /* Makes the snapshot's tables the identity: degamma spreading each
+     * 8-bit level over the 12-bit scale, regamma answering every slot with
+     * its own level back. */
+    static void fillIdentityTables(tegra_dc_ext_cmu *cmu);
 
     /* Reads the controller's whole feature table and keeps what it says about
      * each window. One call answers for every window, so it is done once. */

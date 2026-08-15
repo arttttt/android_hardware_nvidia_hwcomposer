@@ -1123,16 +1123,14 @@ std::string TegraAtomicStateManager::DumpState() {
   {
     const CmuCounters c = cmu_;
     cmu_ = {};
-    const uint64_t any = c.applied + c.restored + c.skipped_offset +
-                         c.skipped_negative;
+    const uint64_t any = c.applied + c.restored + c.skipped_negative;
     if (any != 0 || csc_programmed_) {
-      ss << "Colour matrices since last dumpsys request:\n"
+      ss << "Colour transforms since last dumpsys request:\n"
          << "  written to the pipeline : " << c.applied << "\n"
          << "  boot state restored     : " << c.restored << "\n"
-         << "  skipped, offset         : " << c.skipped_offset << "\n"
          << "  skipped, negative       : " << c.skipped_negative << "\n"
-         << "  cross-channel (approx)  : " << c.approximated << "\n"
-         << "  holding a matrix now    : " << (csc_programmed_ ? "yes" : "no")
+         << "  approximated in shape   : " << c.approximated << "\n"
+         << "  holding a transform now : " << (csc_programmed_ ? "yes" : "no")
          << "\n\n";
     }
   }
@@ -1224,45 +1222,64 @@ void TegraAtomicStateManager::ProgramColorMatrix(
     return;
   }
 
-  /* An offset is an addition after the multiply. The pipeline's matrix
-   * stage has no addend, so a matrix carrying one is left to the frame as
-   * drawn -- which is exactly what happens to it today, and what happens
-   * everywhere the display cannot represent a transform. */
-  if (fabsf(m[12]) > kEps || fabsf(m[13]) > kEps || fabsf(m[14]) > kEps) {
-    restore();
-    cmu_.skipped_offset++;
-    return;
-  }
-
-  /* Row-major out = M * in, which is the order the head takes. */
+  /* Row-major out = M * in, which is the order the head takes, and the
+   * offset column as the addition it is. */
   float rm[9];
   for (int r = 0; r < 3; ++r)
     for (int c = 0; c < 3; ++c)
       rm[r * 3 + c] = m[c * 4 + r];
 
-  /* The coefficient field's sign has not been demonstrated on this hardware;
-   * until it is, a negative coefficient written as its positive bit pattern
-   * would show a wrong colour rather than a missing feature. */
-  for (float v : rm) {
-    if (v < -kEps) {
-      restore();
-      cmu_.skipped_negative++;
-      return;
+  const float offset = (m[12] + m[13] + m[14]) / 3.F;
+  const bool has_offset = fabsf(m[12]) > kEps || fabsf(m[13]) > kEps ||
+                          fabsf(m[14]) > kEps;
+  const bool uniform_offset = fabsf(m[12] - m[13]) < kEps &&
+                              fabsf(m[13] - m[14]) < kEps;
+
+  bool negative = false;
+  for (float v : rm)
+    negative = negative || v < -kEps;
+
+  /* Negative coefficients under an offset are how the framework writes an
+   * inversion, and this pipeline cannot run that arithmetic -- the matrix's
+   * sums reach the regamma as an unsigned index -- but it runs the
+   * per-channel flip exactly, and that is the same feature with a different
+   * hue mapping. Counted as approximated, because it is one. */
+  if (negative && has_offset && uniform_offset) {
+    if (head_.setInversion(offset)) {
+      csc_programmed_ = true;
+      cmu_.applied++;
+      cmu_.approximated++;
     }
+    return;
+  }
+
+  /* The coefficient field's sign is known from the register layout but has
+   * not been demonstrated by a write on this silicon; until it is, a
+   * negative coefficient risks a wrong colour where the GPU shows a right
+   * one, so those transforms stay where they are. */
+  if (negative) {
+    restore();
+    cmu_.skipped_negative++;
+    return;
   }
 
   /* The framework's matrix is meant for gamma-encoded values -- that is how
-   * the GPU fallback applies it -- while this matrix stage sits between a
-   * degamma and a regamma table and multiplies linear light. For a diagonal
-   * matrix the two domains reconcile on a power law: raising the factor to
-   * an exponent makes scale-then-encode track encode-then-scale. The
-   * exponent is fit, not read off sRGB: minimising the worst mismatch
-   * against the GPU's own application across the full level range puts it
-   * at 2.1 -- the transfer's linear toe drags it below the curve's 2.4 --
-   * for a worst case of ~5 of 255 at the strongest night tint, half of
-   * what 2.4 leaves. Cross-channel terms have no such bridge and go in as
-   * they are: multiplying linear light is the colourimetrically honest
-   * reading of the transform, the GPU's gamma-space habit notwithstanding. */
+   * the GPU applies it -- while this matrix stage sits between a degamma
+   * and a regamma table and multiplies linear light, where the shadows keep
+   * a third more distinguishable levels. For a diagonal matrix the two
+   * domains reconcile on a power law: raising the factor to an exponent
+   * makes scale-then-encode track encode-then-scale. The exponent is fit,
+   * not read off sRGB: minimising the worst mismatch against the GPU's own
+   * application across the full level range puts it at 2.1 -- the
+   * transfer's linear toe drags it below the curve's 2.4 -- for a worst
+   * case of ~5 of 255 at the strongest night tint. Cross-channel terms
+   * have no such bridge and go in as they are; the divergence from the
+   * gamma-domain reference is real (large on daltonism simulations) and
+   * accepted deliberately: the linear domain wins on shadow precision and
+   * on colourimetry, and the reference itself is only gamma-domain because
+   * the framework has not gone linear yet. A non-uniform offset rides on
+   * the channels' average -- the table it folds into is shared -- and
+   * nothing the framework sends today has one. */
   constexpr float kDisplayGamma = 2.1F;
   const bool diagonal = fabsf(rm[1]) < kEps && fabsf(rm[2]) < kEps &&
                         fabsf(rm[3]) < kEps && fabsf(rm[5]) < kEps &&
@@ -1273,10 +1290,10 @@ void TegraAtomicStateManager::ProgramColorMatrix(
     rm[8] = powf(rm[8], kDisplayGamma);
   }
 
-  if (head_.setColorMatrix(rm)) {
+  if (head_.setColorMatrix(rm, offset)) {
     csc_programmed_ = true;
     cmu_.applied++;
-    if (!diagonal)
+    if (!diagonal || (has_offset && !uniform_offset))
       cmu_.approximated++;
   }
 }

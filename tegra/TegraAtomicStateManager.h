@@ -385,16 +385,16 @@ class TegraAtomicStateManager : public AtomicStateManager {
     uint64_t applied = 0;
     uint64_t restored = 0;
 
-    /* Matrices the pipeline cannot represent, left for the frame to show
-     * untransformed. An offset needs an addition the matrix stage does not
-     * have; a negative coefficient needs a sign the hardware has not been
-     * shown to honour. */
-    uint64_t skipped_offset = 0;
+    /* Matrices with a negative coefficient and no offset, left for the
+     * frame to show untransformed: the field's sign is known from the
+     * register layout but has not been demonstrated by a write on this
+     * silicon. */
     uint64_t skipped_negative = 0;
 
-    /* Cross-channel matrices applied as-is in the pipeline's linear domain,
-     * where the framework meant them gamma-encoded: right shape, close
-     * shade. Diagonal ones are exact and are not counted here. */
+    /* Transforms honoured in a different shape than given: cross-channel
+     * matrices applied in the pipeline's linear domain, inversions run as
+     * the per-channel flip, offsets that differ between channels averaged.
+     * Diagonal matrices are exact and are not counted here. */
     uint64_t approximated = 0;
   };
   CmuCounters cmu_;

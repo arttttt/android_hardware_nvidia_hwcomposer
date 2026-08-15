@@ -468,58 +468,140 @@ int DcHead::flip(const std::vector<Window> &windows, UniqueFd *outPostFence) {
     return 0;
 }
 
+namespace {
+
+float srgbEncode(float linear) {
+    return linear <= 0.0031308F ? linear * 12.92F
+                                : 1.055F * powf(linear, 1.F / 2.4F) - 0.055F;
+}
+
+float srgbDecode(float encoded) {
+    return encoded <= 0.04045F ? encoded / 12.92F
+                               : powf((encoded + 0.055F) / 1.055F, 2.4F);
+}
+
+/* The hardware maps a 12-bit value to a regamma slot directly over the low
+ * eighth of the range and in steps of eight over the rest -- derived from
+ * the vendor table and confirmed against all 960 entries. This walks slots
+ * and asks which value each covers: the same map inverted. */
+uint32_t lut2Covers(uint32_t slot) {
+    return slot < 512 ? slot : 512 + (slot - 512) * 8;
+}
+
+}  // namespace
+
 bool DcHead::rememberBootCmu() {
     if (mBootCmu)
         return true;
 
+    /* Home is computed, not read. The pipeline boots as the sRGB pair --
+     * degamma to linear light, regamma back -- and these formulas reproduce
+     * the kernel's tables to the byte, checked entry for entry. Reading the
+     * live state instead would remember whatever a predecessor died holding:
+     * the kernel keeps the last write for as long as the head is up, so a
+     * composer that crashed mid-transform leaves its tables standing, and a
+     * home read from them would make that state permanent. A computed home
+     * has no memory to poison. The day the board declares a calibrated
+     * pipeline of its own, this is the place to revisit. */
     auto cmu = std::make_unique<tegra_dc_ext_cmu>();
-    if (ioctl(mFd.get(), TEGRA_DC_EXT_GET_CMU, cmu.get()) < 0) {
-        HWC_LOGE("head %d: GET_CMU: %s", mIndex, strerror(errno));
-        return false;
-    }
+    memset(cmu.get(), 0, sizeof(*cmu));
+    cmu->cmu_enable = 1;
 
-    /* We are the pipeline's only matrix writer, so the matrix read here can
-     * be non-identity for one reason: a predecessor died holding a tint and
-     * the kernel kept it. Remembering that as home would make it permanent --
-     * so home is the tables as found and the matrix as it should be. The day
-     * the board declares a calibrated matrix of its own, this is the line to
-     * revisit -- and if anything ever writes the tables at runtime, they
-     * need the same guard, because a predecessor's tables would be
-     * remembered as found too. */
     static const __u16 kIdentity[9] = {256, 0, 0, 0, 256, 0, 0, 0, 256};
-    if (memcmp(cmu->csc, kIdentity, sizeof(kIdentity)) != 0) {
-        HWC_LOGI("head %d: booted with a non-identity colour matrix, "
-                 "normalising", mIndex);
-        memcpy(cmu->csc, kIdentity, sizeof(kIdentity));
-    }
+    memcpy(cmu->csc, kIdentity, sizeof(kIdentity));
+
+    for (uint32_t i = 0; i < 256; ++i)
+        cmu->lut1[i] = static_cast<__u16>(
+            lroundf(4095.F * srgbDecode(static_cast<float>(i) / 255.F)));
+    for (uint32_t i = 0; i < 960; ++i)
+        cmu->lut2[i] = static_cast<__u16>(lroundf(
+            255.F * srgbEncode(static_cast<float>(lut2Covers(i)) / 4095.F)));
 
     mBootCmu = std::move(cmu);
     return true;
 }
 
-bool DcHead::setColorMatrix(const float matrix[9]) {
+void DcHead::fillIdentityTables(tegra_dc_ext_cmu *cmu) {
+    /* A degamma entry per 8-bit level, spread over the 12-bit output. */
+    for (uint32_t i = 0; i < 256; ++i)
+        cmu->lut1[i] = static_cast<__u16>(i << 4);
+
+    /* Every slot answers with the 8-bit level whose 12-bit neighbourhood it
+     * covers, so LUT1 above lands exactly on itself: net passthrough. */
+    for (uint32_t i = 0; i < 960; ++i) {
+        const uint32_t v8 = (lut2Covers(i) + 8) >> 4;
+        cmu->lut2[i] = static_cast<__u16>(v8 > 255 ? 255 : v8);
+    }
+}
+
+bool DcHead::setColorMatrix(const float matrix[9], float offset) {
     if (!rememberBootCmu())
         return false;
 
-    /* The boot tables ride along untouched: the aligned write takes the
-     * whole pipeline, and the kernel folds in only what differs. */
+    /* The boot tables stay: the matrix acts between the degamma and the
+     * regamma, multiplying linear light -- chosen over an identity-table
+     * gamma-domain pipeline on numbers, not taste: the 12-bit linear
+     * middle keeps a third more distinguishable shadow levels under a
+     * strong tint (33 against 25 of the darkest 49 at half strength), and
+     * colourimetry agrees. The caller owns translating gamma-domain
+     * semantics onto this (the diagonal bridge); the uniform offset, an
+     * addition the matrix stage does not have, is folded into the regamma
+     * as a shift of its output values -- past the point where a negative
+     * sum could fold the range over. */
     tegra_dc_ext_cmu cmu = *mBootCmu;
+
     for (int i = 0; i < 9; ++i) {
-        float f = matrix[i];
-        if (f < 0.F)
-            f = 0.F;
-        long v = lroundf(f * 256.F);
-        /* The field is ten bits of two's complement, Q1.8: the positive
-         * half ends at 511, and a larger value written as if the field
-         * were unsigned would come out the other side as a negative --
-         * a coefficient of 2.5 read back as roughly -1.5. */
+        /* Ten bits of two's complement, Q1.8. Clamped to the field: a
+         * value written past either end would come out the other side --
+         * 2.5 read back as roughly -1.5. */
+        long v = lroundf(matrix[i] * 256.F);
         if (v > 0x1ff)
             v = 0x1ff;
-        cmu.csc[i] = static_cast<__u16>(v);
+        if (v < -0x200)
+            v = -0x200;
+        cmu.csc[i] = static_cast<__u16>(v & 0x3ff);
+    }
+
+    if (offset != 0.F) {
+        const long shift = lroundf(offset * 255.F);
+        for (uint32_t i = 0; i < 960; ++i) {
+            long v = static_cast<long>(cmu.lut2[i]) + shift;
+            cmu.lut2[i] = static_cast<__u16>(v < 0 ? 0 : (v > 255 ? 255 : v));
+        }
     }
 
     if (ioctl(mFd.get(), TEGRA_DC_EXT_SET_CMU_ALIGNED, &cmu) < 0) {
         HWC_LOGE("head %d: SET_CMU_ALIGNED: %s", mIndex, strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+bool DcHead::setInversion(float white) {
+    if (!rememberBootCmu())
+        return false;
+
+    /* The framework's inversion is a cross-channel luminance flip with
+     * mixed-sign coefficients, and this pipeline cannot run those: the
+     * matrix's sums pass to the regamma as an unsigned index, so every
+     * negative result folds to zero. What it can run exactly is the
+     * per-channel flip -- identity tables, identity matrix, and the
+     * regamma answering every level with its distance from white. Same
+     * purpose, light and dark exchanged; hues map differently than on
+     * hardware that has the signed path. The same trade shipped for years
+     * on this block's descendant in another product. */
+    tegra_dc_ext_cmu cmu = *mBootCmu;
+    fillIdentityTables(&cmu);
+
+    const long top = lroundf(white * 255.F);
+    for (uint32_t i = 0; i < 960; ++i) {
+        const long v = top - static_cast<long>(cmu.lut2[i]);
+        cmu.lut2[i] = static_cast<__u16>(v < 0 ? 0 : (v > 255 ? 255 : v));
+    }
+
+    if (ioctl(mFd.get(), TEGRA_DC_EXT_SET_CMU_ALIGNED, &cmu) < 0) {
+        HWC_LOGE("head %d: SET_CMU_ALIGNED (inversion): %s", mIndex,
+                 strerror(errno));
         return false;
     }
     return true;
