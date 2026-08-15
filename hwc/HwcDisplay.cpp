@@ -98,9 +98,25 @@ bool float_equals(float a, float b) {
 }
 
 bool TransformHasOffsetValue(const float *matrix) {
-  for (int i = 12; i < 14; i++) {
+  /* All three of the offset column: stopping at 13 let a blue-only offset
+   * through as though the matrix had none. */
+  for (int i = 12; i < 15; i++) {
     if (!float_equals(matrix[i], 0.F)) {
       return true;
+    }
+  }
+  return false;
+}
+
+bool TransformHasNegativeValue(const float *matrix) {
+  /* Only the 3x3 the hardware would be given: column-major, so rows 0-2 of
+   * columns 0-2. The offset column is judged separately and the projective
+   * row is never sent anywhere. */
+  for (int c = 0; c < 3; c++) {
+    for (int r = 0; r < 3; r++) {
+      if (matrix[c * 4 + r] < 0.F && !float_equals(matrix[c * 4 + r], 0.F)) {
+        return true;
+      }
     }
   }
   return false;
@@ -164,8 +180,11 @@ void HwcDisplay::SetColorTransformMatrix(
   if (color_transform_is_identity) {
     client_color_matrix_ = GetIdentityCtmPtr();
     client_ctm_has_offset_ = false;
+    client_ctm_has_negative_ = false;
   } else {
     client_ctm_has_offset_ = TransformHasOffsetValue(
+        color_transform_matrix.data());
+    client_ctm_has_negative_ = TransformHasNegativeValue(
         color_transform_matrix.data());
     client_color_matrix_ = std::make_shared<HalColorTransformMatrix>(
         color_transform_matrix);
@@ -1692,7 +1711,14 @@ bool HwcDisplay::CtmByGpu() const {
   if (UseColorPipeline())
     return false;
 
-  if (GetPipe().crtc->Get()->GetCtmProperty() && !client_ctm_has_offset_)
+  /* Whether the controller takes this matrix is the controller's answer, and
+   * a matrix with negative coefficients is a harder question than one
+   * without: not every matrix stage has a sign. On DRM both answers are the
+   * CTM property's presence, as before. */
+  const bool ctm_in_hardware =
+      client_ctm_has_negative_ ? GetPipe().crtc->Get()->SupportsSignedCtm()
+                               : GetPipe().crtc->Get()->SupportsCtm();
+  if (ctm_in_hardware && !client_ctm_has_offset_)
     return false;
 
   if (hwc_->GetCtmHandling() == CtmHandling::kDrmOrIgnore)

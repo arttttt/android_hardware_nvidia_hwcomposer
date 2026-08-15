@@ -27,11 +27,6 @@ namespace hwc {
  *
  * A head is asked two things and answers both from its number, because on
  * this controller a head has no identity beyond which one it is.
- *
- * The colour attributes are left at the base class's answer -- absent. That
- * one is temporary rather than permanent: this controller has a colour
- * management unit, a matrix and two lookup tables, which is precisely what
- * those attributes describe. Nothing fills them in yet.
  */
 class TegraCrtc : public drm_hwcomposer::Crtc {
 public:
@@ -39,6 +34,17 @@ public:
 
     uint32_t GetId() const override { return mIndex; }
     uint32_t GetIndexInResArray() const override { return mIndex; }
+
+    /* The head ends in a colour management unit -- a degamma table, a 3x3
+     * matrix, a regamma table -- and the backend programs the matrix from
+     * the frame's colour transform, so a transform no longer costs the
+     * frame its hardware composition. Offsets stay with the GPU: the
+     * matrix stage has no addend. So do negative coefficients, until the
+     * coefficient field's sign is demonstrated on this hardware -- the
+     * register keeps ten bits, and a negative written as its bit pattern
+     * would show a wrong colour rather than a missing feature. */
+    bool SupportsCtm() const override { return true; }
+    bool SupportsSignedCtm() const override { return false; }
 
 private:
     const uint32_t mIndex;

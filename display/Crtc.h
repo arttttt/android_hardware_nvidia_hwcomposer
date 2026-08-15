@@ -68,6 +68,18 @@ class Crtc : public PipelineBindable<Crtc> {
     return AbsentProperty();
   }
 
+  /* Whether the controller applies the display-wide colour matrix itself.
+   * On DRM that is the property's presence; a controller with a colour
+   * pipeline of its own answers directly. Signed asks the same question of
+   * matrices with negative coefficients, which not every matrix stage
+   * carries a sign for. */
+  virtual bool SupportsCtm() const {
+    return static_cast<bool>(GetCtmProperty());
+  }
+  virtual bool SupportsSignedCtm() const {
+    return SupportsCtm();
+  }
+
   /* The lookup table applied before the matrix, and its size. */
   virtual const DrmProperty &GetDegammaLutProperty() const {
     return AbsentProperty();

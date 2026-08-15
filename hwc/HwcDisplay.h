@@ -448,6 +448,7 @@ class HwcDisplay : public ICompositorDisplay {
   std::shared_ptr<const HalColorTransformMatrix>
       render_intent_matrix_ = GetIdentityCtmPtr();
   bool client_ctm_has_offset_ = false;
+  bool client_ctm_has_negative_ = false;
   ContentType content_type_ = ContentType::kNoData;
   HwcColorspace colorspace_{};
   TransferFunction transfer_func_{};
