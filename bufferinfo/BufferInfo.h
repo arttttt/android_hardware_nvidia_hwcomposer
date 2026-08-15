@@ -54,6 +54,13 @@ struct BufferInfo {
   uint32_t width;
   uint32_t height;
   uint32_t format; /* DRM_FORMAT_* from drm_fourcc.h */
+
+  /* Which buffer this is, told apart from every other one that has ever
+   * lived: the inode of the memory the pixels live in, which the kernel
+   * hands out from a counter and never reissues. Zero when the platform
+   * could not say -- such a buffer joins no cache rather than joining every
+   * other unknown under nought. */
+  uint64_t unique_id = 0;
   uint32_t pitches[kBufferMaxPlanes];
   uint32_t offsets[kBufferMaxPlanes];
   /* sizes[] is used only by mapper@4 metadata getter for internal purposes */

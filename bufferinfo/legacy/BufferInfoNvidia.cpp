@@ -22,6 +22,7 @@
 
 #include <cstdio>
 #include <optional>
+#include <sstream>
 
 #include "bufferinfo/BufferInfo.h"
 #include "bufferinfo/BufferInfoGetter.h"
@@ -107,20 +108,20 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
     return {};
   }
 
-  /* The last place a layer is still known by the allocator's own handle.
-   *
-   * Everything below reads the description this builds, and the handle is
-   * now part of it -- see BufferInfo::handle. */
-  hwc::VicProbe::Offer(handle);
-
-  NvGralloc::Surface surface{};
-  if (!gralloc->DescribeSurface(handle, &surface))
-    return {};
-
   const int fd = gralloc->GetMemFd(handle);
   if (fd < 0) {
     ALOGE("buffer %p has no memory descriptor", handle);
     return {};
+  }
+
+  /* Which buffer this is, before anything is asked about it: the shape of a
+   * buffer is settled at allocation and cannot change while it exists, so a
+   * buffer already seen is answered from memory of it -- borrowings aside,
+   * which are taken fresh every time. */
+  BufferUniqueId unique_id = 0;
+  struct stat sb = {};
+  if (fstat(fd, &sb) == 0) {
+    unique_id = static_cast<BufferUniqueId>(sb.st_ino);
   }
 
   BufferInfo bi{};
@@ -130,10 +131,38 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
    * whoever handed the buffer over owns it, and nothing that reads this
    * outlives the frame it was described for. */
   bi.handle = handle;
+  bi.prime_fds[0] = fd;
+  bi.unique_id = unique_id;
+
+  const auto remembered = unique_id != 0 ? shapes_.find(unique_id)
+                                         : shapes_.end();
+  if (remembered != shapes_.end()) {
+    ++shape_hits_;
+    const BufferShape& shape = remembered->second;
+    bi.width = shape.width;
+    bi.height = shape.height;
+    bi.pitches[0] = shape.pitch;
+    bi.offsets[0] = shape.offset;
+    bi.format = shape.format;
+    bi.modifiers[0] = shape.modifier;
+    bi.fds_shared = Import(handle);
+    return bi;
+  }
+  ++shape_misses_;
+
+  /* The last place a layer is still known by the allocator's own handle,
+   * and now genuinely the first sight of a buffer rather than every frame's.
+   *
+   * Everything below reads the description this builds, and the handle is
+   * part of it -- see BufferInfo::handle. */
+  hwc::VicProbe::Offer(handle);
+
+  NvGralloc::Surface surface{};
+  if (!gralloc->DescribeSurface(handle, &surface))
+    return {};
 
   bi.width = surface.width;
   bi.height = surface.height;
-  bi.prime_fds[0] = fd;
   bi.pitches[0] = surface.pitch;
   bi.offsets[0] = surface.offset;
 
@@ -160,6 +189,18 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
     default:
       bi.modifiers[0] = DRM_FORMAT_MOD_LINEAR;
       break;
+  }
+
+  if (unique_id != 0) {
+    if (shapes_.size() >= kMostShapesToRemember) {
+      shapes_.clear();
+    }
+    shapes_[unique_id] = BufferShape{.width = bi.width,
+                                     .height = bi.height,
+                                     .pitch = bi.pitches[0],
+                                     .offset = bi.offsets[0],
+                                     .format = bi.format,
+                                     .modifier = bi.modifiers[0]};
   }
 
   /* The buffer as the allocator knows it, carried along with the reading of
@@ -219,6 +260,15 @@ auto BufferInfoNvidia::GetUniqueId(buffer_handle_t handle)
     return {};
 
   return static_cast<BufferUniqueId>(sb.st_ino);
+}
+
+std::string BufferInfoNvidia::DumpState() {
+  std::stringstream ss;
+  ss << "Buffer shapes remembered:\n"
+     << "  described               : " << shape_misses_ << "\n"
+     << "  recognised              : " << shape_hits_ << "\n"
+     << "  remembered now          : " << shapes_.size() << "\n";
+  return ss.str();
 }
 
 }  // namespace android::drm_hwcomposer

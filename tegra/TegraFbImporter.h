@@ -46,25 +46,25 @@ class TegraFbImporter : public FbImporter {
       return {};
 
     /* Got before it is created, which is what the name has always promised
-     * and what this did not do: it made a fresh copy of the descriptor for
-     * every layer of every frame, and a layer showing the same buffer for a
-     * second is a hundred of them.
+     * and what this long did not do: it recognised buffers by the address of
+     * the object holding them alive, and that object is built afresh on
+     * every describe -- a new key each frame, a cache that never hit, a copy
+     * of the descriptor for every layer of every frame.
      *
-     * Recognised by the object holding the buffer alive alongside its
-     * description, rather than by the descriptor number -- numbers are handed
-     * out again after they are closed, and the same number twice would be two
-     * different buffers. That object is one per buffer and lives exactly as
-     * long as the description does.
+     * Recognised by the buffer's own identity instead: the inode of its
+     * memory, which the kernel hands out from a counter and never reissues,
+     * so the same number twice is the same buffer. A buffer whose identity
+     * the platform could not name stays out of the cache and pays the copy,
+     * rather than joining every other unknown under nought.
      */
-    const auto *key = bo->fds_shared.get();
-    if (key != nullptr) {
+    const uint64_t key = bo->unique_id;
+    if (key != 0) {
       auto it = fbs_.find(key);
       if (it != fbs_.end()) {
         if (auto held = it->second.lock())
           return held;
 
-        /* The buffer went away and took its copy with it. Whatever is at
-         * this address now is something else. */
+        /* The buffer went away and took its copy with it. */
         fbs_.erase(it);
       }
     }
@@ -77,7 +77,7 @@ class TegraFbImporter : public FbImporter {
 
     auto fb = std::make_shared<TegraFbIdHandle>(MakeSharedFd(fd));
 
-    if (key != nullptr)
+    if (key != 0)
       fbs_[key] = fb;
 
     return fb;
@@ -86,8 +86,9 @@ class TegraFbImporter : public FbImporter {
  private:
   /* Weakly, so that a buffer nobody is showing any more takes its copy of the
    * descriptor with it. What is left behind is an entry that will not lock,
-   * which is removed when its address comes round again. */
-  std::map<const void *, std::weak_ptr<FbIdHandle>> fbs_;
+   * removed if that identity is ever asked about again -- which, numbers
+   * never being reissued, it will not be. */
+  std::map<uint64_t, std::weak_ptr<FbIdHandle>> fbs_;
 };
 
 }  // namespace android::drm_hwcomposer

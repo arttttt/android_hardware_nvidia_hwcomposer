@@ -18,7 +18,10 @@
 
 #include <cutils/native_handle.h>
 
+#include <cstdint>
+#include <map>
 #include <optional>
+#include <string>
 
 #include "bufferinfo/BufferInfoGetter.h"
 
@@ -53,6 +56,35 @@ class BufferInfoNvidia : public LegacyBufferInfoGetter {
    */
   auto GetUniqueId(buffer_handle_t handle)
       -> std::optional<BufferUniqueId> override;
+
+  std::string DumpState() override;
+
+ private:
+  /* The shape of a buffer -- size, pitch, format, arrangement -- is settled
+   * at allocation and cannot change while the buffer exists, so it is asked
+   * of the allocator once and remembered by the buffer's identity. What is
+   * NOT remembered is everything handed back alongside: the descriptor, the
+   * caller's handle, the object holding them alive. Those are borrowed for
+   * the frame they were asked in and taken again every time -- the lesson
+   * of the attempt before this one, which kept them and watched the picture
+   * come apart into rows. */
+  struct BufferShape {
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint32_t offset;
+    uint32_t format;
+    uint64_t modifier;
+  };
+
+  /* Cleared whole when full rather than evicted one by one: filling up is
+   * rare -- it takes this many distinct live buffers -- and re-describing a
+   * handful once is cheaper to reason about than eviction order. */
+  static constexpr size_t kMostShapesToRemember = 64;
+
+  std::map<BufferUniqueId, BufferShape> shapes_;
+  uint64_t shape_hits_ = 0;
+  uint64_t shape_misses_ = 0;
 };
 
 }  // namespace android::drm_hwcomposer

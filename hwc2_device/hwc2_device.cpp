@@ -134,38 +134,23 @@ static auto GetHwc2DeviceDisplay(HwcDisplay &display)
 
 class Hwc2DeviceLayer : public FrontendLayerBase {
  public:
-  /* The layer no longer keeps a buffer per slot of its own -- that went from
-   * HwcLayer after this file was written -- so what a slot saves is a reading
-   * of the buffer rather than a place to put it. A description is read once
-   * per slot and handed over again each frame with that frame's fence. */
+  /* One reading of the buffer per frame, handed over with that frame's
+   * fence. Recognising a buffer already seen is not done here any more:
+   * the getter remembers shapes by the buffer's own identity, and the
+   * framebuffer importer recognises the same identity below -- both of
+   * which replaced a swapchain-guessing machine that could never conclude
+   * its guess and so described every buffer of every frame from scratch. */
   auto HandleNextBuffer(buffer_handle_t buffer_handle, int32_t fence_fd,
                         FbImporter &importer)
-      -> std::pair<std::optional<HwcLayer::LayerProperties>,
-                   bool /* not a swapchain */> {
-    auto slot = GetSlotNumber(buffer_handle);
-
+      -> std::optional<HwcLayer::LayerProperties> {
     if (invalid_) {
-      return std::make_pair(std::nullopt, true);
+      return std::nullopt;
     }
 
-    bool buffer_provided = false;
-    bool not_a_swapchain = true;
-    int32_t slot_id = 0;
-
-    if (slot.has_value()) {
-      buffer_provided = swchain_slots_.count(slot.value()) != 0;
-      slot_id = slot.value();
-      not_a_swapchain = true;
-    }
-
-    if (!buffer_provided) {
-      auto bo_info = BufferInfoGetter::GetInstance()->GetBoInfo(buffer_handle);
-      if (!bo_info) {
-        invalid_ = true;
-        return std::make_pair(std::nullopt, true);
-      }
-
-      swchain_slots_[slot_id] = bo_info.value();
+    auto bo_info = BufferInfoGetter::GetInstance()->GetBoInfo(buffer_handle);
+    if (!bo_info) {
+      invalid_ = true;
+      return std::nullopt;
     }
 
     /* What the GPU draws is compressed, and this display cannot read that --
@@ -181,64 +166,16 @@ class Hwc2DeviceLayer : public FrontendLayerBase {
      * display will read. See TegraAtomicStateManager. */
     HwcLayer::LayerProperties lp;
     lp.buffer = HwcLayer::Buffer{
-        .bi = swchain_slots_[slot_id],
-        .fb = importer.GetOrCreateFbId(&swchain_slots_[slot_id]),
+        .bi = bo_info.value(),
+        .fb = importer.GetOrCreateFbId(&bo_info.value()),
         .fence = MakeSharedFd(fence_fd),
     };
 
-    return std::make_pair(lp, not_a_swapchain);
-  }
-
-  void SwChainClearCache() {
-    swchain_lookup_table_.clear();
-    swchain_slots_.clear();
-    swchain_reassembled_ = false;
+    return lp;
   }
 
  private:
-  auto GetSlotNumber(buffer_handle_t buffer_handle) -> std::optional<int32_t> {
-    auto unique_id = BufferInfoGetter::GetInstance()->GetUniqueId(
-        buffer_handle);
-    if (!unique_id) {
-      ALOGE("Failed to get unique id for buffer handle %p", buffer_handle);
-      return std::nullopt;
-    }
-
-    if (swchain_lookup_table_.count(*unique_id) == 0) {
-      SwChainReassemble(*unique_id);
-      return std::nullopt;
-    }
-
-    if (!swchain_reassembled_) {
-      return std::nullopt;
-    }
-
-    return swchain_lookup_table_[*unique_id];
-  }
-
-  void SwChainReassemble(BufferUniqueId unique_id) {
-    if (swchain_lookup_table_.count(unique_id) != 0) {
-      if (swchain_lookup_table_[unique_id] ==
-          int(swchain_lookup_table_.size()) - 1) {
-        /* Skip same buffer */
-        return;
-      }
-      if (swchain_lookup_table_[unique_id] == 0) {
-        swchain_reassembled_ = true;
-        return;
-      }
-      /* Tracking error */
-      SwChainClearCache();
-      return;
-    }
-
-    swchain_lookup_table_[unique_id] = int(swchain_lookup_table_.size());
-  }
-
   bool invalid_{}; /* Layer is invalid and should be skipped */
-  std::map<BufferUniqueId, int /*slot*/> swchain_lookup_table_;
-  std::map<int /*slot*/, BufferInfo /*already read*/> swchain_slots_;
-  bool swchain_reassembled_{};
 };
 
 static auto GetHwc2DeviceLayer(HwcLayer &layer)
@@ -560,14 +497,11 @@ static int32_t SetClientTarget(hwc2_device_t *device, hwc2_display_t display,
   }
 
   if (target == nullptr) {
-    h2l->SwChainClearCache();
-
     return 0;
   }
 
-  auto [lp, not_a_swapchain] = h2l->HandleNextBuffer(target, acquire_fence,
-                                                    *idisplay->GetPipe()
-                                                         .importer);
+  auto lp = h2l->HandleNextBuffer(target, acquire_fence,
+                                  *idisplay->GetPipe().importer);
   if (!lp) {
     ALOGE("Failed to process client target");
     return static_cast<int32_t>(HWC2::Error::BadLayer);
@@ -793,9 +727,8 @@ static int32_t SetOutputBuffer(hwc2_device_t *device, hwc2_display_t display,
         std::make_shared<Hwc2DeviceLayer>());
   }
 
-  auto [lp, not_a_swapchain] = h2l->HandleNextBuffer(buffer, release_fence,
-                                                    *idisplay->GetPipe()
-                                                         .importer);
+  auto lp = h2l->HandleNextBuffer(buffer, release_fence,
+                                  *idisplay->GetPipe().importer);
   if (!lp) {
     ALOGE("Failed to process output buffer");
     return static_cast<int32_t>(HWC2::Error::BadLayer);
@@ -1325,18 +1258,12 @@ static int32_t SetLayerBuffer(hwc2_device_t *device, hwc2_display_t display,
 
   auto h2l = GetHwc2DeviceLayer(*ilayer);
 
-  auto [lp, not_a_swapchain] = h2l->HandleNextBuffer(buffer, acquire_fence,
-                                                    *idisplay->GetPipe()
-                                                         .importer);
+  auto lp = h2l->HandleNextBuffer(buffer, acquire_fence,
+                                  *idisplay->GetPipe().importer);
   if (!lp) {
     ALOGV("Failed to process layer buffer");
     return static_cast<int32_t>(HWC2::Error::BadLayer);
   }
-
-  /* Whether this was one buffer of a swapchain or a one-off used to decide
-   * what the layer forgot; there is nothing kept in the layer to forget now,
-   * so the answer is only read to keep the reading honest. */
-  (void)not_a_swapchain;
 
   ilayer->SetLayerProperties(lp.value());
 

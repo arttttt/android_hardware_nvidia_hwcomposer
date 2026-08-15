@@ -462,6 +462,16 @@ std::string Hwc::DumpState() {
                                  display_stats.second);
     }
   }
+
+  /* And whatever the buffer getter counts -- it is one per process rather
+   * than one per display, so it reports here rather than above. */
+  auto *getter = BufferInfoGetter::GetInstance();
+  if (getter != nullptr) {
+    const std::string described = getter->DumpState();
+    if (!described.empty())
+      output << described << "\n";
+  }
+
   return output.str();
 }
 

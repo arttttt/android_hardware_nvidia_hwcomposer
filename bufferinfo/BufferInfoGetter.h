@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 
 #include "utils/log.h"
 
@@ -40,6 +41,12 @@ class GrallocBufferHandle;
 class BufferInfoGetter {
  public:
   virtual ~BufferInfoGetter() = default;
+
+  /* Whatever the getter counts about its own work, for the dump. A getter
+   * that counts nothing prints nothing. */
+  virtual std::string DumpState() {
+    return {};
+  }
 
   // Import the buffer_handle_t into this process. The imported buffer_handle_t
   // will be released when the GrallocBufferHandle is destructed.
