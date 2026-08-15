@@ -26,7 +26,6 @@
 
 #include "utils/Logging.h"
 
-#include "compositor/GenericLayerMapperCompositionPlanner.h"
 #include "tegra/FbDevice.h"
 #include "tegra/TegraAtomicStateManager.h"
 

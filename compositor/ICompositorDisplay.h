@@ -25,7 +25,6 @@
 
 #include "compositor/CompositionPlanner.h"
 #include "compositor/DisplayInfo.h"
-#include "compositor/PresentedCompositionCache.h"
 #include "display/PipelineBinding.h"
 #include "hwc/HwcLayer.h"
 
@@ -53,10 +52,6 @@ class ICompositorDisplay {
 
   virtual CommitStatus TestComposition(
       CompositionPlanner::ValidatedComposition &composition) const = 0;
-
-  // For validation short-circuiting logic.
-  virtual const PresentedCompositionCache &GetLastPresentedComposition()
-      const = 0;
 
   /* The last composition the display actually showed, ready to be handed
    * back for a frame that changed nothing, or empty when there is no such

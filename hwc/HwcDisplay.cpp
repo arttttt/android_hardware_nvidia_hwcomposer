@@ -55,7 +55,6 @@
 #include "compositor/LayerData.h"
 #include "compositor/LayerToPlaneJoiningPlan.h"
 #include "compositor/PlanInvalidation.h"
-#include "compositor/PresentedCompositionCache.h"
 #include "display/AtomicCommitSink.h"
 #include "display/AtomicStateManager.h"
 #include "display/CommitStatus.h"

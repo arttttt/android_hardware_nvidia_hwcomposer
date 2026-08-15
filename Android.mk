@@ -121,17 +121,8 @@ LOCAL_SRC_FILES := \
     compositor/FlatteningEventAtomReporter.cpp \
     compositor/FrameTimeHistory.cpp \
     compositor/GenericCompositionPlanner.cpp \
-    compositor/GenericLayerMapperCompositionPlanner.cpp \
     compositor/HdcpController.cpp \
     compositor/LayerToPlaneJoiningPlan.cpp \
-    compositor/PresentedCompositionCache.cpp \
-    compositor/ShortCircuitor.cpp \
-    compositor/mapper/CursorLayerMapper.cpp \
-    compositor/mapper/ForceClientCompositionLayerMapper.cpp \
-    compositor/mapper/LayerCachingMapper.cpp \
-    compositor/mapper/LeftoverLayerMapper.cpp \
-    compositor/mapper/MapperUtils.cpp \
-    compositor/mapper/UnderlayMapper.cpp \
     display/DrmMode.cpp \
     display/DrmProperty.cpp \
     display/VSyncWorker.cpp \

@@ -32,7 +32,6 @@
 #include "compositor/DisplayInfo.h"
 #include "compositor/ICompositorDisplay.h"
 #include "compositor/LayerData.h"
-#include "compositor/PresentedCompositionCache.h"
 #include "display/DisplayPipeline.h"
 #include "drm/drm_mode.h"
 #include "hwc/HwcDisplayConfigs.h"
@@ -119,14 +118,6 @@ class HwcDisplay : public ICompositorDisplay {
 
   CommitStatus TestComposition(
       CompositionPlanner::ValidatedComposition &composition) const override;
-
-  auto GetLastPresentedComposition() const
-      -> const PresentedCompositionCache & override {
-    /* Fed by nothing since plan reuse moved to the invalidation flags; kept
-     * only because the retired mapper planner still asks. */
-    static const PresentedCompositionCache kNeverPresented;
-    return kNeverPresented;
-  }
 
   auto GetReusablePlan() const
       -> const std::optional<CompositionPlanner::ValidatedComposition>

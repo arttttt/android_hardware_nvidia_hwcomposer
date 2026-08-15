@@ -23,7 +23,6 @@
 #include "bufferinfo/BufferInfoGetter.h"
 #include "compositor/CompositionPlanner.h"
 #include "compositor/GenericCompositionPlanner.h"
-#include "compositor/GenericLayerMapperCompositionPlanner.h"
 #include "utils/properties.h"
 
 #if defined(USE_IMAPPER4_METADATA_API)
@@ -51,10 +50,6 @@ std::unique_ptr<BufferInfoGetter> GenericBackend::CreateBufferInfoGetter() {
 }
 
 std::unique_ptr<CompositionPlanner> GenericBackend::CreateCompositionPlanner() {
-  if (Properties::ForcedHolePunchingEnabled()) {
-    return std::make_unique<GenericLayerMapperCompositionPlanner>();
-  }
-
   return std::make_unique<GenericCompositionPlanner>();
 }
 

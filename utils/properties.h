@@ -39,13 +39,9 @@ class Properties {
   static auto GetBackendOverride() -> std::string;
   static auto GetDevicePath() -> std::string;
   static auto UseColorPipeline() -> bool;
-  static auto ForcedHolePunchingEnabled() -> bool;
   static auto SkipInternalDisplayReset() -> bool;
   static auto ForceColorMode() -> int;
   static auto PersistentHdrEnabled() -> bool;
-  static auto ValidationShortCircuiting() -> bool;
-  static auto ShortCircuitIgnoreGeometry() -> bool;
-  static auto ShortCircuitIgnoreCtm() -> bool;
   static auto ExternalHdrEnabled() -> bool;
   static auto SkipPlaneDamageClips() -> bool;
 };
