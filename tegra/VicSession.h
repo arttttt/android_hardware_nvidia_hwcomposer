@@ -118,8 +118,13 @@ class VicSession {
    *
    * More than kMaxLayers layers is refused the same way.
    */
+  /* `width` and `height` bound the region actually drawn, measured from
+   * the buffer's origin; nought means the whole buffer. The caller that
+   * shows only a corner of the target has no reason to pay for the rest of
+   * it being written. */
   drm_hwcomposer::SharedFd Compose(buffer_handle_t target,
                                    const std::vector<Layer> &layers,
+                                   uint32_t width = 0, uint32_t height = 0,
                                    int target_ready = -1);
 
   /* How many sets the engine has refused, and how many it has taken. What

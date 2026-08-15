@@ -225,7 +225,7 @@ VicSession::~VicSession() {
 
 drm_hwcomposer::SharedFd VicSession::Compose(
     buffer_handle_t target, const std::vector<Layer> &layers,
-    int target_ready) {
+    uint32_t width, uint32_t height, int target_ready) {
   if (layers.empty() || layers.size() > kMaxLayers) {
     refused_++;
     return {};
@@ -255,29 +255,36 @@ drm_hwcomposer::SharedFd VicSession::Compose(
   std::memset(config_.data(), 0, config_.size());
   void *config = config_.data();
 
-  /* The whole buffer, every time, and never the part a layer happens to
+  /* The region asked for, and never merely the part a layer happens to
    * cover.
    *
    * What falls outside this rectangle the engine does not touch, and these
    * buffers are taken in turn -- so an untouched corner still holds what was
-   * drawn there two frames ago. On a still picture that is invisible; on an
-   * animation, where the layer moves and resizes every frame, it is a trail
-   * of the frame before last left standing around the edges.
+   * drawn there two frames ago. Everything INSIDE the rectangle is written,
+   * covered or not, which is what keeps those trails out of the picture.
+   * The rectangle used to be the whole buffer, unconditionally; now the
+   * caller may bound it, because a caller that scans out only a corner of
+   * the target never shows what lies beyond it -- and megabytes written
+   * past the corner were the dearest part of a small merge.
    *
-   * Asked of the allocator rather than derived from the layers for the same
-   * reason: the answer must be about the buffer, not about what is being put
-   * in it. */
+   * The buffer's own size still comes from the allocator rather than from
+   * the layers: the bound is clamped to the buffer, not trusted over it. */
   drm_hwcomposer::NvGralloc::Surface target_surface{};
   if (!gralloc->DescribeSurface(target, &target_surface)) {
     refused_++;
     return {};
   }
 
+  if (width == 0 || width > target_surface.width)
+    width = target_surface.width;
+  if (height == 0 || height > target_surface.height)
+    height = target_surface.height;
+
   const NvRect target_rect = {
       .left = 0,
       .top = 0,
-      .right = static_cast<int32_t>(target_surface.width),
-      .bottom = static_cast<int32_t>(target_surface.height),
+      .right = static_cast<int32_t>(width),
+      .bottom = static_cast<int32_t>(height),
   };
 
   if (configure_target_(session_, config, target_surfaces,

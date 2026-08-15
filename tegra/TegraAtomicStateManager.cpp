@@ -647,7 +647,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       }
 
       const int64_t before_merge = NowNs();
-      merged = vic_->Compose(target, merge.layers,
+      merged = vic_->Compose(target, merge.layers, merge.width, merge.height,
                              target_ready ? *target_ready : -1);
       if (!merged) {
         /* The engine would not take it. Nothing has been written, so the
