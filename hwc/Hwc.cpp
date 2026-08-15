@@ -81,8 +81,16 @@ std::string DumpDisplayStats(const HwcDisplay *display,
      << "Statistics since last dumpsys request:\n"
      << DumpStats(delta) << "\n\n";
 
-  /* And whatever the platform's flip machinery counts, which nothing above it
-   * can see. Silence from a platform that counts nothing prints nothing. */
+  /* What the planner counts about its own work, and below it whatever the
+   * platform's flip machinery counts, which nothing above either can see.
+   * Silence from one that counts nothing prints nothing. */
+  auto &planner = display->GetPipe().planner;
+  if (planner) {
+    const std::string planning = planner->DumpState();
+    if (!planning.empty())
+      ss << planning << "\n";
+  }
+
   auto &state_manager = display->GetPipe().atomic_state_manager;
   if (state_manager) {
     const std::string platform = state_manager->DumpState();

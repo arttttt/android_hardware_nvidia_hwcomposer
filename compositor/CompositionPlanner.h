@@ -20,6 +20,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -96,6 +97,12 @@ class CompositionPlanner {
   // ValidatedComposition have been Executed through DrmAtomicCommitSink.
   virtual ValidationResult ValidateDisplay(
       const ICompositorDisplay* display) = 0;
+
+  // Whatever the planner counts about its own work, for the dump. A planner
+  // that counts nothing prints nothing.
+  virtual std::string DumpState() {
+    return {};
+  }
 
   // Returns a ValidatedComposition that assigns all HwcLayers to client
   // composition.

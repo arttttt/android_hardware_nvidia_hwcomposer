@@ -16,8 +16,10 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <tuple>
 #include <vector>
 
@@ -35,7 +37,26 @@ class GenericCompositionPlanner : public CompositionPlanner {
   ~GenericCompositionPlanner() override = default;
   ValidationResult ValidateDisplay(const ICompositorDisplay* display) override;
 
+  std::string DumpState() override;
+
  private:
+  /* What a plan costs to make. Validation runs for every frame the client
+   * updates and repeats its work in full even when nothing about the frame
+   * has changed; these are the numbers that say what that repetition is
+   * worth before anything is built to avoid it. Written by the frame thread,
+   * read by the dump's, hence the atomics. */
+  struct ValidationStats {
+    std::atomic<uint64_t> calls{0};
+    std::atomic<uint64_t> total_us{0};
+    std::atomic<uint64_t> max_us{0};
+    /* <4us, <16us, <64us, <256us and the rest. */
+    std::atomic<uint64_t> buckets[5]{};
+  };
+
+  void RecordValidation(uint64_t duration_us);
+
+  ValidationStats lifetime_;
+  ValidationStats interval_;
   static std::tuple<size_t, size_t> GetClientLayers(
       const ICompositorDisplay* display,
       const std::vector<const HwcLayer*>& layers, bool use_cursor_plane);

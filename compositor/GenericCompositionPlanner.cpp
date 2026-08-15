@@ -17,8 +17,10 @@
 #include "GenericCompositionPlanner.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <sstream>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -53,6 +55,19 @@ const HwcLayer* GetCursorLayer(const std::vector<const HwcLayer*>& layers) {
 
 auto GenericCompositionPlanner::ValidateDisplay(
     const ICompositorDisplay* display) -> ValidationResult {
+  /* Counted whole, from any exit, which is what the destructor buys. */
+  struct Timed {
+    GenericCompositionPlanner* planner;
+    std::chrono::steady_clock::time_point began = std::chrono::steady_clock::
+        now();
+    ~Timed() {
+      planner->RecordValidation(static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now() - began)
+              .count()));
+    }
+  } timed{this};
+
   const auto layers = display->GetOrderLayersByZPos();
 
   const FlatteningController* flatcon = display->GetFlatCon();
@@ -330,6 +345,63 @@ std::tuple<size_t, size_t> GenericCompositionPlanner::GetExtraClientRange(
   }
 
   return std::make_tuple(client_start, client_size);
+}
+
+void GenericCompositionPlanner::RecordValidation(uint64_t duration_us) {
+  for (ValidationStats* stats : {&lifetime_, &interval_}) {
+    stats->calls.fetch_add(1, std::memory_order_relaxed);
+    stats->total_us.fetch_add(duration_us, std::memory_order_relaxed);
+
+    uint64_t seen = stats->max_us.load(std::memory_order_relaxed);
+    while (seen < duration_us &&
+           !stats->max_us.compare_exchange_weak(seen, duration_us,
+                                                std::memory_order_relaxed)) {
+    }
+
+    const size_t bucket = duration_us < 4 ? 0
+                          : duration_us < 16 ? 1
+                          : duration_us < 64 ? 2
+                          : duration_us < 256 ? 3
+                                              : 4;
+    stats->buckets[bucket].fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+std::string GenericCompositionPlanner::DumpState() {
+  const auto print = [](std::stringstream& ss, ValidationStats& stats,
+                        bool reset) {
+    const auto calls = stats.calls.load(std::memory_order_relaxed);
+    const auto total = stats.total_us.load(std::memory_order_relaxed);
+    const auto max = stats.max_us.load(std::memory_order_relaxed);
+
+    ss << "  plans made              : " << calls << "\n";
+    if (calls > 0) {
+      ss << "  time spent planning     : " << total << " us"
+         << " (mean " << total / calls << ", max " << max << ")\n"
+         << "  spread                  :";
+      static const char* kNames[] = {" <4us:", " <16us:", " <64us:", " <256us:",
+                                     " slower:"};
+      for (size_t i = 0; i < 5; ++i) {
+        ss << kNames[i] << stats.buckets[i].load(std::memory_order_relaxed);
+      }
+      ss << "\n";
+    }
+
+    if (reset) {
+      stats.calls.store(0, std::memory_order_relaxed);
+      stats.total_us.store(0, std::memory_order_relaxed);
+      stats.max_us.store(0, std::memory_order_relaxed);
+      for (auto& bucket : stats.buckets)
+        bucket.store(0, std::memory_order_relaxed);
+    }
+  };
+
+  std::stringstream ss;
+  ss << "Validation since last dumpsys request:\n";
+  print(ss, interval_, /*reset=*/true);
+  ss << "Validation over its lifetime:\n";
+  print(ss, lifetime_, /*reset=*/false);
+  return ss.str();
 }
 
 }  // namespace android::drm_hwcomposer
