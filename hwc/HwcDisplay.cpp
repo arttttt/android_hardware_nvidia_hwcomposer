@@ -400,13 +400,8 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
     flatcon_->NewFrame();
   }
 
-  auto [composition,
-        short_circuited] = pipeline_->planner->ValidateDisplay(this);
-  validated_composition_.emplace(std::move(composition));
-  if (!short_circuited) {
-    last_presented_composition_.SetRequestedContext(
-        ValidationRequestContext(*this, GetOrderLayersByZPos()));
-  }
+  auto validation_result = pipeline_->planner->ValidateDisplay(this);
+  validated_composition_.emplace(std::move(validation_result.composition));
 
   // Iterate through the layers to find which layers actually changed.
   std::vector<ChangedLayer> changed_layers;
@@ -831,7 +826,7 @@ void HwcDisplay::Deinit() {
     flatcon_.reset();
     hdcpcon_.reset();
     backlight_controller_.reset();
-    last_presented_composition_.Reset();
+    reusable_plan_.reset();
     MarkPlanInvalid(kAllDirty);
   }
 
@@ -1570,8 +1565,10 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
   const int64_t t2 = GetTimeMonotonicNs();
 
   if (a_args) {
-    last_presented_composition_.SetValidatedComposition(
-        *validated_composition_);
+    reusable_plan_ = *validated_composition_;
+    /* Dropped rather than kept: the plan holds the plane reservations, and
+     * the commit rebuilds the joining from the types it carries. */
+    reusable_plan_->composition_plan.reset();
   }
   // |validated_composition_| can safely be reset now. |a_args| holds its own
   // pointer to the plan which will remain in scope until the commit is finished
@@ -1580,7 +1577,7 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
 
   if (!a_args) {
     ALOGE("Failed to create AtomicCommitArgs for frame composition.");
-    last_presented_composition_.Reset();
+    reusable_plan_.reset();
     MarkPlanInvalid(kAllDirty);
     return CommitStatus::InternalFailure();
   }
@@ -1590,7 +1587,7 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
   if (!result.has_value()) {
     ALOGE("Failed to commit the frame composition with err=%d",
           status_or_result.GetStatus().error_code);
-    last_presented_composition_.Reset();
+    reusable_plan_.reset();
     MarkPlanInvalid(kAllDirty);
     return status_or_result.GetStatus();
   }

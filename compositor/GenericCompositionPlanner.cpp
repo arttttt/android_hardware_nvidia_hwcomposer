@@ -29,8 +29,6 @@
 #include "compositor/FlatteningController.h"
 #include "compositor/ICompositorDisplay.h"
 #include "compositor/LayerData.h"
-#include "compositor/PresentedCompositionCache.h"
-#include "compositor/ShortCircuitor.h"
 #include "display/CommitStatus.h"
 #include "display/Plane.h"
 #include "hwc/HwcLayer.h"
@@ -96,51 +94,26 @@ auto GenericCompositionPlanner::ValidateDisplay(
    * every mutation of plan-shaping state raised a bit where it happened, and
    * a frame arriving with none raised is the frame before it as far as the
    * plan cares. Placed after the early exits above so a scene that ought to
-   * flatten flattens instead of endlessly reusing a live plan.
-   *
-   * The snapshot comparison below it is the migration's referee, not part
-   * of the mechanism: with its freshness limit effectively off it re-derives
-   * the same verdict from a full comparison of the frame, and the counters
-   * record every disagreement. A veto -- flags clean, snapshot refusing --
-   * is a missing invalidator and wins the frame, because that polarity is
-   * the one that would reuse a wrong plan. When the soak has counted zero
-   * of both, the snapshot machinery goes. */
+   * flatten flattens instead of endlessly reusing a live plan. */
   {
-    constexpr ShortCircuitor::Config kReferee = {.enabled = true,
-                                                 .ignore_geometry = false,
-                                                 .ignore_ctm = false,
-                                                 .request_lifetime = std::
-                                                     chrono::hours(8760)};
     const uint32_t invalidators = display->TakePlanInvalidators();
+    const auto& reusable = display->GetReusablePlan();
+
     /* A flattened composition is never the plan to hand back: it was chosen
      * because the scene had stopped, and the frame asking here is the scene
-     * moving again -- with nothing raised, since new pixels raise nothing.
-     * The snapshot makes the same refusal from flatten_reason; this must
-     * outlive the snapshot. */
-    const auto cached = display->GetLastPresentedComposition().GetContext();
-    const bool have_plan = cached &&
-                           cached->second.flatten_reason == FlattenReason::
-                                                                kNone;
-    auto snapshot = ShortCircuitor::
-        Get(kReferee, display->GetLastPresentedComposition(),
-            ValidationRequestContext(*display, layers));
+     * moving again -- with nothing raised, since new pixels raise nothing. */
+    const bool have_plan = reusable &&
+                           reusable->flatten_reason == FlattenReason::kNone;
 
     if (invalidators == 0 && have_plan) {
-      if (snapshot) {
-        for (ValidationStats* stats : {&lifetime_, &interval_})
-          stats->reused.fetch_add(1, std::memory_order_relaxed);
-        return {.composition = std::move(*snapshot),
-                .short_circuited = true};
-      }
       for (ValidationStats* stats : {&lifetime_, &interval_})
-        stats->reuse_vetoed.fetch_add(1, std::memory_order_relaxed);
-    } else if (invalidators != 0) {
-      for (ValidationStats* stats : {&lifetime_, &interval_}) {
+        stats->reused.fetch_add(1, std::memory_order_relaxed);
+      return {.composition = *reusable, .short_circuited = true};
+    }
+    if (invalidators != 0) {
+      for (ValidationStats* stats : {&lifetime_, &interval_})
         stats->invalidators_seen.fetch_or(invalidators,
                                           std::memory_order_relaxed);
-        if (snapshot)
-          stats->replan_doubted.fetch_add(1, std::memory_order_relaxed);
-      }
     }
   }
 
@@ -426,16 +399,12 @@ std::string GenericCompositionPlanner::DumpState() {
                         bool reset) {
     const auto calls = stats.calls.load(std::memory_order_relaxed);
     const auto reused = stats.reused.load(std::memory_order_relaxed);
-    const auto vetoed = stats.reuse_vetoed.load(std::memory_order_relaxed);
-    const auto doubted = stats.replan_doubted.load(std::memory_order_relaxed);
     const auto seen = stats.invalidators_seen.load(std::memory_order_relaxed);
     const auto total = stats.total_us.load(std::memory_order_relaxed);
     const auto max = stats.max_us.load(std::memory_order_relaxed);
 
     ss << "  plans made              : " << calls << "\n"
        << "  of them reused          : " << reused << "\n"
-       << "  reuse vetoed (BAD)      : " << vetoed << "\n"
-       << "  replan doubted          : " << doubted << "\n"
        << "  invalidators seen       : 0x" << std::hex << seen << std::dec
        << "\n";
     if (calls > 0) {
@@ -453,8 +422,6 @@ std::string GenericCompositionPlanner::DumpState() {
     if (reset) {
       stats.calls.store(0, std::memory_order_relaxed);
       stats.reused.store(0, std::memory_order_relaxed);
-      stats.reuse_vetoed.store(0, std::memory_order_relaxed);
-      stats.replan_doubted.store(0, std::memory_order_relaxed);
       stats.invalidators_seen.store(0, std::memory_order_relaxed);
       stats.total_us.store(0, std::memory_order_relaxed);
       stats.max_us.store(0, std::memory_order_relaxed);

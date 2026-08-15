@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -56,6 +57,13 @@ class ICompositorDisplay {
   // For validation short-circuiting logic.
   virtual const PresentedCompositionCache &GetLastPresentedComposition()
       const = 0;
+
+  /* The last composition the display actually showed, ready to be handed
+   * back for a frame that changed nothing, or empty when there is no such
+   * thing -- a fresh start, a failed commit. Its plan reference is dropped;
+   * the commit rebuilds the joining from the types it carries. */
+  virtual const std::optional<CompositionPlanner::ValidatedComposition> &
+  GetReusablePlan() const = 0;
 
   /* Everything that changed underneath the last plan, as PlanInvalidator
    * bits gathered from the display and every layer, cleared by the asking.

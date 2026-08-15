@@ -122,7 +122,16 @@ class HwcDisplay : public ICompositorDisplay {
 
   auto GetLastPresentedComposition() const
       -> const PresentedCompositionCache & override {
-    return last_presented_composition_;
+    /* Fed by nothing since plan reuse moved to the invalidation flags; kept
+     * only because the retired mapper planner still asks. */
+    static const PresentedCompositionCache kNeverPresented;
+    return kNeverPresented;
+  }
+
+  auto GetReusablePlan() const
+      -> const std::optional<CompositionPlanner::ValidatedComposition>
+          & override {
+    return reusable_plan_;
   }
 
   uint32_t TakePlanInvalidators() const override {
@@ -478,7 +487,12 @@ class HwcDisplay : public ICompositorDisplay {
 
   std::unique_ptr<BacklightController> backlight_controller_;
 
-  PresentedCompositionCache last_presented_composition_;
+  /* The composition the display last actually showed, minus its plan
+   * reference -- holding that would keep the planes reserved, and the
+   * commit rebuilds the joining from the types anyway. What a clean-flags
+   * frame is handed. Empty until a frame has been shown, and emptied by
+   * every path that makes the shown frame unrepresentative. */
+  std::optional<CompositionPlanner::ValidatedComposition> reusable_plan_;
 
   /* Display-level PlanInvalidator bits; the layers carry their own. Starts
    * all-dirty so the first frame of a life is planned in full, and every

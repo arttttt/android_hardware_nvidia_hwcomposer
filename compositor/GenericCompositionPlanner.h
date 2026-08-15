@@ -54,14 +54,8 @@ class GenericCompositionPlanner : public CompositionPlanner {
     /* <4us, <16us, <64us, <256us and the rest. */
     std::atomic<uint64_t> buckets[5]{};
 
-    /* The migration's referee, while the snapshot comparison is still here
-     * to disagree with. A veto is the flags claiming nothing changed while
-     * the snapshot sees a difference -- the dangerous direction, and any
-     * count above zero means an invalidator is missing. A doubt is the
-     * flags replanning a frame the snapshot would have reused -- only a
-     * cost. Which bits have been raised at all is kept as a mask. */
-    std::atomic<uint64_t> reuse_vetoed{0};
-    std::atomic<uint64_t> replan_doubted{0};
+    /* Which PlanInvalidator bits have been raised at all, as a mask: says
+     * what actually drives replanning in live scenes. */
     std::atomic<uint32_t> invalidators_seen{0};
   };
 
