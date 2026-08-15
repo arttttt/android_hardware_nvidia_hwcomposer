@@ -60,6 +60,17 @@ class TegraAtomicRequest : public AtomicRequest {
      * fresh every time. */
     std::vector<uint64_t> source_ids;
 
+    /* The group's own frame of reference. The layers' rectangles are held
+     * relative to this corner, and the engine draws them from the buffer's
+     * origin -- where the group sits on the panel is the window's business
+     * alone. Pixels and position stay independent axes, which is what the
+     * stock composer's scratch path did and what lets the window scan a
+     * group's worth of memory rather than a panel's. */
+    int32_t origin_x = 0;
+    int32_t origin_y = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+
     size_t slot;
     int32_t window;
     uint32_t depth;
@@ -309,6 +320,10 @@ class TegraAtomicStateManager : public AtomicStateManager {
   std::vector<MergedSource> last_merge_sources_;
   int32_t last_merge_window_ = -1; /* -1: nothing remembered yet */
   uint32_t last_merge_depth_ = 0;
+  int32_t last_merge_origin_x_ = 0;
+  int32_t last_merge_origin_y_ = 0;
+  uint32_t last_merge_width_ = 0;
+  uint32_t last_merge_height_ = 0;
   hwc::DcHead::Window last_merge_described_{};
   SharedFd last_merge_fence_;
 

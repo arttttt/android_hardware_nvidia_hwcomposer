@@ -401,17 +401,45 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
     }
   }
 
+  /* The group's own frame of reference, found now that its members are
+   * known. The layers' panel rectangles are rebased to the group's corner:
+   * the engine will draw them from the buffer's origin, and where the group
+   * sits on the panel becomes the window's business alone. */
+  if (!merge.layers.empty()) {
+    int32_t left = INT32_MAX;
+    int32_t top = INT32_MAX;
+    int32_t right = INT32_MIN;
+    int32_t bottom = INT32_MIN;
+    for (const auto &l : merge.layers) {
+      left = std::min(left, l.display_left);
+      top = std::min(top, l.display_top);
+      right = std::max(right, l.display_right);
+      bottom = std::max(bottom, l.display_bottom);
+    }
+    merge.origin_x = left;
+    merge.origin_y = top;
+    merge.width = right > left ? static_cast<uint32_t>(right - left) : 1;
+    merge.height = bottom > top ? static_cast<uint32_t>(bottom - top) : 1;
+
+    for (auto &l : merge.layers) {
+      l.display_left -= left;
+      l.display_right -= left;
+      l.display_top -= top;
+      l.display_bottom -= top;
+    }
+  }
+
   /* The proposal must weigh the merged window too. Its buffer does not
    * exist yet -- the engine draws it at execute, after exactly one plan has
    * won -- but the bandwidth question never needed the buffer: the kernel
    * counts a window from its geometry and format alone, and asks only that
    * the buffer field be positive. So the window the engine will fill is
-   * described here as it will really be scanned out -- full-panel,
-   * thirty-two-bit rows -- with a stand-in descriptor nothing ever
-   * resolves: the test path discards the request after asking, and the
-   * execute path rebuilds this window from the real buffer before posting.
-   * Without this, every proposal was one full-screen window lighter than
-   * the frame it vouched for. */
+   * described here as it will really be scanned out -- the group's own
+   * rectangle, thirty-two-bit rows -- with a stand-in descriptor nothing
+   * ever resolves: the test path discards the request after asking, and
+   * the execute path rebuilds this window from the real buffer before
+   * posting. Described full-panel, as it long was, every proposal carried
+   * a whole screen of imaginary bandwidth for what is usually a strip. */
   if (!merge.layers.empty() && !modes_.empty()) {
     const drmModeModeInfo &mode = modes_.front().GetRawMode();
     hwc::DcHead::Window &window = windows[merge.slot];
@@ -420,10 +448,12 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
     window.bufferFd = 1; /* positive is all the proposal reads */
     window.stride = static_cast<uint32_t>(mode.hdisplay) * 4;
     window.pixelFormat = TEGRA_DC_EXT_FMT_R8G8B8A8;
-    window.sourceWidth = static_cast<float>(mode.hdisplay);
-    window.sourceHeight = static_cast<float>(mode.vdisplay);
-    window.outWidth = mode.hdisplay;
-    window.outHeight = mode.vdisplay;
+    window.sourceWidth = static_cast<float>(merge.width);
+    window.sourceHeight = static_cast<float>(merge.height);
+    window.outX = merge.origin_x;
+    window.outY = merge.origin_y;
+    window.outWidth = static_cast<int32_t>(merge.width);
+    window.outHeight = static_cast<int32_t>(merge.height);
     window.z = merge.depth;
     window.blend = TEGRA_DC_EXT_BLEND_PREMULT;
   }
@@ -452,6 +482,17 @@ bool TegraAtomicStateManager::RecognisesMerge(
       merge.layers.size() != last_merge_sources_.size() ||
       merge.source_ids.size() != merge.layers.size()) {
     merges_.changed_shape++;
+    return false;
+  }
+
+  /* The group's place and size on the panel. The layers' own rectangles
+   * below are relative to the group, so this is the one place panel
+   * coordinates are still judged. */
+  if (merge.origin_x != last_merge_origin_x_ ||
+      merge.origin_y != last_merge_origin_y_ ||
+      merge.width != last_merge_width_ ||
+      merge.height != last_merge_height_) {
+    merges_.changed_geometry++;
     return false;
   }
 
@@ -507,6 +548,10 @@ void TegraAtomicStateManager::RememberMerge(
 
   last_merge_window_ = merge.window;
   last_merge_depth_ = merge.depth;
+  last_merge_origin_x_ = merge.origin_x;
+  last_merge_origin_y_ = merge.origin_y;
+  last_merge_width_ = merge.width;
+  last_merge_height_ = merge.height;
   last_merge_described_ = described;
   last_merge_fence_ = drawn;
 }
@@ -646,13 +691,20 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       window.flags = 0;
       window.blockHeightLog2 = 0;
 
-      /* Shown whole and unresized. Everything about where each layer went is
-       * already in the pixels; the window's only job is to put them on the
-       * panel and blend them over what is underneath. */
-      window.sourceWidth = static_cast<float>(surface.width);
-      window.sourceHeight = static_cast<float>(surface.height);
-      window.outWidth = static_cast<int32_t>(surface.width);
-      window.outHeight = static_cast<int32_t>(surface.height);
+      /* Shown unresized, and only the group's worth of it. The buffer is
+       * panel-sized because the pool allocates once for the worst case, but
+       * the group lives in its top-left corner and the window reads exactly
+       * that: everything about where each layer sits inside the group is
+       * already in the pixels, and where the group sits on the panel is
+       * said here, in the window's destination. The controller never
+       * fetches past the rectangle it is given -- a strip's window costs a
+       * strip's bandwidth. */
+      window.sourceWidth = static_cast<float>(merge.width);
+      window.sourceHeight = static_cast<float>(merge.height);
+      window.outX = merge.origin_x;
+      window.outY = merge.origin_y;
+      window.outWidth = static_cast<int32_t>(merge.width);
+      window.outHeight = static_cast<int32_t>(merge.height);
       window.z = merge.depth;
       window.blend = TEGRA_DC_EXT_BLEND_PREMULT;
       window.preFence = *merged;
