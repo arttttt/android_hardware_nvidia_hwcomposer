@@ -526,6 +526,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   }
 
   if (!tegra.HasComposition()) {
+    /* A commit with no frame is a frame nobody judged -- see ForgetMerge. */
+    ForgetMerge();
     if (tegra.GetPowerMode() && *tegra.GetPowerMode() != PowerMode::kOn)
       return SetPowered(false);
     return 0;
@@ -594,8 +596,10 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
        * told the second and waits for it itself; nothing here does. */
       SharedFd target_ready;
       buffer_handle_t target = scratch_->Next(&target_ready);
-      if (target == nullptr)
+      if (target == nullptr) {
+        ForgetMerge();
         return -EBUSY;
+      }
 
       const int64_t before_merge = NowNs();
       merged = vic_->Compose(target, merge.layers,
@@ -603,9 +607,11 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       if (!merged) {
         /* The engine would not take it. Nothing has been written, so the
          * honest thing is to drop the frame rather than show a window
-         * whatever it held before -- and the planner will be asked again for
-         * the next one. What was remembered stays remembered: it still
-         * describes the frame genuinely on the window. */
+         * whatever it held before -- and the planner will be asked again
+         * for the next one. What was remembered is dropped too: this frame
+         * went unjudged, and the argument that keeps a remembered identity
+         * honest does not survive a frame nobody watched. */
+        ForgetMerge();
         ALOGE("the engine refused a frame of %zu layer(s)",
               merge.layers.size());
         return -EINVAL;
@@ -653,6 +659,12 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
 
       RememberMerge(merge, window, merged);
     }
+  } else {
+    /* No group this frame, so no frame of any group was judged: a layer
+     * away from the merge can be redrawn under a kept identity, and this
+     * path would not see the buffer that proves it. Forgotten, so that the
+     * group's return starts the argument over. */
+    ForgetMerge();
   }
 
   /* Held until the flip has been made. The controller waits on these before

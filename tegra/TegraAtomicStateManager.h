@@ -291,7 +291,9 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * showing it again costs nothing. Compared against the previous frame
    * only, which is what makes it sound: pixels cannot change under an
    * identity, because drawing again means queueing, and queueing puts a
-   * different buffer on the layer for at least a frame in between.
+   * different buffer on the layer for at least a frame in between. That
+   * argument holds only over an unbroken run of judged frames, which is
+   * what ForgetMerge below protects.
    *
    * On a reuse the scratch pool is deliberately left alone -- no Next(), no
    * Presented() -- so it goes on believing, truly, that the same slot is on
@@ -316,6 +318,20 @@ class TegraAtomicStateManager : public AtomicStateManager {
   void RememberMerge(const TegraAtomicRequest::Merge &merge,
                      const hwc::DcHead::Window &described,
                      const SharedFd &drawn);
+
+  /* Nothing is remembered across a frame the group sat out.
+   *
+   * An identity is not a version. A buffer released to its owner can be
+   * drawn into again and come back under the same identity with different
+   * pixels; what rules that out is seeing the layer every frame, because
+   * redrawing means queueing and a ring of two or more puts a different
+   * buffer in front for at least the frame in between. A frame this path
+   * did not judge -- the group dissolved, the engine refused, the panel was
+   * only being powered -- is a frame nobody watched, so whatever was
+   * remembered before it cannot be trusted after it. */
+  void ForgetMerge() {
+    last_merge_window_ = -1;
+  }
 
   bool merge_cache_ = true;
   static bool MergeCacheFromProperty();
