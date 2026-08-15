@@ -486,6 +486,11 @@ class HwcDisplay : public ICompositorDisplay {
    * every path that makes the shown frame unrepresentative. */
   std::optional<CompositionPlanner::ValidatedComposition> reusable_plan_;
 
+  /* Whether the staged composition was handed back from the kept plan
+   * rather than planned anew -- in which case writing it back at present
+   * would be a copy onto itself. */
+  bool staged_composition_reused_ = false;
+
   /* Display-level PlanInvalidator bits; the layers carry their own. Starts
    * all-dirty so the first frame of a life is planned in full, and every
    * failure path re-raises it. Mutable for the same reason the layer's is:

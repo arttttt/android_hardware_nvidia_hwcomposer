@@ -401,6 +401,7 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
 
   auto validation_result = pipeline_->planner->ValidateDisplay(this);
   validated_composition_.emplace(std::move(validation_result.composition));
+  staged_composition_reused_ = validation_result.short_circuited;
 
   // Iterate through the layers to find which layers actually changed.
   std::vector<ChangedLayer> changed_layers;
@@ -1568,7 +1569,11 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
   auto a_args = CreateFrameUpdateCommit(validated_composition_.value());
   const int64_t t2 = GetTimeMonotonicNs();
 
-  if (a_args) {
+  if (a_args && !staged_composition_reused_) {
+    /* A reused composition IS the kept plan -- writing it back would copy a
+     * map onto itself sixty times a second. Skipped, and safely: if the
+     * kept plan was emptied between validate and present, the bit that
+     * emptied it forces a full validation next frame anyway. */
     reusable_plan_ = *validated_composition_;
     /* Dropped rather than kept: the plan holds the plane reservations, and
      * the commit rebuilds the joining from the types it carries. */
