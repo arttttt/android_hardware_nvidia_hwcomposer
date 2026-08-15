@@ -479,6 +479,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
     if (target == nullptr)
       return -EBUSY;
 
+    const int64_t before_merge = NowNs();
     merged = vic_->Compose(target, merge.layers,
                            target_ready ? *target_ready : -1);
     if (!merged) {
@@ -488,6 +489,10 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       ALOGE("the engine refused a frame of %zu layer(s)", merge.layers.size());
       return -EINVAL;
     }
+
+    merges_.frames++;
+    merges_.layers += merge.layers.size();
+    merges_.engine_ns += NowNs() - before_merge;
 
     auto *gralloc = NvGralloc::GetInstance();
     NvGralloc::Surface surface{};
@@ -735,8 +740,30 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
 }
 
 std::string TegraAtomicStateManager::DumpState() {
+  std::stringstream ss;
+
+  /* The engine's work, if this display has one. Read and reset the interval
+   * counters so two dumps around a transition describe that transition; the
+   * accepted/refused tallies come straight from the engine and run for its
+   * whole life. */
+  if (vic_ != nullptr) {
+    const MergeCounters m = merges_;
+    merges_ = {};
+
+    ss << "Merges since last dumpsys request:\n"
+       << "  frames merged           : " << m.frames << "\n";
+    if (m.frames != 0)
+      ss << "  layers per merge (avg)  : "
+         << (m.layers / m.frames) << "\n"
+         << "  engine us per merge     : "
+         << (m.engine_ns / 1000 / static_cast<int64_t>(m.frames)) << "\n";
+    ss << "Engine over its lifetime:\n"
+       << "  frames accepted         : " << vic_->composed() << "\n"
+       << "  frames refused          : " << vic_->refused() << "\n\n";
+  }
+
   if (!count_fences_)
-    return {};
+    return ss.str();
 
   const FenceCounters c = fences_;
   /* Read and reset, so that two dumps around one transition describe that
@@ -744,7 +771,6 @@ std::string TegraAtomicStateManager::DumpState() {
    * beside it are already read. */
   fences_ = {};
 
-  std::stringstream ss;
   ss << "Fences handed to the framework since last dumpsys request:\n"
      << "  frames                  : " << c.frames << "\n"
      << "  already due when given  : " << c.already_due << "\n"

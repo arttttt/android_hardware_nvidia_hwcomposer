@@ -243,7 +243,20 @@ class TegraAtomicStateManager : public AtomicStateManager {
     uint64_t due_a_frame_later = 0;
     uint64_t still_not_due = 0;
   };
+
+  /* What the engine did over one dumpsys interval, so a dump around a
+   * transition describes that transition. The engine's own accepted/refused
+   * tallies (VicSession) run for its whole life instead -- whether it has
+   * ever turned down a real set of layers is a question about the engine, not
+   * about the last second, and it is what decides whether a fallback below
+   * the merge is worth building at all. */
+  struct MergeCounters {
+    uint64_t frames = 0;
+    uint64_t layers = 0;
+    int64_t engine_ns = 0;
+  };
   FenceCounters fences_;
+  MergeCounters merges_;
 
   /* Off unless asked for. The question costs one call into the kernel per
    * frame, and a frame is the thing being measured. */
