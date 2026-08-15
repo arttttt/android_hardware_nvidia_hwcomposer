@@ -1464,10 +1464,13 @@ std::optional<AtomicCommitArgs> HwcDisplay::CreateFrameUpdateCommit(
 
   const bool all_client_layers = a_args.composition->client_z_order &&
                                  a_args.composition->plan.size() == 1;
-  // When client CTM will be applied by the GPU, only apply render intent CTM
-  // via DRM.
-  if (all_client_layers &&
-      hwc_->GetCtmHandling() == CtmHandling::kDrmOrGpu) {
+  // On a frame composed entirely by the GPU, SurfaceFlinger applies the
+  // client's transform itself -- it does so whenever there is no device
+  // composition and no claimed SKIP_CLIENT_COLOR_TRANSFORM capability, under
+  // every CTM policy alike -- so only the render intent's share may go to
+  // the display, or the frame is tinted twice. The day that capability is
+  // claimed for real, this substitution must be gated on the claim.
+  if (all_client_layers) {
     a_args.color_matrix = render_intent_matrix_;
   }
 

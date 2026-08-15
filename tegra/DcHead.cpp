@@ -483,7 +483,9 @@ bool DcHead::rememberBootCmu() {
      * the kernel kept it. Remembering that as home would make it permanent --
      * so home is the tables as found and the matrix as it should be. The day
      * the board declares a calibrated matrix of its own, this is the line to
-     * revisit. */
+     * revisit -- and if anything ever writes the tables at runtime, they
+     * need the same guard, because a predecessor's tables would be
+     * remembered as found too. */
     static const __u16 kIdentity[9] = {256, 0, 0, 0, 256, 0, 0, 0, 256};
     if (memcmp(cmu->csc, kIdentity, sizeof(kIdentity)) != 0) {
         HWC_LOGI("head %d: booted with a non-identity colour matrix, "
