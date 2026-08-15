@@ -20,6 +20,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <math.h>
 #include <ndk/sync.h>
 #include <sync/sync.h>
 #include <time.h>
@@ -572,7 +573,8 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
                                               std::move(handles),
                                               args.composition != nullptr,
                                               args.power_mode,
-                                              std::move(merge));
+                                              std::move(merge),
+                                              args.color_matrix);
 }
 
 bool TegraAtomicStateManager::Test(const AtomicRequest &request) {
@@ -691,6 +693,13 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       return SetPowered(false);
     return 0;
   }
+
+  /* The frame's colour transform, before the frame itself: the write is
+   * folded in at the next frame boundary whatever the order here, and a
+   * frame the controller then refuses leaves colour -- a property of the
+   * display, not of any one frame -- pointing the way the framework said. */
+  if (cmu_ctm_ && tegra.GetColorMatrix())
+    ProgramColorMatrix(*tegra.GetColorMatrix());
 
   /* Flattened here, and only here, because this is the first point at which
    * it is known which buffers the display will read -- and the last point
@@ -1109,6 +1118,25 @@ std::string TegraAtomicStateManager::DumpState() {
        << "  frames refused          : " << vic_->refused() << "\n\n";
   }
 
+  /* Quiet when colour was never asked to change: most dumps, on a display
+   * that spends its life at the identity. */
+  {
+    const CmuCounters c = cmu_;
+    cmu_ = {};
+    const uint64_t any = c.applied + c.restored + c.skipped_offset +
+                         c.skipped_negative;
+    if (any != 0 || csc_programmed_) {
+      ss << "Colour matrices since last dumpsys request:\n"
+         << "  written to the pipeline : " << c.applied << "\n"
+         << "  boot state restored     : " << c.restored << "\n"
+         << "  skipped, offset         : " << c.skipped_offset << "\n"
+         << "  skipped, negative       : " << c.skipped_negative << "\n"
+         << "  cross-channel (approx)  : " << c.approximated << "\n"
+         << "  holding a matrix now    : " << (csc_programmed_ ? "yes" : "no")
+         << "\n\n";
+    }
+  }
+
   if (!count_fences_)
     return ss.str();
 
@@ -1153,6 +1181,99 @@ bool TegraAtomicStateManager::MergeCacheFromProperty() {
    * which is what this did before -- kept switchable only so the two can be
    * measured against each other on the panel without building twice. */
   return property_get_bool("vendor.hwc.mergecache", 1) != 0;
+}
+
+bool TegraAtomicStateManager::CmuFromProperty() {
+  /* On unless told otherwise. Off leaves the head's colour pipeline at its
+   * boot state and the framework's matrices unapplied, which is what this
+   * did before the pipeline had a consumer. */
+  return property_get_bool("vendor.hwc.cmu", 1) != 0;
+}
+
+void TegraAtomicStateManager::ProgramColorMatrix(
+    const HalColorTransformMatrix &matrix) {
+  /* The steady state: the same matrix arrives with every frame for as long
+   * as nothing changes, and must cost this comparison and nothing else. */
+  if (color_matrix_seen_ &&
+      std::equal(matrix.begin(), matrix.end(), last_color_matrix_.begin()))
+    return;
+  last_color_matrix_ = matrix;
+  color_matrix_seen_ = true;
+
+  /* Everything below runs once per change of matrix. */
+
+  constexpr float kEps = 1e-4F;
+  const float *m = matrix.data();
+
+  /* Column-major, as the client API hands it: m[col * 4 + row]. The fourth
+   * column is the offset, the bottom row the projective weight. */
+  const auto restore = [this]() {
+    if (!csc_programmed_)
+      return;
+    if (head_.resetColorMatrix()) {
+      csc_programmed_ = false;
+      cmu_.restored++;
+    }
+  };
+
+  bool identity = true;
+  for (int i = 0; i < 16 && identity; ++i)
+    identity = fabsf(m[i] - (i % 5 == 0 ? 1.F : 0.F)) < kEps;
+  if (identity) {
+    restore();
+    return;
+  }
+
+  /* An offset is an addition after the multiply. The pipeline's matrix
+   * stage has no addend, so a matrix carrying one is left to the frame as
+   * drawn -- which is exactly what happens to it today, and what happens
+   * everywhere the display cannot represent a transform. */
+  if (fabsf(m[12]) > kEps || fabsf(m[13]) > kEps || fabsf(m[14]) > kEps) {
+    restore();
+    cmu_.skipped_offset++;
+    return;
+  }
+
+  /* Row-major out = M * in, which is the order the head takes. */
+  float rm[9];
+  for (int r = 0; r < 3; ++r)
+    for (int c = 0; c < 3; ++c)
+      rm[r * 3 + c] = m[c * 4 + r];
+
+  /* The coefficient field's sign has not been demonstrated on this hardware;
+   * until it is, a negative coefficient written as its positive bit pattern
+   * would show a wrong colour rather than a missing feature. */
+  for (float v : rm) {
+    if (v < -kEps) {
+      restore();
+      cmu_.skipped_negative++;
+      return;
+    }
+  }
+
+  /* The framework's matrix is meant for gamma-encoded values -- that is how
+   * the GPU fallback applies it -- while this matrix stage sits between a
+   * degamma and a regamma table and multiplies linear light. For a diagonal
+   * matrix the two domains reconcile exactly on a pure power law: raising
+   * the factor to the display gamma makes scale-then-encode equal
+   * encode-then-scale, sRGB's linear toe aside. Cross-channel terms have no
+   * such bridge and go in as they are: right shape, close shade. */
+  constexpr float kDisplayGamma = 2.4F;
+  const bool diagonal = fabsf(rm[1]) < kEps && fabsf(rm[2]) < kEps &&
+                        fabsf(rm[3]) < kEps && fabsf(rm[5]) < kEps &&
+                        fabsf(rm[6]) < kEps && fabsf(rm[7]) < kEps;
+  if (diagonal) {
+    rm[0] = powf(rm[0], kDisplayGamma);
+    rm[4] = powf(rm[4], kDisplayGamma);
+    rm[8] = powf(rm[8], kDisplayGamma);
+  }
+
+  if (head_.setColorMatrix(rm)) {
+    csc_programmed_ = true;
+    cmu_.applied++;
+    if (!diagonal)
+      cmu_.approximated++;
+  }
 }
 
 int TegraAtomicStateManager::SetPowered(bool powered) {

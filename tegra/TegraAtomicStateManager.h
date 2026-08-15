@@ -83,16 +83,28 @@ class TegraAtomicRequest : public AtomicRequest {
                      std::vector<buffer_handle_t> handles,
                      bool has_composition,
                      std::optional<PowerMode> power_mode,
-                     Merge merge = {})
+                     Merge merge = {},
+                     std::shared_ptr<const HalColorTransformMatrix>
+                         color_matrix = nullptr)
       : windows_(std::move(windows)),
         handles_(std::move(handles)),
         has_composition_(has_composition),
         power_mode_(power_mode),
-        merge_(std::move(merge)) {
+        merge_(std::move(merge)),
+        color_matrix_(std::move(color_matrix)) {
   }
 
   const Merge &GetMerge() const {
     return merge_;
+  }
+
+  /* The colour transform this frame is to be shown under, or null where the
+   * caller said nothing. Identity means "none": the display level already
+   * folds the client's and the render intent's matrices into one, and
+   * substitutes the identity wherever the GPU is taking care of it. */
+  const std::shared_ptr<const HalColorTransformMatrix> &GetColorMatrix()
+      const {
+    return color_matrix_;
   }
 
   const std::vector<hwc::DcHead::Window> &GetWindows() const {
@@ -130,6 +142,7 @@ class TegraAtomicRequest : public AtomicRequest {
   const bool has_composition_;
   const std::optional<PowerMode> power_mode_;
   const Merge merge_;
+  const std::shared_ptr<const HalColorTransformMatrix> color_matrix_;
 };
 
 /* Turns plans into frames on this controller.
@@ -151,6 +164,7 @@ class TegraAtomicStateManager : public AtomicStateManager {
     throttle_to_one_frame_ = ThrottleFromProperty();
     report_engine_reads_ = EngineReadsFromProperty();
     merge_cache_ = MergeCacheFromProperty();
+    cmu_ctm_ = CmuFromProperty();
   }
 
   std::unique_ptr<AtomicRequest> GetAtomicModeReqForArgs(
@@ -356,6 +370,47 @@ class TegraAtomicStateManager : public AtomicStateManager {
 
   bool merge_cache_ = true;
   static bool MergeCacheFromProperty();
+
+  /* Puts the frame's colour transform into the head's colour pipeline, or
+   * puts the pipeline back when the transform is the identity. Called once
+   * per executed frame; does nothing when the matrix repeats. */
+  void ProgramColorMatrix(const HalColorTransformMatrix &matrix);
+
+  /* What the framework's colour maths asked for, and what became of it.
+   * Read-and-reset by the dump, like the merge counters beside it. */
+  struct CmuCounters {
+    /* Matrices written into the pipeline, and returns to the boot state.
+     * Counted per change, not per frame: a night mode ramping counts once
+     * per step, one holding steady counts nothing. */
+    uint64_t applied = 0;
+    uint64_t restored = 0;
+
+    /* Matrices the pipeline cannot represent, left for the frame to show
+     * untransformed. An offset needs an addition the matrix stage does not
+     * have; a negative coefficient needs a sign the hardware has not been
+     * shown to honour. */
+    uint64_t skipped_offset = 0;
+    uint64_t skipped_negative = 0;
+
+    /* Cross-channel matrices applied as-is in the pipeline's linear domain,
+     * where the framework meant them gamma-encoded: right shape, close
+     * shade. Diagonal ones are exact and are not counted here. */
+    uint64_t approximated = 0;
+  };
+  CmuCounters cmu_;
+
+  /* The matrix last handed in, to act only on changes: a night mode holding
+   * steady repeats the same matrix every frame, and the steady state must
+   * cost a comparison and nothing else. */
+  HalColorTransformMatrix last_color_matrix_{};
+  bool color_matrix_seen_ = false;
+
+  /* Whether the pipeline currently differs from its boot state; false again
+   * once restored. */
+  bool csc_programmed_ = false;
+
+  bool cmu_ctm_ = true;
+  static bool CmuFromProperty();
 
   /* Off unless asked for. The question costs one call into the kernel per
    * frame, and a frame is the thing being measured. */
