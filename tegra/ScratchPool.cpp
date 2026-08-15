@@ -112,6 +112,11 @@ buffer_handle_t ScratchPool::Next(drm_hwcomposer::SharedFd *ready) {
   return slot.handle;
 }
 
+void ScratchPool::Rewind() {
+  if (!slots_.empty())
+    at_ = (at_ + slots_.size() - 1) % slots_.size();
+}
+
 void ScratchPool::Presented(const drm_hwcomposer::SharedFd &fence) {
   /* This frame replaces whatever was on screen, so that one is finished with
    * as soon as this frame appears -- which is what its fence says.

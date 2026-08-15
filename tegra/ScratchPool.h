@@ -81,6 +81,17 @@ class ScratchPool {
    * only if the pool holds nothing at all. */
   buffer_handle_t Next(drm_hwcomposer::SharedFd *ready);
 
+  /* Takes back the last Next(): the same buffer will be handed out again.
+   *
+   * For the frame that was drawn but never shown -- the engine wrote the
+   * buffer, and then the flip failed or the frame was abandoned before it.
+   * The panel never saw it, so it is the right buffer to draw the next
+   * attempt into; advancing past it instead walks the rotation onto the
+   * buffer the panel is scanning right now, with nothing due on its fence
+   * to say so. Writes to the same buffer need no fence between them: the
+   * engine's channel serialises its own jobs. */
+  void Rewind();
+
   /* Says that a frame has been posted, against the fence it will appear on.
    *
    * Which is not the same as saying that the buffer this frame was drawn into

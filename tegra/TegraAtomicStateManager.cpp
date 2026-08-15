@@ -401,6 +401,56 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
     }
   }
 
+  /* Clipped to the panel before anything else is derived from it.
+   *
+   * A layer sliding off an edge puts part of its rectangle outside the
+   * panel, and a group's corner outside the panel is a position this
+   * hardware cannot be told: the window's coordinates are unsigned
+   * thirteen-bit fields, the kernel passes them through unchecked -- its
+   * own comment says so -- and a negative number wraps into a position far
+   * off the panel, where the window is silently never scanned. So the
+   * visible part is kept, the rest is cut away here: each rectangle is
+   * intersected with the panel and its source trimmed in proportion, and a
+   * member nothing of which is visible leaves the group. What remains is a
+   * group that lies on the panel whole, by construction. */
+  if (!merge.layers.empty() && !modes_.empty()) {
+    const drmModeModeInfo &mode = modes_.front().GetRawMode();
+    const auto panel_w = static_cast<int32_t>(mode.hdisplay);
+    const auto panel_h = static_cast<int32_t>(mode.vdisplay);
+
+    size_t kept = 0;
+    for (size_t i = 0; i < merge.layers.size(); ++i) {
+      hwc::VicSession::Layer l = merge.layers[i];
+      const int32_t cl = std::max(l.display_left, 0);
+      const int32_t ct = std::max(l.display_top, 0);
+      const int32_t cr = std::min(l.display_right, panel_w);
+      const int32_t cb = std::min(l.display_bottom, panel_h);
+      if (cr <= cl || cb <= ct)
+        continue;
+
+      const auto dw = static_cast<float>(l.display_right - l.display_left);
+      const auto dh = static_cast<float>(l.display_bottom - l.display_top);
+      if (dw > 0 && dh > 0) {
+        const float sx = (l.source_right - l.source_left) / dw;
+        const float sy = (l.source_bottom - l.source_top) / dh;
+        l.source_left += static_cast<float>(cl - l.display_left) * sx;
+        l.source_top += static_cast<float>(ct - l.display_top) * sy;
+        l.source_right -= static_cast<float>(l.display_right - cr) * sx;
+        l.source_bottom -= static_cast<float>(l.display_bottom - cb) * sy;
+      }
+      l.display_left = cl;
+      l.display_top = ct;
+      l.display_right = cr;
+      l.display_bottom = cb;
+
+      merge.layers[kept] = l;
+      merge.source_ids[kept] = merge.source_ids[i];
+      ++kept;
+    }
+    merge.layers.resize(kept);
+    merge.source_ids.resize(kept);
+  }
+
   /* The group's own frame of reference, found now that its members are
    * known. The layers' panel rectangles are rebased to the group's corner:
    * the engine will draw them from the buffer's origin, and where the group
@@ -566,8 +616,12 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
    * last frame asked for should be on screen when the light goes out. */
   if (tegra.GetPowerMode() && *tegra.GetPowerMode() == PowerMode::kOn) {
     int err = SetPowered(true);
-    if (err)
+    if (err) {
+      /* A frame abandoned before anything was drawn or shown -- but a
+       * frame nobody judged all the same. See ForgetMerge. */
+      ForgetMerge();
       return err;
+    }
   }
 
   if (!tegra.HasComposition()) {
@@ -661,7 +715,11 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
          * whatever it held before -- and the planner will be asked again
          * for the next one. What was remembered is dropped too: this frame
          * went unjudged, and the argument that keeps a remembered identity
-         * honest does not survive a frame nobody watched. */
+         * honest does not survive a frame nobody watched. The rotation
+         * steps back as well -- the slot just taken was never shown, and
+         * walking past it strands the rotation ever closer to the buffer
+         * the panel is scanning. */
+        scratch_->Rewind();
         ForgetMerge();
         ALOGE("the engine refused a frame of %zu layer(s)",
               merge.layers.size());
@@ -679,6 +737,11 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       NvGralloc::Surface surface{};
       const int fd = gralloc != nullptr ? gralloc->GetMemFd(target) : -1;
       if (fd < 0 || !gralloc->DescribeSurface(target, &surface)) {
+        /* Drawn, but this frame will never reach the panel: the slot goes
+         * back into rotation as the next one to write, and nothing of this
+         * frame is remembered. */
+        scratch_->Rewind();
+        ForgetMerge();
         ALOGE("cannot describe the buffer the engine just drew");
         return -EINVAL;
       }
@@ -786,8 +849,20 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
 
   hwc::UniqueFd post_fence;
   int err = head_.flip(windows, &post_fence);
-  if (err)
+  if (err) {
+    /* A frame drawn by the engine and refused by the controller was never
+     * shown: the slot it went into is the right one to draw the next
+     * attempt into, and its description must not be shown from memory --
+     * a reuse would put on the panel a frame the panel never accepted,
+     * against a pool that still truthfully names the older buffer. A
+     * reused frame that fails here needs neither: nothing was drawn, and
+     * what memory describes is exactly what the panel kept showing. */
+    if (merged) {
+      scratch_->Rewind();
+      ForgetMerge();
+    }
     return err;
+  }
 
   /* Said even when the flip failed would be wrong -- nothing is showing that
    * buffer then, and holding it back would cost a frame for nothing. Said
