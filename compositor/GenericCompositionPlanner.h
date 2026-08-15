@@ -57,15 +57,32 @@ class GenericCompositionPlanner : public CompositionPlanner {
     /* Which PlanInvalidator bits have been raised at all, as a mask: says
      * what actually drives replanning in live scenes. */
     std::atomic<uint32_t> invalidators_seen{0};
+
+    /* The bandwidth ladder: how often the kernel refused the first plan and
+     * a one-window-poorer replan was tried, and how often that try kept part
+     * of the frame on the hardware instead of losing all of it. */
+    std::atomic<uint64_t> degrade_attempts{0};
+    std::atomic<uint64_t> degrade_rescues{0};
+
+    /* What handing back the previous plan costs in copying alone -- the
+     * price the owner asked to be measured rather than assumed. The same
+     * copy happens once more at present when the plan is written back, so
+     * the whole bill is roughly twice this. */
+    std::atomic<uint64_t> reuse_copy_us{0};
   };
 
   void RecordValidation(uint64_t duration_us);
 
   ValidationStats lifetime_;
   ValidationStats interval_;
+
+  /* |planes_to_withhold| shrinks the plane budget below what the display
+   * really has, which is how the bandwidth ladder asks for the same plan
+   * computed as if the hardware were one window poorer. */
   static std::tuple<size_t, size_t> GetClientLayers(
       const ICompositorDisplay* display,
-      const std::vector<const HwcLayer*>& layers, bool use_cursor_plane);
+      const std::vector<const HwcLayer*>& layers, bool use_cursor_plane,
+      size_t planes_to_withhold);
   static bool IsClientLayer(const ICompositorDisplay* display,
                             const HwcLayer* layer);
 
@@ -78,7 +95,7 @@ class GenericCompositionPlanner : public CompositionPlanner {
   static std::tuple<size_t, size_t> GetExtraClientRange(
       const ICompositorDisplay* display,
       const std::vector<const HwcLayer*>& layers, size_t client_start,
-      size_t client_size, bool use_cursor_plane);
+      size_t client_size, bool use_cursor_plane, size_t planes_to_withhold);
 };
 
 }  // namespace android::drm_hwcomposer

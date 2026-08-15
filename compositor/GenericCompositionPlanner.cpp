@@ -106,9 +106,18 @@ auto GenericCompositionPlanner::ValidateDisplay(
                            reusable->flatten_reason == FlattenReason::kNone;
 
     if (invalidators == 0 && have_plan) {
-      for (ValidationStats* stats : {&lifetime_, &interval_})
+      const auto copy_began = std::chrono::steady_clock::now();
+      ValidationResult result{.composition = *reusable,
+                              .short_circuited = true};
+      const auto copy_us = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now() - copy_began)
+              .count());
+      for (ValidationStats* stats : {&lifetime_, &interval_}) {
         stats->reused.fetch_add(1, std::memory_order_relaxed);
-      return {.composition = *reusable, .short_circuited = true};
+        stats->reuse_copy_us.fetch_add(copy_us, std::memory_order_relaxed);
+      }
+      return result;
     }
     if (invalidators != 0) {
       for (ValidationStats* stats : {&lifetime_, &interval_})
@@ -159,8 +168,38 @@ auto GenericCompositionPlanner::ValidateDisplay(
 
   // Initial composition attempt.
   std::tie(client_start, client_size) = GetClientLayers(display, layers,
-                                                        use_cursor_plane);
+                                                        use_cursor_plane,
+                                                        /*planes_to_withhold=*/
+                                                        0);
   bool success = validate_and_test();
+
+  /* One rung of a ladder before the floor. A refusal here is almost always
+   * the controller declining to feed every window at once; the answer the
+   * stock composer gave, and upstream gives on its own hardware, is to ask
+   * again with less rather than surrender everything to the GPU. So the same
+   * plan is recomputed as if the display were one window poorer -- the
+   * sliding-window search picks the cheapest layer range to hand the client
+   * -- and the kernel is asked once more. Only an answer that differs from
+   * the refused one is worth asking about, and a second refusal falls
+   * through to the floor below. */
+  if (!success && layers.size() > 1) {
+    const size_t refused_start = client_start;
+    const size_t refused_size = client_size;
+    std::tie(client_start, client_size) = GetClientLayers(
+        display, layers, use_cursor_plane, /*planes_to_withhold=*/1);
+
+    if (client_start != refused_start || client_size != refused_size) {
+      for (ValidationStats* stats : {&lifetime_, &interval_})
+        stats->degrade_attempts.fetch_add(1, std::memory_order_relaxed);
+
+      success = validate_and_test();
+
+      if (success) {
+        for (ValidationStats* stats : {&lifetime_, &interval_})
+          stats->degrade_rescues.fetch_add(1, std::memory_order_relaxed);
+      }
+    }
+  }
 
   // Cursor fallback: convert all non-cursor layers to client composition and
   // reattempt. (Cursor layer is preserved as _either_ cursor _or_ device
@@ -243,7 +282,8 @@ auto GenericCompositionPlanner::ValidateDisplay(
 
 std::tuple<size_t, size_t> GenericCompositionPlanner::GetClientLayers(
     const ICompositorDisplay* display,
-    const std::vector<const HwcLayer*>& layers, bool use_cursor_plane) {
+    const std::vector<const HwcLayer*>& layers, bool use_cursor_plane,
+    size_t planes_to_withhold) {
   size_t client_start = 0;
   size_t client_size = 0;
 
@@ -257,7 +297,7 @@ std::tuple<size_t, size_t> GenericCompositionPlanner::GetClientLayers(
   }
 
   return GetExtraClientRange(display, layers, client_start, client_size,
-                             use_cursor_plane);
+                             use_cursor_plane, planes_to_withhold);
 }
 
 bool GenericCompositionPlanner::IsClientLayer(const ICompositorDisplay* display,
@@ -306,9 +346,17 @@ auto GenericCompositionPlanner::GetCompositionTypes(
 std::tuple<size_t, size_t> GenericCompositionPlanner::GetExtraClientRange(
     const ICompositorDisplay* display,
     const std::vector<const HwcLayer*>& layers, size_t client_start,
-    size_t client_size, bool use_cursor_plane) {
+    size_t client_size, bool use_cursor_plane, size_t planes_to_withhold) {
   size_t avail_planes = display->GetNumAvailablePlanes();
   size_t layers_size = layers.size();
+
+  /* The ladder's question: the same plan, one window poorer. Never below
+   * one, because a budget of none is the floor by another name. */
+  if (planes_to_withhold > 0 && avail_planes > planes_to_withhold) {
+    avail_planes -= planes_to_withhold;
+  } else if (planes_to_withhold > 0) {
+    avail_planes = 1;
+  }
 
   // Cursor plane is not counted among |avail_planes|, so the cursor layer
   // shouldn't be counted in |layers_size|.
@@ -400,13 +448,23 @@ std::string GenericCompositionPlanner::DumpState() {
     const auto calls = stats.calls.load(std::memory_order_relaxed);
     const auto reused = stats.reused.load(std::memory_order_relaxed);
     const auto seen = stats.invalidators_seen.load(std::memory_order_relaxed);
+    const auto attempts = stats.degrade_attempts.load(
+        std::memory_order_relaxed);
+    const auto rescues = stats.degrade_rescues.load(std::memory_order_relaxed);
+    const auto copy_us = stats.reuse_copy_us.load(std::memory_order_relaxed);
     const auto total = stats.total_us.load(std::memory_order_relaxed);
     const auto max = stats.max_us.load(std::memory_order_relaxed);
 
     ss << "  plans made              : " << calls << "\n"
        << "  of them reused          : " << reused << "\n"
        << "  invalidators seen       : 0x" << std::hex << seen << std::dec
-       << "\n";
+       << "\n"
+       << "  degrade attempts        : " << attempts << "\n"
+       << "  degrade rescues         : " << rescues << "\n";
+    if (reused > 0) {
+      ss << "  reuse copy time         : " << copy_us << " us (mean "
+         << copy_us / reused << ")\n";
+    }
     if (calls > 0) {
       ss << "  time spent planning     : " << total << " us"
          << " (mean " << total / calls << ", max " << max << ")\n"
@@ -423,6 +481,9 @@ std::string GenericCompositionPlanner::DumpState() {
       stats.calls.store(0, std::memory_order_relaxed);
       stats.reused.store(0, std::memory_order_relaxed);
       stats.invalidators_seen.store(0, std::memory_order_relaxed);
+      stats.degrade_attempts.store(0, std::memory_order_relaxed);
+      stats.degrade_rescues.store(0, std::memory_order_relaxed);
+      stats.reuse_copy_us.store(0, std::memory_order_relaxed);
       stats.total_us.store(0, std::memory_order_relaxed);
       stats.max_us.store(0, std::memory_order_relaxed);
       for (auto& bucket : stats.buckets)
