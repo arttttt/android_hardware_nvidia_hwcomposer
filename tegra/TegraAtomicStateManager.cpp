@@ -580,7 +580,11 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
        * need no heeding -- a buffer that kept its identity was not drawn
        * into, or the client would have had to queue a different one for at
        * least the frame in between. The fence below came due when the
-       * original drawing finished, so the flip's wait on it is a no-op. */
+       * original drawing finished, so the flip's wait on it is a no-op.
+       *
+       * A flip that failed goes unnoticed here on purpose: the next frame's
+       * reuse submits this same description again, so a dropped frame
+       * retries itself out of what is remembered. */
       merges_.reused++;
       windows[merge.slot] = last_merge_described_;
       windows[merge.slot].preFence = last_merge_fence_ ? *last_merge_fence_
