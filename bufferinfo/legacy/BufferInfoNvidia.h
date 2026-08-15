@@ -85,6 +85,8 @@ class BufferInfoNvidia : public LegacyBufferInfoGetter {
   std::map<BufferUniqueId, BufferShape> shapes_;
   uint64_t shape_hits_ = 0;
   uint64_t shape_misses_ = 0;
+  uint64_t shape_hit_us_ = 0;
+  uint64_t shape_miss_us_ = 0;
 };
 
 }  // namespace android::drm_hwcomposer

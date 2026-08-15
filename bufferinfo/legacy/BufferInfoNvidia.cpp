@@ -20,6 +20,7 @@
 #include <sys/stat.h>
 #include <drm/drm_fourcc.h>
 
+#include <chrono>
 #include <cstdio>
 #include <optional>
 #include <sstream>
@@ -134,6 +135,14 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
   bi.prime_fds[0] = fd;
   bi.unique_id = unique_id;
 
+  const auto asked_at = std::chrono::steady_clock::now();
+  const auto MicrosSince = [asked_at]() -> uint64_t {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - asked_at)
+            .count());
+  };
+
   const auto remembered = unique_id != 0 ? shapes_.find(unique_id)
                                          : shapes_.end();
   if (remembered != shapes_.end()) {
@@ -146,6 +155,7 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
     bi.format = shape.format;
     bi.modifiers[0] = shape.modifier;
     bi.fds_shared = Import(handle);
+    shape_hit_us_ += MicrosSince();
     return bi;
   }
   ++shape_misses_;
@@ -202,6 +212,8 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
                                      .format = bi.format,
                                      .modifier = bi.modifiers[0]};
   }
+
+  shape_miss_us_ += MicrosSince();
 
   /* The buffer as the allocator knows it, carried along with the reading of
    * it. Everything above this is told in the vocabulary the composer shares
@@ -268,6 +280,14 @@ std::string BufferInfoNvidia::DumpState() {
      << "  described               : " << shape_misses_ << "\n"
      << "  recognised              : " << shape_hits_ << "\n"
      << "  remembered now          : " << shapes_.size() << "\n";
+  if (shape_misses_ > 0) {
+    ss << "  describe cost           : " << shape_miss_us_ << " us (mean "
+       << shape_miss_us_ / shape_misses_ << ")\n";
+  }
+  if (shape_hits_ > 0) {
+    ss << "  recognise cost          : " << shape_hit_us_ << " us (mean "
+       << shape_hit_us_ / shape_hits_ << ")\n";
+  }
   return ss.str();
 }
 
