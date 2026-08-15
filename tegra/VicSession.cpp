@@ -20,7 +20,6 @@
 
 #include <cstring>
 
-#include <cutils/properties.h>
 
 #include "bufferinfo/NvGralloc.h"
 #include "utils/log.h"
@@ -148,19 +147,6 @@ void *OpenLibrary(const char *name) {
 }  // namespace
 
 std::unique_ptr<VicSession> VicSession::Create() {
-  /* Off unless asked for, and that is not timidity.
-   *
-   * Everything below is a proprietary library called through signatures
-   * recovered from a source drop that predates the library on this device by
-   * a couple of years. A library that answers an error is handled; a library
-   * that walks off the end of something takes the composer with it, and the
-   * composer takes SurfaceFlinger, and the device comes up to nothing.
-   *
-   * Behind a property that does not survive a reboot, the worst that costs is
-   * a reboot. Without one it would cost a reflash. */
-  if (!property_get_bool("vendor.hwc.vic", 0))
-    return nullptr;
-
   auto session = std::unique_ptr<VicSession>(new VicSession());
 
   if (!session->Open())

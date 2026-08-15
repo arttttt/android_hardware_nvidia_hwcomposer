@@ -108,7 +108,7 @@ void Run() {
 
   auto session = VicSession::Create();
   if (!session) {
-    ALOGE("no engine to probe with -- is vendor.hwc.vic set?");
+    ALOGE("no engine to probe with -- did the engine libraries open?");
     return;
   }
 
