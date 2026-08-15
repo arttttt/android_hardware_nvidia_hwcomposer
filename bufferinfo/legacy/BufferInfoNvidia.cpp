@@ -204,6 +204,7 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
   if (unique_id != 0) {
     if (shapes_.size() >= kMostShapesToRemember) {
       shapes_.clear();
+      ++shape_clearings_;
     }
     shapes_[unique_id] = BufferShape{.width = bi.width,
                                      .height = bi.height,
@@ -279,7 +280,8 @@ std::string BufferInfoNvidia::DumpState() {
   ss << "Buffer shapes remembered:\n"
      << "  described               : " << shape_misses_ << "\n"
      << "  recognised              : " << shape_hits_ << "\n"
-     << "  remembered now          : " << shapes_.size() << "\n";
+     << "  remembered now          : " << shapes_.size() << "\n"
+     << "  forgotten wholesale     : " << shape_clearings_ << "\n";
   if (shape_misses_ > 0) {
     ss << "  describe cost           : " << shape_miss_us_ << " us (mean "
        << shape_miss_us_ / shape_misses_ << ")\n";

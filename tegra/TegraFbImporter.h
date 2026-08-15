@@ -77,13 +77,25 @@ class TegraFbImporter : public FbImporter {
 
     auto fb = std::make_shared<TegraFbIdHandle>(MakeSharedFd(fd));
 
-    if (key != 0)
+    if (key != 0) {
+      /* Identities never come round again, so a dead entry is never
+       * overwritten -- left alone, the map would grow by one node for every
+       * buffer that ever lived. Swept when it gets crowded instead: rare,
+       * cheap, and bounded by the number of buffers actually alive. */
+      if (fbs_.size() >= kMostFbsBeforeSweep) {
+        for (auto it = fbs_.begin(); it != fbs_.end();) {
+          it = it->second.expired() ? fbs_.erase(it) : std::next(it);
+        }
+      }
       fbs_[key] = fb;
+    }
 
     return fb;
   }
 
  private:
+  static constexpr size_t kMostFbsBeforeSweep = 128;
+
   /* Weakly, so that a buffer nobody is showing any more takes its copy of the
    * descriptor with it. What is left behind is an entry that will not lock,
    * removed if that identity is ever asked about again -- which, numbers

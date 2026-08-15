@@ -87,6 +87,7 @@ class BufferInfoNvidia : public LegacyBufferInfoGetter {
   uint64_t shape_misses_ = 0;
   uint64_t shape_hit_us_ = 0;
   uint64_t shape_miss_us_ = 0;
+  uint64_t shape_clearings_ = 0;
 };
 
 }  // namespace android::drm_hwcomposer
