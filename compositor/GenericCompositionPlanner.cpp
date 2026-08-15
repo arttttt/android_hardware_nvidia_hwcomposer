@@ -97,11 +97,17 @@ auto GenericCompositionPlanner::ValidateDisplay(
    * that ought to flatten flattens instead of endlessly reusing a live plan.
    * The comparison is strict about geometry on purpose: validation is where
    * the window guards live, and a reused plan must be one these exact
-   * rectangles already passed. */
+   * rectangles already passed.
+   *
+   * The configuration is spelled out here rather than read from upstream's
+   * properties: the measuring is done and the answer keeps, so the switch
+   * is retired the way the fence and merge switches were. */
   {
+    constexpr ShortCircuitor::Config kShortCircuit = {.enabled = true,
+                                                      .ignore_geometry = false,
+                                                      .ignore_ctm = false};
     auto last_presented = ShortCircuitor::
-        Get(ShortCircuitor::Config::FromProperties(),
-            display->GetLastPresentedComposition(),
+        Get(kShortCircuit, display->GetLastPresentedComposition(),
             ValidationRequestContext(*display, layers));
     if (last_presented) {
       for (ValidationStats* stats : {&lifetime_, &interval_})
