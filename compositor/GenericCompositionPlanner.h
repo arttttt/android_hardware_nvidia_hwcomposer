@@ -47,6 +47,8 @@ class GenericCompositionPlanner : public CompositionPlanner {
    * read by the dump's, hence the atomics. */
   struct ValidationStats {
     std::atomic<uint64_t> calls{0};
+    /* Of the calls, how many were answered with the previous plan. */
+    std::atomic<uint64_t> reused{0};
     std::atomic<uint64_t> total_us{0};
     std::atomic<uint64_t> max_us{0};
     /* <4us, <16us, <64us, <256us and the rest. */

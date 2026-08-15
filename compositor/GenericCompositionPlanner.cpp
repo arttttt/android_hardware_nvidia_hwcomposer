@@ -29,6 +29,8 @@
 #include "compositor/FlatteningController.h"
 #include "compositor/ICompositorDisplay.h"
 #include "compositor/LayerData.h"
+#include "compositor/PresentedCompositionCache.h"
+#include "compositor/ShortCircuitor.h"
 #include "display/CommitStatus.h"
 #include "display/Plane.h"
 #include "hwc/HwcLayer.h"
@@ -88,6 +90,25 @@ auto GenericCompositionPlanner::ValidateDisplay(
     return {.composition = GetFlattenedComposition(
                 layers, FlattenReason::kNoPerPlaneColorspaceSupport),
             .short_circuited = false};
+  }
+
+  /* A frame identical to the last one presented takes the last one's plan.
+   * Placed after the early exits above, as upstream places it, so a scene
+   * that ought to flatten flattens instead of endlessly reusing a live plan.
+   * The comparison is strict about geometry on purpose: validation is where
+   * the window guards live, and a reused plan must be one these exact
+   * rectangles already passed. */
+  {
+    auto last_presented = ShortCircuitor::
+        Get(ShortCircuitor::Config::FromProperties(),
+            display->GetLastPresentedComposition(),
+            ValidationRequestContext(*display, layers));
+    if (last_presented) {
+      for (ValidationStats* stats : {&lifetime_, &interval_})
+        stats->reused.fetch_add(1, std::memory_order_relaxed);
+      return {.composition = std::move(*last_presented),
+              .short_circuited = true};
+    }
   }
 
   bool use_cursor_plane = false;
@@ -371,10 +392,12 @@ std::string GenericCompositionPlanner::DumpState() {
   const auto print = [](std::stringstream& ss, ValidationStats& stats,
                         bool reset) {
     const auto calls = stats.calls.load(std::memory_order_relaxed);
+    const auto reused = stats.reused.load(std::memory_order_relaxed);
     const auto total = stats.total_us.load(std::memory_order_relaxed);
     const auto max = stats.max_us.load(std::memory_order_relaxed);
 
-    ss << "  plans made              : " << calls << "\n";
+    ss << "  plans made              : " << calls << "\n"
+       << "  of them reused          : " << reused << "\n";
     if (calls > 0) {
       ss << "  time spent planning     : " << total << " us"
          << " (mean " << total / calls << ", max " << max << ")\n"
@@ -389,6 +412,7 @@ std::string GenericCompositionPlanner::DumpState() {
 
     if (reset) {
       stats.calls.store(0, std::memory_order_relaxed);
+      stats.reused.store(0, std::memory_order_relaxed);
       stats.total_us.store(0, std::memory_order_relaxed);
       stats.max_us.store(0, std::memory_order_relaxed);
       for (auto& bucket : stats.buckets)
