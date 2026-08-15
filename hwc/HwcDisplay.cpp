@@ -1073,6 +1073,11 @@ auto HwcDisplay::DestroyLayer(ILayerId layer_id) -> bool {
   auto count = layers_.erase(layer_id);
   if (count != 0) {
     MarkPlanInvalid(kLayerRemoved);
+    /* The kept plan maps the dead layer's address. The raised bit already
+     * stops anyone reading it, but a map of dangling pointers guarded by a
+     * flag is a mine for whoever reads it next without asking -- so it is
+     * emptied, not merely fenced. */
+    reusable_plan_.reset();
   }
   return count != 0;
 }
