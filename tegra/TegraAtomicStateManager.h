@@ -175,6 +175,10 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * flip returned. */
   int Execute(const AtomicRequest &request, AtomicCommitResult *out_result);
 
+  void NoteFrameUnjudged() override {
+    ForgetMerge();
+  }
+
  private:
   /* Lights the panel or puts it out, and remembers which. Not the head's
    * job: the controller posts frames and has no say over whether the display

@@ -469,6 +469,9 @@ auto HwcDisplay::PresentStagedComposition(
 
   if (layers_.empty()) {
     ALOGV("No layers to present.");
+    /* A frame the flip machinery never saw: whatever it remembers on the
+     * strength of seeing every frame must not survive this one. */
+    GetPipe().atomic_state_manager->NoteFrameUnjudged();
     return true;
   }
 
@@ -1588,6 +1591,9 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
     ALOGE("Failed to create AtomicCommitArgs for frame composition.");
     reusable_plan_.reset();
     MarkPlanInvalid(kAllDirty);
+    /* Given up before the flip machinery was asked -- a frame it never
+     * judged, so nothing it remembers may outlive this one. */
+    GetPipe().atomic_state_manager->NoteFrameUnjudged();
     return CommitStatus::InternalFailure();
   }
 

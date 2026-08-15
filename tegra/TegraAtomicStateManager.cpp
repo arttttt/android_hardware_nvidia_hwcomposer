@@ -194,6 +194,7 @@ uint32_t DepthForZPos(int z_pos) {
  * ruled out by asking the plane -- so it is a fault worth logging rather than
  * an ordinary refusal. */
 bool DescribeWindow(const LayerData &layer, uint32_t plane_id, uint32_t depth,
+                    int32_t panel_w, int32_t panel_h,
                     hwc::DcHead::Window *out) {
   if (!layer.bi || !layer.fb) {
     ALOGE("layer for plane %u has no buffer", plane_id);
@@ -247,6 +248,55 @@ bool DescribeWindow(const LayerData &layer, uint32_t plane_id, uint32_t depth,
   } else {
     out->outWidth = static_cast<int32_t>(bi.width);
     out->outHeight = static_cast<int32_t>(bi.height);
+  }
+
+  /* Clipped to the panel, for the same reason the merged group is: the
+   * hardware's position fields are unsigned thirteen-bit and the kernel
+   * forwards them unchecked, so an off-panel corner wraps into a position
+   * that is never scanned and the layer silently vanishes. Ordinary layers
+   * slide off edges too -- a parallax wallpaper does it on every swipe.
+   * The source is trimmed in the window's own scale, so a resizing window
+   * keeps its ratio and the no-resize windows stay exactly one-to-one. */
+  if (panel_w > 0 && panel_h > 0 && out->outWidth > 0 && out->outHeight > 0) {
+    const int32_t cl = std::max(out->outX, 0);
+    const int32_t ct = std::max(out->outY, 0);
+    const int32_t cr = std::min(out->outX + out->outWidth, panel_w);
+    const int32_t cb = std::min(out->outY + out->outHeight, panel_h);
+
+    if (cr <= cl || cb <= ct) {
+      /* Nothing of it lies on the panel. A window showing nothing is a
+       * switched-off window, not a failed frame. */
+      const auto index = static_cast<int32_t>(plane_id);
+      *out = hwc::DcHead::Window{};
+      out->index = index;
+      return true;
+    }
+
+    if (cl != out->outX || ct != out->outY ||
+        cr != out->outX + out->outWidth ||
+        cb != out->outY + out->outHeight) {
+      const float sx = out->sourceWidth / static_cast<float>(out->outWidth);
+      const float sy = out->sourceHeight / static_cast<float>(out->outHeight);
+      const float src_l =
+          out->sourceX + static_cast<float>(cl - out->outX) * sx;
+      const float src_t =
+          out->sourceY + static_cast<float>(ct - out->outY) * sy;
+      const float src_r =
+          out->sourceX + out->sourceWidth -
+          static_cast<float>(out->outX + out->outWidth - cr) * sx;
+      const float src_b =
+          out->sourceY + out->sourceHeight -
+          static_cast<float>(out->outY + out->outHeight - cb) * sy;
+
+      out->sourceX = src_l;
+      out->sourceY = src_t;
+      out->sourceWidth = src_r - src_l;
+      out->sourceHeight = src_b - src_t;
+      out->outX = cl;
+      out->outY = ct;
+      out->outWidth = cr - cl;
+      out->outHeight = cb - ct;
+    }
   }
 
   /* Borrowed: the plan owns the fence and outlives the flip, and the kernel
@@ -351,7 +401,20 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
    * handles this far. */
   std::vector<buffer_handle_t> handles(available.size(), nullptr);
 
-  TegraAtomicRequest::Merge merge;
+  /* Value-initialised on purpose: the geometry fields are only assigned
+   * when layers join the group, and every reader is behind a non-empty
+   * guard today -- but an invariant that lives in guards alone is one
+   * refactor from undefined reads, and zeroes cost nothing here. */
+  TegraAtomicRequest::Merge merge{};
+
+  const int32_t panel_w =
+      modes_.empty() ? 0
+                     : static_cast<int32_t>(modes_.front().GetRawMode()
+                                                .hdisplay);
+  const int32_t panel_h =
+      modes_.empty() ? 0
+                     : static_cast<int32_t>(modes_.front().GetRawMode()
+                                                .vdisplay);
 
   if (args.composition) {
     for (const auto &joining : args.composition->plan) {
@@ -393,7 +456,8 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
       }
 
       if (!DescribeWindow(joining.layer, plane_id,
-                          DepthForZPos(joining.z_pos), &windows[slot]))
+                          DepthForZPos(joining.z_pos), panel_w, panel_h,
+                          &windows[slot]))
         return nullptr;
 
       handles[slot] = joining.layer.bi ? NativeHandleOf(*joining.layer.bi)
@@ -413,11 +477,7 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
    * intersected with the panel and its source trimmed in proportion, and a
    * member nothing of which is visible leaves the group. What remains is a
    * group that lies on the panel whole, by construction. */
-  if (!merge.layers.empty() && !modes_.empty()) {
-    const drmModeModeInfo &mode = modes_.front().GetRawMode();
-    const auto panel_w = static_cast<int32_t>(mode.hdisplay);
-    const auto panel_h = static_cast<int32_t>(mode.vdisplay);
-
+  if (!merge.layers.empty() && panel_w > 0 && panel_h > 0) {
     size_t kept = 0;
     for (size_t i = 0; i < merge.layers.size(); ++i) {
       hwc::VicSession::Layer l = merge.layers[i];
@@ -1032,7 +1092,13 @@ std::string TegraAtomicStateManager::DumpState() {
          << (m.engine_ns / 1000 / static_cast<int64_t>(m.frames)) << "\n"
          << "  engine us worst         : " << (m.engine_ns_max / 1000)
          << "\n";
-    if (m.frames != 0 || m.reused != 0)
+    /* Gated on the causes as well as the outcomes: an interval of nothing
+     * but engine refusals draws no frame and reuses none, and the causes
+     * are then the only line explaining what kept being attempted. */
+    const uint64_t causes = m.first_sight + m.changed_shape +
+                            m.changed_identity + m.changed_geometry +
+                            m.changed_size + m.changed_blend + m.nameless;
+    if (m.frames != 0 || m.reused != 0 || causes != 0)
       ss << "  drawn because           : first " << m.first_sight
          << ", shape " << m.changed_shape << ", buffer "
          << m.changed_identity << ", geometry " << m.changed_geometry

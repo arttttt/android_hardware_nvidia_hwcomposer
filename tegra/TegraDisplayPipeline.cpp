@@ -212,6 +212,14 @@ drm_hwcomposer::UsablePlanes TegraDisplayPipeline::GetUsablePlanes() const {
          * thing a cursor wants, which is the only use it has. This tablet has
          * no cursor, so that is a use in name only, but naming it is still
          * better than leaving the window unaccounted for. */
+        /* Merging is offered only while the engine, its scratch AND the
+         * modes are all known -- and that is an invariant stretched across
+         * three classes, not a local check. The scratch pool is created
+         * only when a mode names its size (above), and the state manager
+         * weighs and clips the merged window only when it has modes to
+         * weigh against. Rewire any of the three and a merging plane
+         * without modes would slip an unweighed, unclipped window past the
+         * bandwidth question. */
         if (plane->IsCursorCandidate() && mVic && mScratch)
             plane->SetMerging();
 

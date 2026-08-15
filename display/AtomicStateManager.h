@@ -143,6 +143,14 @@ class AtomicStateManager {
   virtual std::string DumpState() {
     return {};
   }
+
+  /* A frame came and went without this manager judging it -- the display
+   * skipped presenting entirely, or gave up before a request was built.
+   * Whatever a manager remembers across frames on the strength of seeing
+   * every one of them cannot be trusted past such a gap. No-op by default:
+   * a manager that remembers nothing has nothing to forget. */
+  virtual void NoteFrameUnjudged() {
+  }
 };
 
 }  // namespace android::drm_hwcomposer

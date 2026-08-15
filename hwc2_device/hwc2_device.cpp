@@ -338,19 +338,25 @@ static BufferSampleRange Hwc2ToSampleRange(int32_t dataspace) {
 /* Device functions */
 static int32_t Dump(hwc2_device_t *device, uint32_t *out_size,
                     char *out_buffer) {
-  DrmHwcTwo *hwc = ToDrmHwcTwo(device);
   if (out_size == nullptr) {
     return static_cast<int32_t>(HWC2::Error::BadParameter);
   }
 
+  /* Locked like every other device function, and this one long was not.
+   * The refresh below walks counters the commit thread is incrementing and
+   * resets them as it reads; unlocked, two dumps also raced each other over
+   * the kept string. A dump is rare and a frame is not, so the frame paying
+   * an occasional wait here is the cheap direction. */
+  LOCK_COMPOSER(device);
+
   if (out_buffer != nullptr) {
-    const std::string &last_dump = hwc->GetLastStateDump();
+    const std::string &last_dump = ihwc->GetLastStateDump();
     auto copied_bytes = last_dump.copy(out_buffer, *out_size);
     *out_size = copied_bytes;
     return 0;
   }
 
-  const std::string &new_dump = hwc->RefreshStateDump();
+  const std::string &new_dump = ihwc->RefreshStateDump();
   *out_size = static_cast<uint32_t>(new_dump.size());
   return 0;
 }
