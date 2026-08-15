@@ -76,13 +76,14 @@ class GenericCompositionPlanner : public CompositionPlanner {
   ValidationStats lifetime_;
   ValidationStats interval_;
 
-  /* |planes_to_withhold| shrinks the plane budget below what the display
-   * really has, which is how the bandwidth ladder asks for the same plan
-   * computed as if the hardware were one window poorer. */
+  /* |forced_extra_client| grows the client range beyond what the plane
+   * budget asks, which is how the bandwidth ladder retreats: one more layer
+   * for the client. The budget itself cannot be the knob on this hardware,
+   * because the merging window inflates it far past the layer count. */
   static std::tuple<size_t, size_t> GetClientLayers(
       const ICompositorDisplay* display,
       const std::vector<const HwcLayer*>& layers, bool use_cursor_plane,
-      size_t planes_to_withhold);
+      size_t forced_extra_client);
   static bool IsClientLayer(const ICompositorDisplay* display,
                             const HwcLayer* layer);
 
@@ -95,7 +96,7 @@ class GenericCompositionPlanner : public CompositionPlanner {
   static std::tuple<size_t, size_t> GetExtraClientRange(
       const ICompositorDisplay* display,
       const std::vector<const HwcLayer*>& layers, size_t client_start,
-      size_t client_size, bool use_cursor_plane, size_t planes_to_withhold);
+      size_t client_size, bool use_cursor_plane, size_t forced_extra_client);
 };
 
 }  // namespace android::drm_hwcomposer

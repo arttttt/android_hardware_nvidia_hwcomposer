@@ -169,24 +169,23 @@ auto GenericCompositionPlanner::ValidateDisplay(
   // Initial composition attempt.
   std::tie(client_start, client_size) = GetClientLayers(display, layers,
                                                         use_cursor_plane,
-                                                        /*planes_to_withhold=*/
+                                                        /*forced_extra_client=*/
                                                         0);
   bool success = validate_and_test();
 
-  /* One rung of a ladder before the floor. A refusal here is almost always
-   * the controller declining to feed every window at once; the answer the
-   * stock composer gave, and upstream gives on its own hardware, is to ask
-   * again with less rather than surrender everything to the GPU. So the same
-   * plan is recomputed as if the display were one window poorer -- the
-   * sliding-window search picks the cheapest layer range to hand the client
-   * -- and the kernel is asked once more. Only an answer that differs from
-   * the refused one is worth asking about, and a second refusal falls
+  /* One rung of a ladder before the floor. A refusal here is the controller
+   * declining what it was asked to feed; the answer the stock composer gave,
+   * and upstream gives on its own hardware, is to ask again with less rather
+   * than surrender everything to the GPU. Less, here, is one more layer for
+   * the client -- the sliding-window search picks the cheapest one to hand
+   * over -- and the kernel is asked once more. Only an answer that differs
+   * from the refused one is worth asking about, and a second refusal falls
    * through to the floor below. */
   if (!success && layers.size() > 1) {
     const size_t refused_start = client_start;
     const size_t refused_size = client_size;
     std::tie(client_start, client_size) = GetClientLayers(
-        display, layers, use_cursor_plane, /*planes_to_withhold=*/1);
+        display, layers, use_cursor_plane, /*forced_extra_client=*/1);
 
     if (client_start != refused_start || client_size != refused_size) {
       for (ValidationStats* stats : {&lifetime_, &interval_})
@@ -283,7 +282,7 @@ auto GenericCompositionPlanner::ValidateDisplay(
 std::tuple<size_t, size_t> GenericCompositionPlanner::GetClientLayers(
     const ICompositorDisplay* display,
     const std::vector<const HwcLayer*>& layers, bool use_cursor_plane,
-    size_t planes_to_withhold) {
+    size_t forced_extra_client) {
   size_t client_start = 0;
   size_t client_size = 0;
 
@@ -297,7 +296,7 @@ std::tuple<size_t, size_t> GenericCompositionPlanner::GetClientLayers(
   }
 
   return GetExtraClientRange(display, layers, client_start, client_size,
-                             use_cursor_plane, planes_to_withhold);
+                             use_cursor_plane, forced_extra_client);
 }
 
 bool GenericCompositionPlanner::IsClientLayer(const ICompositorDisplay* display,
@@ -346,17 +345,9 @@ auto GenericCompositionPlanner::GetCompositionTypes(
 std::tuple<size_t, size_t> GenericCompositionPlanner::GetExtraClientRange(
     const ICompositorDisplay* display,
     const std::vector<const HwcLayer*>& layers, size_t client_start,
-    size_t client_size, bool use_cursor_plane, size_t planes_to_withhold) {
+    size_t client_size, bool use_cursor_plane, size_t forced_extra_client) {
   size_t avail_planes = display->GetNumAvailablePlanes();
   size_t layers_size = layers.size();
-
-  /* The ladder's question: the same plan, one window poorer. Never below
-   * one, because a budget of none is the floor by another name. */
-  if (planes_to_withhold > 0 && avail_planes > planes_to_withhold) {
-    avail_planes -= planes_to_withhold;
-  } else if (planes_to_withhold > 0) {
-    avail_planes = 1;
-  }
 
   // Cursor plane is not counted among |avail_planes|, so the cursor layer
   // shouldn't be counted in |layers_size|.
@@ -386,8 +377,20 @@ std::tuple<size_t, size_t> GenericCompositionPlanner::GetExtraClientRange(
            "GetExtraClientRange provided client range outside of layers");
   // If extra layers need to be added to the client range, prepare to perform a
   // sliding window search.
-  if (layers_size - client_size > avail_planes) {
-    const size_t extra_client = (layers_size - client_size) - avail_planes;
+  if ((layers_size - client_size > avail_planes ||
+       forced_extra_client > 0) &&
+      client_size < layers_size) {
+    /* The ladder's question arrives through |forced_extra_client|: grow the
+     * client range by that much beyond what the plane budget asks, since on
+     * this hardware the budget is deliberately plentiful -- the merging
+     * window is offered many times over -- and a budget-based retreat would
+     * change nothing. Growing the range is the retreat that means
+     * something: one layer fewer for the windows and the engine to feed. */
+    size_t extra_client = layers_size - client_size > avail_planes
+                              ? (layers_size - client_size) - avail_planes
+                              : 0;
+    extra_client = std::min(extra_client + forced_extra_client,
+                            layers_size - client_size);
     size_t start = 0;
     size_t steps = 0;
     if (client_size != 0) {
