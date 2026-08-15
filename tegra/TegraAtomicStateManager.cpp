@@ -398,6 +398,33 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
     }
   }
 
+  /* The proposal must weigh the merged window too. Its buffer does not
+   * exist yet -- the engine draws it at execute, after exactly one plan has
+   * won -- but the bandwidth question never needed the buffer: the kernel
+   * counts a window from its geometry and format alone, and asks only that
+   * the buffer field be positive. So the window the engine will fill is
+   * described here as it will really be scanned out -- full-panel,
+   * thirty-two-bit rows -- with a stand-in descriptor nothing ever
+   * resolves: the test path discards the request after asking, and the
+   * execute path rebuilds this window from the real buffer before posting.
+   * Without this, every proposal was one full-screen window lighter than
+   * the frame it vouched for. */
+  if (!merge.layers.empty() && !modes_.empty()) {
+    const drmModeModeInfo &mode = modes_.front().GetRawMode();
+    hwc::DcHead::Window &window = windows[merge.slot];
+    window = hwc::DcHead::Window{};
+    window.index = merge.window;
+    window.bufferFd = 1; /* positive is all the proposal reads */
+    window.stride = static_cast<uint32_t>(mode.hdisplay) * 4;
+    window.pixelFormat = TEGRA_DC_EXT_FMT_R8G8B8A8;
+    window.sourceWidth = static_cast<float>(mode.hdisplay);
+    window.sourceHeight = static_cast<float>(mode.vdisplay);
+    window.outWidth = mode.hdisplay;
+    window.outHeight = mode.vdisplay;
+    window.z = merge.depth;
+    window.blend = TEGRA_DC_EXT_BLEND_PREMULT;
+  }
+
   return std::make_unique<TegraAtomicRequest>(std::move(windows),
                                               std::move(handles),
                                               args.composition != nullptr,
