@@ -89,6 +89,47 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
     return false;
   }
 
+  /* The window's resizing limits, and one thing the driver's tables do not
+   * say. The limits first: past them the hardware does not refuse, it
+   * silently clamps its stepping and reads memory at the wrong stride --
+   * underflow, on exactly the frames heavy enough to ask. The comparison is
+   * deliberately no stricter than the hardware: plain ratios with the
+   * boundary included, since the stepping arithmetic itself works on
+   * (in - 1) / (out - 1).
+   *
+   * Then the unwritten rule, bug 1515812 out of the stock composer: the
+   * controller does not filter alpha on scaled overlays, so a translucent
+   * layer that also resizes shows its seams. The stock composer refused the
+   * pairing outright; so does this one. */
+  if (pi.source_crop.f_rect && pi.display_frame.i_rect) {
+    const auto &src = *pi.source_crop.f_rect;
+    const auto &dst = *pi.display_frame.i_rect;
+    const float src_w = src.Width();
+    const float src_h = src.Height();
+    const auto dst_w = static_cast<float>(dst.Width());
+    const auto dst_h = static_cast<float>(dst.Height());
+
+    if (src_w > 0 && src_h > 0 && dst_w > 0 && dst_h > 0) {
+      if (src_w > dst_w * static_cast<float>(caps_.maxDownH) ||
+          src_h > dst_h * static_cast<float>(caps_.maxDownV) ||
+          dst_w > src_w * static_cast<float>(caps_.maxUpH) ||
+          dst_h > src_h * static_cast<float>(caps_.maxUpV)) {
+        ALOGV("plane %u will not resize %gx%g to %gx%g", index_, src_w,
+              src_h, dst_w, dst_h);
+        return false;
+      }
+
+      const bool scaled = src_w != dst_w || src_h != dst_h;
+      const bool translucent = bi.blend_mode == BufferBlendMode::kPreMult ||
+                               bi.blend_mode == BufferBlendMode::kCoverage ||
+                               pi.alpha < 1.0F;
+      if (scaled && translucent) {
+        ALOGV("plane %u cannot filter alpha while resizing", index_);
+        return false;
+      }
+    }
+  }
+
   if ((pi.transform.hflip && !caps_.invertH) ||
       (pi.transform.vflip && !caps_.invertV) ||
       (pi.transform.rotate90 && !caps_.scanColumn)) {

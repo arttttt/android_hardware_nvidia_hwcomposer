@@ -75,6 +75,11 @@ constexpr uint32_t kFeatureMaximumScale = 3;
 constexpr uint32_t kFeatureLayoutType = 5;
 constexpr uint32_t kFeatureInvertType = 6;
 
+constexpr size_t kScaleUpH = 0;
+constexpr size_t kScaleUpV = 1;
+constexpr size_t kScaleDownH = 2;
+constexpr size_t kScaleDownV = 3;
+
 constexpr size_t kSizeMaxWidth = 0;
 constexpr size_t kSizeMinWidth = 1;
 constexpr size_t kSizeMaxHeight = 2;
@@ -240,9 +245,18 @@ bool DcHead::readCapabilities() {
             caps.minHeight = entry.arg[kSizeMinHeight];
             break;
         case kFeatureMaximumScale:
-            /* All four ratios are one where the window cannot resize. */
-            caps.scaling = entry.arg[0] != 1 || entry.arg[1] != 1 ||
-                           entry.arg[2] != 1 || entry.arg[3] != 1;
+            /* All four ratios are one where the window cannot resize.
+             * Kept whole rather than collapsed to that bool: the driver
+             * does not enforce these on the flip -- past the limit it
+             * silently clamps the stepping and the window reads memory at
+             * the wrong stride -- so whoever plans frames must know the
+             * numbers, not just that resizing exists. */
+            caps.maxUpH = entry.arg[kScaleUpH];
+            caps.maxUpV = entry.arg[kScaleUpV];
+            caps.maxDownH = entry.arg[kScaleDownH];
+            caps.maxDownV = entry.arg[kScaleDownV];
+            caps.scaling = caps.maxUpH != 1 || caps.maxUpV != 1 ||
+                           caps.maxDownH != 1 || caps.maxDownV != 1;
             break;
         case kFeatureLayoutType:
             caps.pitchLayout = entry.arg[kLayoutPitched] != 0;

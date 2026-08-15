@@ -124,6 +124,15 @@ public:
         bool scanColumn = false;
 
         bool scaling = false;
+
+        /* How far the window will resize, as the driver's own ratios: a
+         * source may be up to maxDown times wider or taller than the window
+         * shows it, and shown up to maxUp times wider or taller than it is.
+         * All ones where the window cannot resize at all. */
+        uint32_t maxUpH = 1;
+        uint32_t maxUpV = 1;
+        uint32_t maxDownH = 1;
+        uint32_t maxDownV = 1;
     };
 
     /* Opens head `index`. Returns null and logs on failure. */
