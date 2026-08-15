@@ -116,6 +116,18 @@ class HwcLayer {
 
   void SetLayerProperties(const LayerProperties &layer_properties);
 
+  /* Which of this layer's plan-shaping properties changed since the planner
+   * last asked, as PlanInvalidator bits, cleared by the asking. Raised inside
+   * SetLayerProperties by comparing each incoming value against the one it
+   * replaces, so the setters cannot be forgotten one by one -- there is only
+   * the one door. Const because the planner holds the display const; the
+   * bits are bookkeeping about the layer, not the layer. */
+  uint32_t TakePlanInvalidators() const {
+    const uint32_t taken = plan_invalidators_;
+    plan_invalidators_ = 0;
+    return taken;
+  }
+
   auto GetFrontendPrivateData() -> std::shared_ptr<FrontendLayerBase> {
     return frontend_private_data_;
   }
@@ -154,6 +166,8 @@ class HwcLayer {
   HwcColorspace colorspace_{};
   TransferFunction transfer_func_{};
   std::optional<float> brightness_{};
+
+  mutable uint32_t plan_invalidators_ = 0;
 
   bool prior_buffer_scanout_flag_{};
 

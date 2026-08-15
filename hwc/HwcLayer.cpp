@@ -22,6 +22,7 @@
 #include "compositor/DisplayInfo.h"
 #include "compositor/ICompositorDisplay.h"
 #include "compositor/LayerData.h"
+#include "compositor/PlanInvalidation.h"
 #include "utils/log.h"
 
 namespace android::drm_hwcomposer {
@@ -34,6 +35,22 @@ void HwcLayer::SetLayerProperties(const LayerProperties& layer_properties) {
   if (layer_properties.buffer) {
     if (layer_data_.fb != layer_properties.buffer->fb) {
       layer_data_.frame_time_history.AddFrameTime();
+    }
+
+    /* A new buffer invalidates the plan only when it stops looking like the
+     * old one -- a different size, format or memory arrangement. The usual
+     * case, the next frame of the same surface, changes none of that, and
+     * the plan does not care what the pixels are. Judged here, while the
+     * buffer being replaced is still around to compare against. */
+    {
+      const BufferInfo& incoming = layer_properties.buffer->bi;
+      if (!layer_data_.bi ||
+          layer_data_.bi->width != incoming.width ||
+          layer_data_.bi->height != incoming.height ||
+          layer_data_.bi->format != incoming.format ||
+          layer_data_.bi->modifiers[0] != incoming.modifiers[0]) {
+        plan_invalidators_ |= kBufferGeometry;
+      }
     }
 
     /* A new buffer has arrived, so the one before it is about to stop being
@@ -61,36 +78,76 @@ void HwcLayer::SetLayerProperties(const LayerProperties& layer_properties) {
     layer_data_.acquire_fence = layer_properties.buffer->fence;
   }
   if (layer_properties.blend_mode) {
+    if (blend_mode_ != layer_properties.blend_mode.value()) {
+      plan_invalidators_ |= kBlendMode;
+    }
     blend_mode_ = layer_properties.blend_mode.value();
   }
   if (layer_properties.colorspace) {
+    if (colorspace_ != layer_properties.colorspace.value()) {
+      plan_invalidators_ |= kDataspace;
+    }
     colorspace_ = layer_properties.colorspace.value();
   }
   if (layer_properties.color_encoding) {
+    if (color_encoding_ != layer_properties.color_encoding.value()) {
+      plan_invalidators_ |= kDataspace;
+    }
     color_encoding_ = layer_properties.color_encoding.value();
   }
   if (layer_properties.sample_range) {
+    if (sample_range_ != layer_properties.sample_range.value()) {
+      plan_invalidators_ |= kDataspace;
+    }
     sample_range_ = layer_properties.sample_range.value();
   }
   if (layer_properties.transfer_func) {
+    if (transfer_func_ != layer_properties.transfer_func.value()) {
+      plan_invalidators_ |= kDataspace;
+    }
     transfer_func_ = layer_properties.transfer_func.value();
   }
   if (layer_properties.composition_type) {
+    /* Only the framework's own asks come through here; the composer settling
+     * a layer to what validation decided goes through AcceptTypeChange and
+     * raises nothing -- that settling is the plan, not a change to it. */
+    if (sf_type_ != layer_properties.composition_type.value()) {
+      plan_invalidators_ |= kCompositionType;
+    }
     sf_type_ = layer_properties.composition_type.value();
   }
   if (layer_properties.display_frame) {
+    if (layer_data_.pi.display_frame != layer_properties.display_frame
+                                            .value()) {
+      plan_invalidators_ |= kDisplayFrame;
+    }
     layer_data_.pi.display_frame = layer_properties.display_frame.value();
   }
   if (layer_properties.alpha) {
+    if (layer_data_.pi.alpha != layer_properties.alpha.value()) {
+      plan_invalidators_ |= kPlaneAlpha;
+    }
     layer_data_.pi.alpha = layer_properties.alpha.value();
   }
   if (layer_properties.source_crop) {
+    if (layer_data_.pi.source_crop != layer_properties.source_crop.value()) {
+      plan_invalidators_ |= kSourceCrop;
+    }
     layer_data_.pi.source_crop = layer_properties.source_crop.value();
   }
   if (layer_properties.transform) {
-    layer_data_.pi.transform = layer_properties.transform.value();
+    const LayerTransform& incoming = layer_properties.transform.value();
+    const LayerTransform& current = layer_data_.pi.transform;
+    if (current.hflip != incoming.hflip || current.vflip != incoming.vflip ||
+        current.rotate90 != incoming.rotate90) {
+      plan_invalidators_ |= kTransform;
+    }
+    layer_data_.pi.transform = incoming;
   }
   if (layer_properties.z_order) {
+    if (z_order_ != layer_properties.z_order.value()) {
+      plan_invalidators_ |= kZOrder;
+    }
     z_order_ = layer_properties.z_order.value();
   }
   if (layer_properties.damage) {
@@ -133,6 +190,7 @@ void HwcLayer::PopulateLayerData() {
 
 void HwcLayer::InvalidateBuffer() {
   has_buffer_set_ = false;
+  plan_invalidators_ |= kBufferGeometry;
 }
 
 /* Check that the layer has an active slot set, and there is a valid

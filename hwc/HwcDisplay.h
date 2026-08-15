@@ -125,6 +125,15 @@ class HwcDisplay : public ICompositorDisplay {
     return last_presented_composition_;
   }
 
+  uint32_t TakePlanInvalidators() const override {
+    uint32_t taken = plan_invalidators_;
+    plan_invalidators_ = 0;
+    for (const auto &[id, layer] : layers_) {
+      taken |= layer.TakePlanInvalidators();
+    }
+    return taken;
+  }
+
   std::vector<const HwcLayer *> GetOrderLayersByZPos() const override;
 
   std::string Dump();
@@ -470,6 +479,16 @@ class HwcDisplay : public ICompositorDisplay {
   std::unique_ptr<BacklightController> backlight_controller_;
 
   PresentedCompositionCache last_presented_composition_;
+
+  /* Display-level PlanInvalidator bits; the layers carry their own. Starts
+   * all-dirty so the first frame of a life is planned in full, and every
+   * failure path re-raises it. Mutable for the same reason the layer's is:
+   * consumed through a const interface. */
+  mutable uint32_t plan_invalidators_ = 0xFFFFFFFF;
+
+  void MarkPlanInvalid(uint32_t invalidator_bits) {
+    plan_invalidators_ |= invalidator_bits;
+  }
 
   /* Which buffers a frame handed to an engine instead of to the display, and
    * when that engine finished reading them.

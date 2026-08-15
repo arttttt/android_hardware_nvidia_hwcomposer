@@ -54,6 +54,7 @@
 #include "compositor/HdcpController.h"
 #include "compositor/LayerData.h"
 #include "compositor/LayerToPlaneJoiningPlan.h"
+#include "compositor/PlanInvalidation.h"
 #include "compositor/PresentedCompositionCache.h"
 #include "display/AtomicCommitSink.h"
 #include "display/AtomicStateManager.h"
@@ -153,6 +154,8 @@ void HwcDisplay::SetColorTransformMatrix(
     const HalColorTransformMatrix &color_transform_matrix) {
   if (IsInHeadlessMode())
     return;
+
+  MarkPlanInvalid(kColorTransform);
 
   const bool
       color_transform_is_identity = std::equal(color_transform_matrix.begin(),
@@ -282,6 +285,8 @@ void HwcDisplay::SetOutputType(OutputType hdr_output_type) {
 HwcDisplay::ConfigError HwcDisplay::SetConfig(ConfigId config) {
   ATRACE_CALL();
 
+  MarkPlanInvalid(kDisplayConfig);
+
   const HwcDisplayConfig *new_config = GetConfig(config);
   if (new_config == nullptr) {
     ALOGE("Could not find active mode for %u", config);
@@ -319,6 +324,8 @@ HwcDisplay::ConfigError HwcDisplay::SetConfig(ConfigId config) {
 
 auto HwcDisplay::QueueConfig(ConfigId config, int64_t desired_time,
                              QueuedConfigTiming *out_timing) -> ConfigError {
+  MarkPlanInvalid(kDisplayConfig);
+
   const HwcDisplayConfig *new_config = GetConfig(config);
   if (!new_config) {
     ALOGE("Could not find active mode for %u", config);
@@ -728,6 +735,11 @@ bool HwcDisplay::IsSuspendSupported() const {
 }
 
 HwcDisplay::Error HwcDisplay::SetPowerMode(PowerMode mode) {
+  /* Conservatively before the support checks: a head that was off answers
+   * its capability questions differently once on, so any traffic here is
+   * reason enough to plan the next frame in full. */
+  MarkPlanInvalid(kPowerMode);
+
   // Check support before headless because VTS expects headless mode to not
   // support these.
   if (mode == PowerMode::kDoze && !IsDozeSupported()) {
@@ -820,6 +832,7 @@ void HwcDisplay::Deinit() {
     hdcpcon_.reset();
     backlight_controller_.reset();
     last_presented_composition_.Reset();
+    MarkPlanInvalid(kAllDirty);
   }
 
   if (vsync_worker_) {
@@ -1056,12 +1069,16 @@ auto HwcDisplay::CreateLayer(ILayerId new_layer_id) -> bool {
     return false;
 
   layers_.emplace(new_layer_id, HwcLayer(this));
+  MarkPlanInvalid(kLayerAdded);
 
   return true;
 }
 
 auto HwcDisplay::DestroyLayer(ILayerId layer_id) -> bool {
   auto count = layers_.erase(layer_id);
+  if (count != 0) {
+    MarkPlanInvalid(kLayerRemoved);
+  }
   return count != 0;
 }
 
@@ -1111,6 +1128,8 @@ auto HwcDisplay::GetRenderIntents(ColorMode /*color_mode*/) const
 }
 
 void HwcDisplay::SetColorMode(ColorMode mode, ui::RenderIntent render_intent) {
+  MarkPlanInvalid(kColorMode);
+
   // If force_color_mode is set, override the color modes.
   colorspace_ = forced_color_mode_
                     ? ColorUtil::ToHwcColorspace(forced_color_mode_.value())
@@ -1562,6 +1581,7 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
   if (!a_args) {
     ALOGE("Failed to create AtomicCommitArgs for frame composition.");
     last_presented_composition_.Reset();
+    MarkPlanInvalid(kAllDirty);
     return CommitStatus::InternalFailure();
   }
 
@@ -1571,6 +1591,7 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
     ALOGE("Failed to commit the frame composition with err=%d",
           status_or_result.GetStatus().error_code);
     last_presented_composition_.Reset();
+    MarkPlanInvalid(kAllDirty);
     return status_or_result.GetStatus();
   }
 

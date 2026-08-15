@@ -57,6 +57,15 @@ class ICompositorDisplay {
   virtual const PresentedCompositionCache &GetLastPresentedComposition()
       const = 0;
 
+  /* Everything that changed underneath the last plan, as PlanInvalidator
+   * bits gathered from the display and every layer, cleared by the asking.
+   * Zero means the previous plan still describes this frame. A display that
+   * does not track this answers all-dirty, which is never wrong, only never
+   * reused. */
+  virtual uint32_t TakePlanInvalidators() const {
+    return 0xFFFFFFFF;
+  }
+
   virtual bool CtmByGpu() const = 0;
   virtual bool ForcedScalingWithGpu() const = 0;
   virtual bool UseColorPipeline() const = 0;
