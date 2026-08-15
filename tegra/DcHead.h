@@ -24,6 +24,10 @@
 
 #include "utils/UniqueFd.h"
 
+/* The kernel's colour-pipeline snapshot; kept behind a pointer so the kernel
+ * header stays out of everyone who includes this one. */
+struct tegra_dc_ext_cmu;
+
 namespace android {
 namespace hwc {
 
@@ -214,6 +218,31 @@ public:
      */
     int test(const std::vector<Window> &windows);
 
+    /* Sets the head's colour matrix.
+     *
+     * The head ends in a colour pipeline the whole output passes through --
+     * every window and the cursor, after blending: a degamma table, a 3x3
+     * matrix, a regamma table. It boots as a net no-op and the tables stay
+     * exactly as booted; only the matrix is written here, so the values act
+     * in the pipeline's own linear domain, between the two tables.
+     *
+     * `matrix` is row-major, out = M * in, as fractions of unity. The
+     * hardware keeps a coefficient in ten bits with unity at 256, so the
+     * reachable range is [0, 4): values are clamped to it here because the
+     * driver writes the register unmasked and an oversized value would
+     * silently lose its high bits -- 2.0 wrapping to zero is a black channel
+     * nobody asked for. Whether the field has a sign is untested; negatives
+     * are refused until it is.
+     *
+     * The write lands at the next frame boundary, never mid-scan, and does
+     * not block: the driver keeps a shadow copy and folds the difference in
+     * during the following vertical blank. The head remembers the matrix it
+     * booted with the first time either of these is called, and reset puts
+     * it back. Both return false only when the kernel refused.
+     */
+    bool setColorMatrix(const float matrix[9]);
+    bool resetColorMatrix();
+
 private:
     DcHead(UniqueFd fd, int index): mFd(std::move(fd)), mIndex(index) {}
 
@@ -227,6 +256,10 @@ private:
     UniqueFd mFd;
     int mIndex;
 
+    /* Reads the live colour pipeline and keeps it as the state to restore.
+     * Done once, before the first write ever changes it. */
+    bool rememberBootCmu();
+
     /* Reads the controller's whole feature table and keeps what it says about
      * each window. One call answers for every window, so it is done once. */
     bool readCapabilities();
@@ -238,6 +271,10 @@ private:
     /* Indexed by window. Empty until the controller has been asked. */
     std::map<uint32_t, WindowCapabilities> mCapabilities;
     bool mCapabilitiesRead = false;
+
+    /* The pipeline as it booted: the calibration to come home to. Null until
+     * the first colour write; never touched after it is filled. */
+    std::unique_ptr<tegra_dc_ext_cmu> mBootCmu;
 };
 
 }  // namespace hwc

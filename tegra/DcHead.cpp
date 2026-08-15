@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -108,6 +109,11 @@ std::unique_ptr<DcHead> DcHead::open(int index) {
 }
 
 DcHead::~DcHead() {
+    /* The kernel keeps the last matrix written for as long as the head is
+     * up, composer or no composer -- a tint left behind here would outlive
+     * us and be captured by our successor as its idea of the boot state. */
+    resetColorMatrix();
+
     /* Copied, because releaseWindow edits the list it walks. */
     const std::vector<uint32_t> owned = mOwnedWindows;
     for (uint32_t window : owned)
@@ -458,6 +464,70 @@ int DcHead::flip(const std::vector<Window> &windows, UniqueFd *outPostFence) {
 
     outPostFence->reset(flip.post_syncpt_fd);
     return 0;
+}
+
+bool DcHead::rememberBootCmu() {
+    if (mBootCmu)
+        return true;
+
+    auto cmu = std::make_unique<tegra_dc_ext_cmu>();
+    if (ioctl(mFd.get(), TEGRA_DC_EXT_GET_CMU, cmu.get()) < 0) {
+        HWC_LOGE("head %d: GET_CMU: %s", mIndex, strerror(errno));
+        return false;
+    }
+
+    /* We are the pipeline's only matrix writer, so the matrix read here can
+     * be non-identity for one reason: a predecessor died holding a tint and
+     * the kernel kept it. Remembering that as home would make it permanent --
+     * so home is the tables as found and the matrix as it should be. The day
+     * the board declares a calibrated matrix of its own, this is the line to
+     * revisit. */
+    static const __u16 kIdentity[9] = {256, 0, 0, 0, 256, 0, 0, 0, 256};
+    if (memcmp(cmu->csc, kIdentity, sizeof(kIdentity)) != 0) {
+        HWC_LOGI("head %d: booted with a non-identity colour matrix, "
+                 "normalising", mIndex);
+        memcpy(cmu->csc, kIdentity, sizeof(kIdentity));
+    }
+
+    mBootCmu = std::move(cmu);
+    return true;
+}
+
+bool DcHead::setColorMatrix(const float matrix[9]) {
+    if (!rememberBootCmu())
+        return false;
+
+    /* The boot tables ride along untouched: the aligned write takes the
+     * whole pipeline, and the kernel folds in only what differs. */
+    tegra_dc_ext_cmu cmu = *mBootCmu;
+    for (int i = 0; i < 9; ++i) {
+        float f = matrix[i];
+        if (f < 0.F)
+            f = 0.F;
+        long v = lroundf(f * 256.F);
+        if (v > 0x3ff)
+            v = 0x3ff;
+        cmu.csc[i] = static_cast<__u16>(v);
+    }
+
+    if (ioctl(mFd.get(), TEGRA_DC_EXT_SET_CMU_ALIGNED, &cmu) < 0) {
+        HWC_LOGE("head %d: SET_CMU_ALIGNED: %s", mIndex, strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+bool DcHead::resetColorMatrix() {
+    /* Nothing was ever written, so there is nothing to put back. */
+    if (!mBootCmu)
+        return true;
+
+    if (ioctl(mFd.get(), TEGRA_DC_EXT_SET_CMU_ALIGNED, mBootCmu.get()) < 0) {
+        HWC_LOGE("head %d: SET_CMU_ALIGNED (reset): %s", mIndex,
+                 strerror(errno));
+        return false;
+    }
+    return true;
 }
 
 }  // namespace hwc
