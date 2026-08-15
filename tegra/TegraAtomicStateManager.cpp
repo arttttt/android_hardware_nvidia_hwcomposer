@@ -485,14 +485,16 @@ bool TegraAtomicStateManager::RecognisesMerge(
     return false;
   }
 
-  /* The group's place and size on the panel. The layers' own rectangles
-   * below are relative to the group, so this is the one place panel
-   * coordinates are still judged. */
-  if (merge.origin_x != last_merge_origin_x_ ||
-      merge.origin_y != last_merge_origin_y_ ||
-      merge.width != last_merge_width_ ||
+  /* The group's size -- a resize really is a different picture. Its PLACE
+   * is deliberately not judged: the pixels are drawn relative to the
+   * group's own corner, so a group that merely moved is the same picture
+   * shown somewhere else, and the window is simply moved under it. That is
+   * the whole dividend of the group's frame of reference -- a sliding
+   * volume panel, a settling notification, anything that travels without
+   * redrawing, stops waking the engine. */
+  if (merge.width != last_merge_width_ ||
       merge.height != last_merge_height_) {
-    merges_.changed_geometry++;
+    merges_.changed_size++;
     return false;
   }
 
@@ -548,8 +550,6 @@ void TegraAtomicStateManager::RememberMerge(
 
   last_merge_window_ = merge.window;
   last_merge_depth_ = merge.depth;
-  last_merge_origin_x_ = merge.origin_x;
-  last_merge_origin_y_ = merge.origin_y;
   last_merge_width_ = merge.width;
   last_merge_height_ = merge.height;
   last_merge_described_ = described;
@@ -636,6 +636,12 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       windows[merge.slot] = last_merge_described_;
       windows[merge.slot].preFence = last_merge_fence_ ? *last_merge_fence_
                                                        : -1;
+
+      /* Where the group sits now, not where it sat when it was drawn. The
+       * pixels are relative to the group's corner, so a moved group is the
+       * remembered picture in a new place -- the window follows it. */
+      windows[merge.slot].outX = merge.origin_x;
+      windows[merge.slot].outY = merge.origin_y;
     } else {
       /* The buffer and, separately, when it may be written to. The engine is
        * told the second and waits for it itself; nothing here does. */
@@ -955,8 +961,8 @@ std::string TegraAtomicStateManager::DumpState() {
       ss << "  drawn because           : first " << m.first_sight
          << ", shape " << m.changed_shape << ", buffer "
          << m.changed_identity << ", geometry " << m.changed_geometry
-         << ", blend " << m.changed_blend << ", nameless " << m.nameless
-         << "\n";
+         << ", size " << m.changed_size << ", blend " << m.changed_blend
+         << ", nameless " << m.nameless << "\n";
     ss << "Engine over its lifetime:\n"
        << "  frames accepted         : " << vic_->composed() << "\n"
        << "  frames refused          : " << vic_->refused() << "\n\n";

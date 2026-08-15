@@ -66,10 +66,13 @@ class TegraAtomicRequest : public AtomicRequest {
      * alone. Pixels and position stay independent axes, which is what the
      * stock composer's scratch path did and what lets the window scan a
      * group's worth of memory rather than a panel's. */
-    int32_t origin_x = 0;
-    int32_t origin_y = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
+    /* Uninitialised like their neighbours below, and it has to be: a
+     * default here trips the compiler on the enclosing class's `= {}`
+     * default argument, and value-initialisation zeroes them anyway. */
+    int32_t origin_x;
+    int32_t origin_y;
+    uint32_t width;
+    uint32_t height;
 
     size_t slot;
     int32_t window;
@@ -286,9 +289,10 @@ class TegraAtomicStateManager : public AtomicStateManager {
      * animation living inside the group -- the one case a smarter choice of
      * group could take out of the engine's hands. */
     uint64_t first_sight = 0;
-    uint64_t changed_shape = 0; /* group size, window or stacking depth */
+    uint64_t changed_shape = 0; /* member count, window or stacking depth */
     uint64_t changed_identity = 0;
-    uint64_t changed_geometry = 0;
+    uint64_t changed_geometry = 0; /* layout inside the group */
+    uint64_t changed_size = 0;     /* the group resized -- honest redraw */
     uint64_t changed_blend = 0;
     uint64_t nameless = 0;
   };
@@ -320,8 +324,6 @@ class TegraAtomicStateManager : public AtomicStateManager {
   std::vector<MergedSource> last_merge_sources_;
   int32_t last_merge_window_ = -1; /* -1: nothing remembered yet */
   uint32_t last_merge_depth_ = 0;
-  int32_t last_merge_origin_x_ = 0;
-  int32_t last_merge_origin_y_ = 0;
   uint32_t last_merge_width_ = 0;
   uint32_t last_merge_height_ = 0;
   hwc::DcHead::Window last_merge_described_{};
