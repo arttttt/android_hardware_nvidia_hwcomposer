@@ -96,6 +96,8 @@ constexpr size_t kInvertScanColumn = 2;
 
 }  // namespace
 
+DcHead::DcHead(UniqueFd fd, int index): mFd(std::move(fd)), mIndex(index) {}
+
 std::unique_ptr<DcHead> DcHead::open(int index) {
     char path[32];
     snprintf(path, sizeof(path), "/dev/tegra_dc_%d", index);

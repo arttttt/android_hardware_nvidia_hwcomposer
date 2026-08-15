@@ -244,7 +244,10 @@ public:
     bool resetColorMatrix();
 
 private:
-    DcHead(UniqueFd fd, int index): mFd(std::move(fd)), mIndex(index) {}
+    /* Out of line: a member unique_ptr of the forward-declared snapshot
+     * makes every path that could destroy a half-built DcHead -- this
+     * constructor included -- need the complete type. */
+    DcHead(UniqueFd fd, int index);
 
     /* Takes ownership of one window. A refusal is an answer, not a failure --
      * it is how the head says the window is not its -- so it is not logged. */
