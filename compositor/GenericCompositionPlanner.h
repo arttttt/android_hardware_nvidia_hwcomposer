@@ -59,10 +59,13 @@ class GenericCompositionPlanner : public CompositionPlanner {
     std::atomic<uint32_t> invalidators_seen{0};
 
     /* The bandwidth ladder: how often the kernel refused the first plan and
-     * a one-window-poorer replan was tried, and how often that try kept part
-     * of the frame on the hardware instead of losing all of it. */
+     * a decisively smaller replan was tried, and how often that try kept
+     * part of the frame on the hardware instead of losing all of it. The
+     * last refusal's errno says what the ladder was fighting -- bandwidth,
+     * or something a smaller plan cannot cure. */
     std::atomic<uint64_t> degrade_attempts{0};
     std::atomic<uint64_t> degrade_rescues{0};
+    std::atomic<int32_t> last_refusal_error{0};
 
     /* What handing back the previous plan costs in copying alone -- the
      * price the owner asked to be measured rather than assumed. The same

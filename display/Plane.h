@@ -59,6 +59,15 @@ class Plane : public PipelineBindable<Plane> {
     return false;
   }
 
+  /* Whether layers landing here are first drawn together into one buffer by
+   * an engine rather than each being scanned out directly. Such planes are
+   * offered several times over and all name the same window, so they do not
+   * add scanout surfaces the way ordinary planes do. Ordinary hardware has
+   * none, so the default says so. */
+  virtual bool IsMerging() const {
+    return false;
+  }
+
   /* Which plane this is, for the log. Numbering is the hardware's own. */
   virtual uint32_t GetId() const = 0;
 };

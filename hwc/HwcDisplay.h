@@ -274,6 +274,7 @@ class HwcDisplay : public ICompositorDisplay {
   }
 
   size_t GetNumAvailablePlanes() const override;
+  size_t GetNumDirectPlanes() const override;
   std::shared_ptr<BindingOwner<Plane>> GetCursorPlane() const override;
 
   // Whether the GPU should be responsible for the client CTM. (GPU is never

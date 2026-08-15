@@ -70,7 +70,7 @@ class TegraPlane : public Plane {
     merging_ = true;
   }
 
-  bool IsMerging() const {
+  bool IsMerging() const override {
     return merging_;
   }
 

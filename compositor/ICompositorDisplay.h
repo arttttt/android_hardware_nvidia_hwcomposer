@@ -50,6 +50,13 @@ class ICompositorDisplay {
   virtual size_t GetNumAvailablePlanes() const = 0;
   virtual std::shared_ptr<BindingOwner<Plane>> GetCursorPlane() const = 0;
 
+  /* How many of the available planes are real scanout surfaces of their own.
+   * The count above may be deliberately inflated -- a merging plane is
+   * offered several times over and all name one window -- and a plan whose
+   * layers plus client target stay within this number is a plan that needs
+   * no merging at all: the bandwidth ladder's most meaningful retreat. */
+  virtual size_t GetNumDirectPlanes() const = 0;
+
   virtual CommitStatus TestComposition(
       CompositionPlanner::ValidatedComposition &composition) const = 0;
 

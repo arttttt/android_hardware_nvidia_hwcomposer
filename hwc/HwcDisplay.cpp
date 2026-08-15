@@ -1659,6 +1659,17 @@ size_t HwcDisplay::GetNumAvailablePlanes() const {
   return pipeline_->GetUsablePlanes().first.size();
 }
 
+size_t HwcDisplay::GetNumDirectPlanes() const {
+  const auto usable = pipeline_->GetUsablePlanes();
+  size_t direct = 0;
+  for (const auto &plane : usable.first) {
+    if (plane && !plane->Get()->IsMerging()) {
+      ++direct;
+    }
+  }
+  return direct;
+}
+
 std::shared_ptr<BindingOwner<Plane>> HwcDisplay::GetCursorPlane() const {
   return pipeline_->GetUsablePlanes().second;
 }

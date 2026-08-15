@@ -174,18 +174,38 @@ auto GenericCompositionPlanner::ValidateDisplay(
   bool success = validate_and_test();
 
   /* One rung of a ladder before the floor. A refusal here is the controller
-   * declining what it was asked to feed; the answer the stock composer gave,
-   * and upstream gives on its own hardware, is to ask again with less rather
-   * than surrender everything to the GPU. Less, here, is one more layer for
-   * the client -- the sliding-window search picks the cheapest one to hand
-   * over -- and the kernel is asked once more. Only an answer that differs
-   * from the refused one is worth asking about, and a second refusal falls
-   * through to the floor below. */
+   * declining what it was asked to feed; the answer the stock composer gave
+   * is to ask again with decisively less rather than surrender everything to
+   * the GPU.
+   *
+   * Decisively is the word doing the work. The display's load is a stair,
+   * not a slope: swapping one layer for the client target keeps the same
+   * surfaces scanning and the same answer coming, so stepping by one layer
+   * walks a plateau of refusals at a full kernel round-trip a step. The one
+   * step worth taking is to the next drop -- the plan that fits the real
+   * scanout surfaces outright, needing no merge -- and the sliding-window
+   * search picks the cheapest layers to hand over on the way there. One
+   * recompute, one more question to the kernel; a second refusal falls
+   * through to the floor below, and the refusal's errno is kept where the
+   * dump can show whether the ladder is fighting bandwidth or something
+   * else entirely. */
   if (!success && layers.size() > 1) {
     const size_t refused_start = client_start;
     const size_t refused_size = client_size;
+
+    for (ValidationStats* stats : {&lifetime_, &interval_})
+      stats->last_refusal_error.store(commit_status.error_code,
+                                      std::memory_order_relaxed);
+
+    const size_t direct_planes = display->GetNumDirectPlanes();
+    const size_t device_layers = layers.size() - refused_size;
+    size_t rung = 1;
+    if (direct_planes > 0 && device_layers + 1 > direct_planes) {
+      rung = device_layers + 1 - direct_planes;
+    }
+
     std::tie(client_start, client_size) = GetClientLayers(
-        display, layers, use_cursor_plane, /*forced_extra_client=*/1);
+        display, layers, use_cursor_plane, /*forced_extra_client=*/rung);
 
     if (client_start != refused_start || client_size != refused_size) {
       for (ValidationStats* stats : {&lifetime_, &interval_})
@@ -464,6 +484,10 @@ std::string GenericCompositionPlanner::DumpState() {
        << "\n"
        << "  degrade attempts        : " << attempts << "\n"
        << "  degrade rescues         : " << rescues << "\n";
+    if (attempts > 0) {
+      ss << "  last refusal errno      : "
+         << stats.last_refusal_error.load(std::memory_order_relaxed) << "\n";
+    }
     if (reused > 0) {
       ss << "  reuse copy time         : " << copy_us << " us (mean "
          << copy_us / reused << ")\n";
@@ -486,6 +510,7 @@ std::string GenericCompositionPlanner::DumpState() {
       stats.invalidators_seen.store(0, std::memory_order_relaxed);
       stats.degrade_attempts.store(0, std::memory_order_relaxed);
       stats.degrade_rescues.store(0, std::memory_order_relaxed);
+      stats.last_refusal_error.store(0, std::memory_order_relaxed);
       stats.reuse_copy_us.store(0, std::memory_order_relaxed);
       stats.total_us.store(0, std::memory_order_relaxed);
       stats.max_us.store(0, std::memory_order_relaxed);
