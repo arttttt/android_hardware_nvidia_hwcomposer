@@ -347,8 +347,17 @@ bool CursorUnit::PointLocked(int32_t x, int32_t y, bool visible) {
 bool CursorUnit::Show(buffer_handle_t sprite, uint64_t id, uint32_t width,
                       uint32_t height, uint32_t stride_px,
                       bool premultiplied, int acquire_fence, int32_t x,
-                      int32_t y) {
+                      int32_t y, bool position_fresh) {
   std::lock_guard<std::mutex> guard(lock_);
+
+  /* A position the pointer has already moved past is not re-stated: the
+   * freshest holder is this object, whose coordinates the overtaking
+   * move set. While nothing is shown there was no such move -- a hidden
+   * unit drops them -- and the plan's word stands. */
+  if (!position_fresh && visible_) {
+    x = x_;
+    y = y_;
+  }
 
   /* The frame that changed nothing asks for nothing: same sprite, same
    * place, already showing. */

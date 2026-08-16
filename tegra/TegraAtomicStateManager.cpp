@@ -492,6 +492,7 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
               l.bi->blend_mode == BufferBlendMode::kPreMult;
           cursor.x = l.pi.display_frame.i_rect->left;
           cursor.y = l.pi.display_frame.i_rect->top;
+          cursor.seq = cursor_move_seq_;
           cursor.acquire = l.acquire_fence;
         }
         continue;
@@ -1179,7 +1180,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
                                     point.height, point.stride_px,
                                     point.premultiplied,
                                     point.acquire ? *point.acquire : -1,
-                                    point.x, point.y);
+                                    point.x, point.y,
+                                    point.seq == cursor_move_seq_);
     } else if (cursor_shown_) {
       cursor_->Hide();
       cursor_shown_ = false;

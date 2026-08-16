@@ -79,10 +79,16 @@ class CursorUnit {
    * borrowed and says when the sprite's pixels are done being drawn; the
    * slot padding past the sprite is transparent. False if the sprite
    * could not be shown -- the caller's frame goes on without the unit,
-   * and the layer belongs back in a window next time. */
+   * and the layer belongs back in a window next time.
+   *
+   * `position_fresh` says whether (x, y) still is the pointer's latest
+   * word: a frame is planned moments before it is executed, and a move
+   * can land in between. A stale position gives way to the unit's own --
+   * except while nothing is shown, when moves are quietly dropped and
+   * the plan's word is the only one there is. */
   bool Show(buffer_handle_t sprite, uint64_t id, uint32_t width,
             uint32_t height, uint32_t stride_px, bool premultiplied,
-            int acquire_fence, int32_t x, int32_t y);
+            int acquire_fence, int32_t x, int32_t y, bool position_fresh);
 
   /* Moves the visible sprite. Safe from any thread and cheap on purpose:
    * this is the call that arrives at the mouse's own rate, between frames,

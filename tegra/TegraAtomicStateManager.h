@@ -105,6 +105,13 @@ class TegraAtomicRequest : public AtomicRequest {
     int32_t x;
     int32_t y;
 
+    /* Which move of the pointer this position belongs to -- the manager's
+     * count at the moment the plan was drawn up. A move landing between
+     * plan and execution advances the count and leaves this behind, and a
+     * position overtaken like that must not be re-stated over the fresher
+     * one. */
+    uint64_t seq;
+
     /* When the sprite's pixels are done being drawn -- the framework
      * paints its pointer on the graphics core, and reading it before
      * this comes due reads a half-painted sprite. */
@@ -252,8 +259,13 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * Arrives from the framework between frames, at the pointer's own rate;
    * touches nothing a frame owns, which is the whole point of the unit. */
   void MoveCursor(int32_t x, int32_t y) override {
-    if (cursor_ != nullptr)
+    if (cursor_ != nullptr) {
+      /* Counted before the unit hears of it: every plan carries the count
+       * it was drawn under, and a mismatch at execution says a move like
+       * this one has overtaken the plan's position. */
+      ++cursor_move_seq_;
       cursor_->Move(x, y);
+    }
   }
 
  private:
@@ -300,6 +312,13 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * frames, and a sprite nobody hides outlives its scene. */
   hwc::CursorUnit *const cursor_ = nullptr;
   bool cursor_shown_ = false;
+
+  /* How many times the pointer has moved past the frames. A plan copies
+   * this when drawn up; execution compares, and a plan overtaken by a
+   * move keeps its hands off the position. Plain on purpose: every entry
+   * into the device -- moves from the binder, plans and frames from the
+   * main thread -- comes through the composer's one lock. */
+  uint64_t cursor_move_seq_ = 0;
 
   /* Frames actually committed, whatever they carried. The counter the
    * cursor's whole promise is judged by: a moving pointer on a still
