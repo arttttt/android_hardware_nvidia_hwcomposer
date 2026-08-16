@@ -95,15 +95,14 @@ class TegraPlane : public Plane {
 
   /* The engine's reach on resizing one source, per axis, either way.
    *
-   * Empirical, and deliberately shy of the truth: the limit lives in the
-   * engine's own firmware -- its userspace never checks, the stock
-   * composer never checked, and the capability that would say is not
-   * exported -- so all that is known is what the device answered: a ratio
-   * over four passes every time, one over sixteen is refused every time.
-   * Eight keeps everything ever seen to work and stays clear of
-   * everything seen to fail; a refusal past validation is a frame the
-   * ladder cannot save, so the boundary errs toward refusing here. */
-  static constexpr float kEngineScaleReach = 8.0F;
+   * Measured, not guessed: the verifier inside the engine's configure
+   * step was asked directly (tools/vicscaletest) and answered sixteen --
+   * exactly, on every axis, in both directions, with both axes at the
+   * boundary at once, deterministically, and independently of the other
+   * axis's extent. Sixteen to one passes; anything past it is refused,
+   * and a refusal past validation is a frame the ladder cannot save,
+   * which is why the judging happens here. */
+  static constexpr float kEngineScaleReach = 16.0F;
 
   /* Whether resizing `src` to `dst` is past the engine's reach. The source
    * axes are given already turned into the display's frame -- the caller
