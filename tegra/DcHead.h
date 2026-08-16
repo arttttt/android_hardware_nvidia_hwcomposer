@@ -244,6 +244,12 @@ public:
     bool setColorMatrix(const float matrix[9], float offset);
     bool resetColorMatrix();
 
+    /* Writes the boot pipeline whether or not this instance ever changed
+     * it: the kernel keeps a dead predecessor's transform standing, and a
+     * home that is computed rather than read cannot notice it. Called once
+     * when colour service starts; harmless when nothing was stale. */
+    bool writeBootState();
+
     /* Shows every colour as its distance from white: the per-channel flip,
      * exact in this hardware where the framework's own cross-channel
      * inversion cannot run at all -- the matrix's sums reach the regamma as

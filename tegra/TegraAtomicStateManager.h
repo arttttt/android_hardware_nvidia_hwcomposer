@@ -391,6 +391,11 @@ class TegraAtomicStateManager : public AtomicStateManager {
      * silicon. */
     uint64_t skipped_negative = 0;
 
+    /* Non-negative matrices carrying an offset -- nothing sends one today,
+     * and folding it into the regamma would lift its floor, so the guard
+     * keeps them on the frame's own path. */
+    uint64_t skipped_offset = 0;
+
     /* Transforms honoured in a different shape than given: cross-channel
      * matrices applied in the pipeline's linear domain, inversions run as
      * the per-channel flip, offsets that differ between channels averaged.
@@ -408,6 +413,11 @@ class TegraAtomicStateManager : public AtomicStateManager {
   /* Whether the pipeline currently differs from its boot state; false again
    * once restored. */
   bool csc_programmed_ = false;
+
+  /* Whether this instance has written the pipeline at least once. Until it
+   * has, "restore" cannot be skipped as a no-op: a predecessor's dying
+   * state outlives it in the kernel, and only a write clears it. */
+  bool boot_state_written_ = false;
 
   bool cmu_ctm_ = true;
   static bool CmuFromProperty();

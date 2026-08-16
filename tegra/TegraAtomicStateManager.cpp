@@ -1123,12 +1123,14 @@ std::string TegraAtomicStateManager::DumpState() {
   {
     const CmuCounters c = cmu_;
     cmu_ = {};
-    const uint64_t any = c.applied + c.restored + c.skipped_negative;
+    const uint64_t any = c.applied + c.restored + c.skipped_negative +
+                         c.skipped_offset;
     if (any != 0 || csc_programmed_) {
       ss << "Colour transforms since last dumpsys request:\n"
          << "  written to the pipeline : " << c.applied << "\n"
          << "  boot state restored     : " << c.restored << "\n"
          << "  skipped, negative       : " << c.skipped_negative << "\n"
+         << "  skipped, offset         : " << c.skipped_offset << "\n"
          << "  approximated in shape   : " << c.approximated << "\n"
          << "  holding a transform now : " << (csc_programmed_ ? "yes" : "no")
          << "\n\n";
@@ -1205,12 +1207,18 @@ void TegraAtomicStateManager::ProgramColorMatrix(
 
   /* Column-major, as the client API hands it: m[col * 4 + row]. The fourth
    * column is the offset, the bottom row the projective weight. */
+  /* The first restore after start writes home even when this instance never
+   * programmed anything: a predecessor may have died mid-transform, its
+   * state outlives it in the kernel, and a computed home cannot see it --
+   * only overwrite it. Once written, an untouched pipeline is left alone. */
   const auto restore = [this]() {
-    if (!csc_programmed_)
+    if (!csc_programmed_ && boot_state_written_)
       return;
-    if (head_.resetColorMatrix()) {
+    if (head_.writeBootState()) {
+      if (csc_programmed_)
+        cmu_.restored++;
       csc_programmed_ = false;
-      cmu_.restored++;
+      boot_state_written_ = true;
     }
   };
 
@@ -1239,14 +1247,27 @@ void TegraAtomicStateManager::ProgramColorMatrix(
   for (float v : rm)
     negative = negative || v < -kEps;
 
-  /* Negative coefficients under an offset are how the framework writes an
-   * inversion, and this pipeline cannot run that arithmetic -- the matrix's
-   * sums reach the regamma as an unsigned index -- but it runs the
-   * per-channel flip exactly, and that is the same feature with a different
-   * hue mapping. Counted as approximated, because it is one. */
-  if (negative && has_offset && uniform_offset) {
+  /* The framework's inversion, matched by shape and not by class: this
+   * pipeline cannot run mixed-sign arithmetic -- the matrix's sums reach
+   * the regamma as an unsigned index -- but it runs the per-channel flip
+   * exactly, and that is the same feature with a different hue mapping.
+   * Matched strictly so that a composite -- inversion under a night tint
+   * multiplies the two matrices together -- is not silently stripped of
+   * its other half; the composite needs its own decomposition, and until
+   * it has one it keeps the path it has today. */
+  static constexpr float kInvert[9] = {0.402F,  -1.174F, -0.228F,
+                                       -0.598F, -0.174F, -0.228F,
+                                       -0.599F, -1.175F, 0.772F};
+  constexpr float kShape = 0.02F;
+  bool pure_inversion = has_offset && uniform_offset &&
+                        fabsf(offset - 1.F) < kShape;
+  for (int i = 0; i < 9 && pure_inversion; ++i)
+    pure_inversion = fabsf(rm[i] - kInvert[i]) < kShape;
+
+  if (pure_inversion) {
     if (head_.setInversion(offset)) {
       csc_programmed_ = true;
+      boot_state_written_ = true;
       cmu_.applied++;
       cmu_.approximated++;
     }
@@ -1260,6 +1281,16 @@ void TegraAtomicStateManager::ProgramColorMatrix(
   if (negative) {
     restore();
     cmu_.skipped_negative++;
+    return;
+  }
+
+  /* No framework transform sends an offset without negatives, so this is a
+   * guard, not a feature: folding a positive offset into the regamma lifts
+   * its floor -- the whole picture brightens and shadow contrast dies --
+   * which is worse than the frame simply keeping the path it has today. */
+  if (has_offset) {
+    restore();
+    cmu_.skipped_offset++;
     return;
   }
 
@@ -1290,10 +1321,11 @@ void TegraAtomicStateManager::ProgramColorMatrix(
     rm[8] = powf(rm[8], kDisplayGamma);
   }
 
-  if (head_.setColorMatrix(rm, offset)) {
+  if (head_.setColorMatrix(rm, 0.F)) {
     csc_programmed_ = true;
+    boot_state_written_ = true;
     cmu_.applied++;
-    if (!diagonal || (has_offset && !uniform_offset))
+    if (!diagonal)
       cmu_.approximated++;
   }
 }

@@ -612,8 +612,21 @@ bool DcHead::resetColorMatrix() {
     if (!mBootCmu)
         return true;
 
+    return writeBootState();
+}
+
+bool DcHead::writeBootState() {
+    if (!rememberBootCmu())
+        return false;
+
+    /* Unconditional where reset is guarded: the kernel keeps whatever the
+     * last composer wrote for as long as the head is up, so a predecessor
+     * that died mid-transform leaves the panel wearing it, and nothing else
+     * ever puts it back -- home is computed here, not read, so it cannot
+     * even be seen. Written once at the start of service, this heals any
+     * such leftover; written when nothing is stale, it diffs to nothing. */
     if (ioctl(mFd.get(), TEGRA_DC_EXT_SET_CMU_ALIGNED, mBootCmu.get()) < 0) {
-        HWC_LOGE("head %d: SET_CMU_ALIGNED (reset): %s", mIndex,
+        HWC_LOGE("head %d: SET_CMU_ALIGNED (boot state): %s", mIndex,
                  strerror(errno));
         return false;
     }
