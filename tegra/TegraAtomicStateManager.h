@@ -104,6 +104,11 @@ class TegraAtomicRequest : public AtomicRequest {
     bool premultiplied;
     int32_t x;
     int32_t y;
+
+    /* When the sprite's pixels are done being drawn -- the framework
+     * paints its pointer on the graphics core, and reading it before
+     * this comes due reads a half-painted sprite. */
+    SharedFd acquire;
   };
 
   TegraAtomicRequest(std::vector<hwc::DcHead::Window> windows,

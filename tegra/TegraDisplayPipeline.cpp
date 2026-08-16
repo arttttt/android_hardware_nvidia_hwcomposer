@@ -125,7 +125,7 @@ TegraDisplayPipeline::TegraDisplayPipeline(TegraConnector &tegraConnector,
      * Independent of the engine on purpose: a pointer is cheap precisely
      * because it involves no composition, and a device with no engine
      * deserves it all the more. */
-    mCursorUnit = CursorUnit::Claim(mHead->fd());
+    mCursorUnit = CursorUnit::Claim(mHead->fd(), mVic.get());
     if (mCursorUnit)
         mCursorPlane = std::make_unique<drm_hwcomposer::TegraCursorPlane>();
 

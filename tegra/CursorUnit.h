@@ -27,6 +27,8 @@
 namespace android {
 namespace hwc {
 
+class VicSession;
+
 /* The controller's own cursor.
  *
  * A fifth scanning unit beside the four windows, with its own registers,
@@ -57,8 +59,11 @@ class CursorUnit {
   /* The unit, claimed from the head that owns it, or null having said why
    * not. The descriptor is borrowed and must outlive this object; the
    * kernel grants the cursor to one descriptor at a time, which is the
-   * claim's whole meaning. */
-  static std::unique_ptr<CursorUnit> Claim(int dc_fd);
+   * claim's whole meaning. `vic` may be null and is borrowed too: it is
+   * the one reader of block-arranged memory in the house, and the
+   * framework's sprite arrives block-arranged -- without it such sprites
+   * are refused rather than misread. */
+  static std::unique_ptr<CursorUnit> Claim(int dc_fd, VicSession *vic);
 
   ~CursorUnit();
 
@@ -69,14 +74,15 @@ class CursorUnit {
   static constexpr uint32_t kMaxSide = 256;
 
   /* Puts `sprite` on screen at (x, y), loading its pixels only when `id`
-   * says they changed. Width and height are the layer's own and
-   * `stride_px` is the sprite buffer's row length in pixels; the slot
-   * padding past the sprite is transparent. False if the sprite could not
-   * be shown -- the caller's frame goes on without the unit, and the
-   * layer belongs back in a window next time. */
+   * says they changed. Width and height are the layer's own, `stride_px`
+   * is the sprite buffer's row length in pixels, and `acquire_fence` is
+   * borrowed and says when the sprite's pixels are done being drawn; the
+   * slot padding past the sprite is transparent. False if the sprite
+   * could not be shown -- the caller's frame goes on without the unit,
+   * and the layer belongs back in a window next time. */
   bool Show(buffer_handle_t sprite, uint64_t id, uint32_t width,
             uint32_t height, uint32_t stride_px, bool premultiplied,
-            int32_t x, int32_t y);
+            int acquire_fence, int32_t x, int32_t y);
 
   /* Moves the visible sprite. Safe from any thread and cheap on purpose:
    * this is the call that arrives at the mouse's own rate, between frames,
@@ -98,14 +104,26 @@ class CursorUnit {
   void AppendDump(std::ostream &ss) const;
 
  private:
-  explicit CursorUnit(int dc_fd) : fd_(dc_fd) {}
+  CursorUnit(int dc_fd, VicSession *vic) : fd_(dc_fd), vic_(vic) {}
 
   bool UploadLocked(buffer_handle_t sprite, uint32_t width, uint32_t height,
-                    uint32_t stride_px, bool premultiplied);
+                    uint32_t stride_px, bool premultiplied,
+                    int acquire_fence);
+  buffer_handle_t LinearizeLocked(buffer_handle_t sprite, uint32_t width,
+                                  uint32_t height, int acquire_fence,
+                                  uint32_t *stride_px);
   bool PointLocked(int32_t x, int32_t y, bool visible);
   void ReleaseSlotsLocked();
 
   const int fd_;
+  VicSession *const vic_;
+
+  /* Where a block-arranged sprite is laid flat before the hand-copy: one
+   * engine pass writes it here in rows, and rows are what a processor
+   * lock honestly reads. */
+  buffer_handle_t staging_ = nullptr;
+  uint32_t staging_side_ = 0;
+  uint32_t staging_stride_px_ = 0;
 
   mutable std::mutex lock_;
 
