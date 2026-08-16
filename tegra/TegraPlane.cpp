@@ -204,7 +204,19 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
       const bool translucent = bi.blend_mode == BufferBlendMode::kPreMult ||
                                bi.blend_mode == BufferBlendMode::kCoverage ||
                                pi.alpha < 1.0F;
-      if (scaled && translucent) {
+      /* The switch lets the pairing through, to be looked at. The refusal
+       * is the stock composer's, thirteen years old and never since
+       * re-examined by anyone: the register map has no bit that would
+       * starve the filter of alpha, upstream's driver has scaled blended
+       * planes on four generations without a word of this, and the likely
+       * root -- the filter's outer taps reading past the crop -- is a
+       * flaw the same vendor cured elsewhere with a half-pixel inset. So
+       * the pairing goes to a window under the switch, worst-case content
+       * goes on screen, and eyes decide whether the refusal keeps
+       * standing. Off, everything behaves as inherited. */
+      static const bool show_alpha_scaled =
+          property_get_bool("vendor.hwc.test.alphascale", 0) != 0;
+      if (scaled && translucent && !show_alpha_scaled) {
         ALOGV("plane %u cannot filter alpha while resizing", index_);
         return false;
       }
