@@ -287,6 +287,8 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * the pool's idle accounting at the top of the next Execute. */
   bool turned_in_frame_ = false;
 
+  hwc::ScratchPool *const scratch_ = nullptr;
+
   /* The controller's cursor, or null where another descriptor holds it.
    * Whether the previous frame showed it, so a frame without a pointer
    * hides the sprite exactly once -- the unit draws independently of
@@ -298,7 +300,6 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * cursor's whole promise is judged by: a moving pointer on a still
    * desktop must leave this exactly where it was. */
   uint64_t frames_executed_ = 0;
-  hwc::ScratchPool *const scratch_ = nullptr;
 
   bool active_ = true;
 

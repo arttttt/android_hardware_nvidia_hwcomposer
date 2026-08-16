@@ -301,7 +301,7 @@ void CursorUnit::Rearm() {
   PointLocked(x_, y_, true);
 }
 
-void CursorUnit::AppendDump(std::ostringstream &ss) const {
+void CursorUnit::AppendDump(std::ostream &ss) const {
   std::lock_guard<std::mutex> guard(lock_);
   if (moves_ == 0 && uploads_ == 0 && refused_ == 0)
     return;

@@ -20,7 +20,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
-#include <sstream>
+#include <ostream>
 
 #include <cutils/native_handle.h>
 
@@ -95,7 +95,7 @@ class CursorUnit {
   void Rearm();
 
   /* For the dump: what the unit has been asked to do. */
-  void AppendDump(std::ostringstream &ss) const;
+  void AppendDump(std::ostream &ss) const;
 
  private:
   explicit CursorUnit(int dc_fd) : fd_(dc_fd) {}
