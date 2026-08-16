@@ -1238,8 +1238,6 @@ void TegraAtomicStateManager::ProgramColorMatrix(
   const float offset = (m[12] + m[13] + m[14]) / 3.F;
   const bool has_offset = fabsf(m[12]) > kEps || fabsf(m[13]) > kEps ||
                           fabsf(m[14]) > kEps;
-  const bool uniform_offset = fabsf(m[12] - m[13]) < kEps &&
-                              fabsf(m[13] - m[14]) < kEps;
 
   bool negative = false;
   for (float v : rm)
@@ -1247,37 +1245,36 @@ void TegraAtomicStateManager::ProgramColorMatrix(
 
   /* The framework's inversion family, matched by decomposition rather than
    * by shape: the verbatim inversion alone, and the same inversion under a
-   * diagonal tint -- an inverted screen with night mode on -- which the
-   * framework multiplies into one matrix. Column c of that product is the
-   * inversion's column scaled by the tint's factor, so each factor is
-   * recovered by least squares and the residual says whether this really
-   * is that family. It runs as: identity tables, the tint alone in the
-   * matrix stage -- positive, so the unsigned regamma index is never
-   * crossed -- and the flip folded into the regamma curve. The true
-   * inversion's cross-channel character becomes the per-channel flip:
-   * the same feature with a different hue mapping, counted as the
-   * approximation it is. */
-  if (negative && has_offset && uniform_offset && offset > 0.5F) {
+   * night tint, which the framework multiplies into one matrix -- the tint
+   * outermost, so each ROW of the product is the inversion's row scaled by
+   * that channel's factor, and the offset column carries the same factors
+   * rather than staying uniform. Each factor is recovered by least squares
+   * over its row, the residual rejects impostors, and the offset must echo
+   * the factors -- the affine half of the same composition -- or this is
+   * not that family. The true inversion's cross-channel character becomes
+   * the per-channel flip: the same feature with a different hue mapping,
+   * counted as the approximation it is. */
+  if (negative && has_offset && offset > 0.4F) {
     static constexpr float kInvert[9] = {0.402F,  -1.174F, -0.228F,
                                          -0.598F, -0.174F, -0.228F,
                                          -0.599F, -1.175F, 0.772F};
     float tint[3];
     bool family = true;
-    for (int c = 0; c < 3 && family; ++c) {
+    for (int r = 0; r < 3 && family; ++r) {
       float num = 0.F;
       float den = 0.F;
-      for (int r = 0; r < 3; ++r) {
+      for (int c = 0; c < 3; ++c) {
         num += rm[r * 3 + c] * kInvert[r * 3 + c];
         den += kInvert[r * 3 + c] * kInvert[r * 3 + c];
       }
-      tint[c] = num / den;
-      family = tint[c] > 0.F;
+      tint[r] = num / den;
+      family = tint[r] > 0.F && fabsf(m[12 + r] - tint[r]) < 0.05F;
     }
     for (int i = 0; i < 9 && family; ++i)
-      family = fabsf(rm[i] - tint[i % 3] * kInvert[i]) < 0.05F;
+      family = fabsf(rm[i] - tint[i / 3] * kInvert[i]) < 0.05F;
 
     if (family) {
-      if (head_.setInversion(offset, tint)) {
+      if (head_.setInversion(tint)) {
         csc_programmed_ = true;
         boot_state_written_ = true;
         cmu_.applied++;

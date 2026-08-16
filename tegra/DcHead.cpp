@@ -577,7 +577,7 @@ bool DcHead::setColorMatrix(const float matrix[9], float offset) {
     return true;
 }
 
-bool DcHead::setInversion(float white, const float tint[3]) {
+bool DcHead::setInversion(const float tint[3]) {
     if (!rememberBootCmu())
         return false;
 
@@ -585,18 +585,24 @@ bool DcHead::setInversion(float white, const float tint[3]) {
      * mixed-sign coefficients, and this pipeline cannot run those: the
      * matrix's sums pass to the regamma as an unsigned index, so every
      * negative result folds to zero. What it can run exactly is the
-     * per-channel flip -- identity tables, the tint alone in the matrix
-     * stage, and the regamma answering every level with its distance from
-     * white. Same purpose, light and dark exchanged; hues map differently
-     * than on hardware that has the signed path. The same trade shipped
-     * for years on this block's descendant in another product.
+     * per-channel flip with a tint over it -- the tint is outermost in the
+     * framework's own composition, so the flip goes in the DEGAMMA, where
+     * every input becomes its distance from white, the tint multiplies the
+     * flipped value in the matrix stage, and the regamma is the identity:
+     * out = tint * (white - in), per channel, all of it non-negative. Same
+     * purpose as the true inversion, light and dark exchanged; hues map
+     * differently than on hardware with a signed path. The same trade
+     * shipped for years on this block's descendant in another product.
      *
-     * The tint multiplies gamma-encoded values here -- the tables are the
-     * identity, so this is the framework's own domain and its diagonal
-     * needs no bridge. Positive by the caller's contract: a negative would
-     * cross the unsigned index this mode exists to avoid. */
+     * Gamma-domain throughout -- the framework's own domain for these
+     * matrices, so the tint's diagonal needs no bridge. Positive by the
+     * caller's contract: a negative would cross the unsigned index this
+     * mode exists to avoid. */
     tegra_dc_ext_cmu cmu = *mBootCmu;
     fillIdentityTables(&cmu);
+
+    for (uint32_t i = 0; i < 256; ++i)
+        cmu.lut1[i] = static_cast<__u16>((255 - i) << 4);
 
     for (int c = 0; c < 3; ++c) {
         long v = lroundf(tint[c] * 256.F);
@@ -605,12 +611,6 @@ bool DcHead::setInversion(float white, const float tint[3]) {
         if (v > 0x1ff)
             v = 0x1ff;
         cmu.csc[c * 3 + c] = static_cast<__u16>(v);
-    }
-
-    const long top = lroundf(white * 255.F);
-    for (uint32_t i = 0; i < 960; ++i) {
-        const long v = top - static_cast<long>(cmu.lut2[i]);
-        cmu.lut2[i] = static_cast<__u16>(v < 0 ? 0 : (v > 255 ? 255 : v));
     }
 
     if (ioctl(mFd.get(), TEGRA_DC_EXT_SET_CMU_ALIGNED, &cmu) < 0) {

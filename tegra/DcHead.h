@@ -253,11 +253,12 @@ public:
     /* Shows every colour as its tinted distance from white: the per-channel
      * flip, exact in this hardware where the framework's own cross-channel
      * inversion cannot run at all -- the matrix's sums reach the regamma as
-     * an unsigned index, so mixed-sign arithmetic folds to zero. `white` is
-     * the level a black pixel becomes, 1.0 for the full flip; `tint` scales
-     * each channel before the flip -- night mode over an inverted screen --
-     * and must be non-negative, all ones for the bare inversion. */
-    bool setInversion(float white, const float tint[3]);
+     * an unsigned index, so mixed-sign arithmetic folds to zero. The flip
+     * lives in the degamma and `tint` scales each flipped channel in the
+     * matrix stage -- night mode over an inverted screen, the tint
+     * outermost as the framework composes it. Non-negative by contract,
+     * all ones for the bare inversion. */
+    bool setInversion(const float tint[3]);
 
 private:
     /* Out of line: a member unique_ptr of the forward-declared snapshot
