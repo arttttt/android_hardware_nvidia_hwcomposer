@@ -95,6 +95,17 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
         return false;
       }
 
+      /* A crop collapsed to nothing cannot be turned into anything --
+       * the stock blit skipped such layers on the same strict
+       * comparison. Nothing upstream ever sends one; should one arrive,
+       * it goes where whole layers go, not into an ask for a zero-sized
+       * copy. */
+      if (src_w <= 0 || src_h <= 0) {
+        ALOGV("plane %u: nothing to turn in a %gx%g crop", index_, src_w,
+              src_h);
+        return false;
+      }
+
       /* And a turned copy has to land somewhere: the intermediates are
        * cut no larger than the reach says, and a copy that fits none of
        * them is a group refused at execute time, every frame, which no
@@ -165,6 +176,11 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
     return false;
   }
 
+  /* First of the geometry checks, and the order is load-bearing: this is
+   * what keeps every resizing layer -- translucent ones included, since
+   * the stock pairing refusal was retired -- out of windows that have no
+   * filter to resize with. Anything moved below it must not let a scaled
+   * layer reach a filterless window first. */
   if (pi.RequireScalingOrPhasing() && !caps_.scaling) {
     ALOGV("plane %u cannot resize", index_);
     return false;

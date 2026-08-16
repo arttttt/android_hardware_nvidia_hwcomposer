@@ -891,9 +891,12 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
        * ordinary source, its acquire fence the turn's completion. The turn
        * swallows the whole transform -- the stock composer sometimes left
        * a window a remainder, but this window turns nothing, so the
-       * remainder is always nought. The group is remembered under its
-       * ORIGINAL sources and transforms: the intermediate is a stage prop,
-       * not an identity. */
+       * remainder is always nought. The member's display rectangle is
+       * deliberately not touched: SurfaceFlinger hands a turned layer its
+       * frame already in the turned orientation, so the turned copy maps
+       * onto it one-to-one. The group is remembered under its ORIGINAL
+       * sources and transforms: the intermediate is a stage prop, not an
+       * identity. */
       std::vector<hwc::VicSession::Layer> drawn = merge.layers;
       std::vector<SharedFd> turned_fences;
       bool turn_failed = false;

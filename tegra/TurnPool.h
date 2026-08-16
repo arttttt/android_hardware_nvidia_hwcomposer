@@ -32,9 +32,12 @@ namespace hwc {
  * a thousand, and freed by the fence of the frame that replaces them. A
  * turned intermediate faces nothing -- it is written by one engine pass and
  * read by the group's pass in the same frame, and the engine's channel
- * serialises the two. It needs no fence, no notion of being shown, and no
- * fixed shape; giving it the show pool's machinery would mean teaching that
- * machinery to tell shown buffers from never-shown ones.
+ * serialises the two by the driver's own construction: the channel is
+ * opened serialized, every submission waits on the one before it, and a
+ * session holds exactly one channel -- the same premise the vendor's blit
+ * library rested on in production. It needs no fence, no notion of being
+ * shown, and no fixed shape; giving it the show pool's machinery would mean
+ * teaching that machinery to tell shown buffers from never-shown ones.
  *
  * What it does need is thrift, because these buffers are dear. They live in
  * the same reserved pool as every other surface the display touches, and a
