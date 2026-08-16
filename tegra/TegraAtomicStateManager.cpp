@@ -562,9 +562,29 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
      * forced turn cannot vanish with a clipped member; deliberately not
      * gated on the plane's own switch, so the turning path can be driven
      * through any scene even while real turned layers are being
-     * refused. */
-    if (ForcedTestRotation() && !merge.transforms.empty())
-      merge.transforms.back() |= 4;
+     * refused. The forced bit lands after the plane already judged the
+     * layer unturned, so the plane's reach check never saw the turned
+     * axes -- it is repeated here, and a member whose turned copy would
+     * resize past the engine's reach is left unturned rather than fed to
+     * a verifier that will refuse the whole set every frame. A status
+     * bar laid on its side asks for a thirty-fold resize; the test is
+     * for turning, not for that. */
+    if (ForcedTestRotation() && !merge.transforms.empty()) {
+      const auto &top = merge.layers.back();
+      const float crop_w = top.source_right - top.source_left;
+      const float crop_h = top.source_bottom - top.source_top;
+      const auto dst_w =
+          static_cast<float>(top.display_right - top.display_left);
+      const auto dst_h =
+          static_cast<float>(top.display_bottom - top.display_top);
+      if (crop_w > 0 && crop_h > 0 && dst_w > 0 && dst_h > 0) {
+        const float rw = crop_h > dst_w ? crop_h / dst_w : dst_w / crop_h;
+        const float rh = crop_w > dst_h ? crop_w / dst_h : dst_h / crop_w;
+        if (rw <= TegraPlane::kEngineScaleReach &&
+            rh <= TegraPlane::kEngineScaleReach)
+          merge.transforms.back() |= 4;
+      }
+    }
   }
 
   /* As many turns as there are intermediates to hold them, and no more: a
