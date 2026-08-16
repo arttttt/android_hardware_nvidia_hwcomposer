@@ -29,6 +29,16 @@ namespace android::drm_hwcomposer {
 
 std::atomic<uint64_t> TegraPlane::transform_refusals_{0};
 std::atomic<uint64_t> TegraPlane::scale_refusals_{0};
+uint32_t TegraPlane::turn_reach_{0};
+
+bool TegraPlane::BeyondEngineReach(float src_w, float src_h, float dst_w,
+                                   float dst_h) {
+  if (src_w <= 0 || src_h <= 0 || dst_w <= 0 || dst_h <= 0)
+    return false;
+  const float ratio_w = src_w > dst_w ? src_w / dst_w : dst_w / src_w;
+  const float ratio_h = src_h > dst_h ? src_h / dst_h : dst_h / src_h;
+  return ratio_w > kEngineScaleReach || ratio_h > kEngineScaleReach;
+}
 
 bool TegraPlane::IsValidForLayer(const LayerData *layer) {
   if (layer == nullptr || !layer->bi) {
@@ -50,18 +60,51 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
       return false;
     }
 
-    /* A turned member is taken now: it is drawn turned into an
-     * intermediate by a pass of the engine's own before the group
-     * composes, the way the stock composer turned layers on the way into
-     * its scratch. The switch puts the refusal back -- turned layers go
-     * to a window that turns them, or the GPU -- for an A/B on one
-     * binary; the counter keeps the tally of what the refusal costs. */
+    /* The geometry the merge will actually draw, missing rectangles
+     * filled the way the merge itself fills them -- a whole buffer to a
+     * whole buffer. Judging anything narrower leaves a layer the merge
+     * would resize slipping past the judge unmeasured. */
+    float src_w = pi.source_crop.f_rect ? pi.source_crop.f_rect->Width()
+                                        : static_cast<float>(bi.width);
+    float src_h = pi.source_crop.f_rect ? pi.source_crop.f_rect->Height()
+                                        : static_cast<float>(bi.height);
+    if (pi.transform.rotate90)
+      std::swap(src_w, src_h);
+    const float dst_w = pi.display_frame.i_rect
+                            ? static_cast<float>(
+                                  pi.display_frame.i_rect->Width())
+                            : static_cast<float>(bi.width);
+    const float dst_h = pi.display_frame.i_rect
+                            ? static_cast<float>(
+                                  pi.display_frame.i_rect->Height())
+                            : static_cast<float>(bi.height);
+
     if (pi.transform.hflip || pi.transform.vflip || pi.transform.rotate90) {
       static const bool turn_in_merge =
           property_get_bool("vendor.hwc.merge.rotate", 1) != 0;
+      /* A turned member is taken now: it is drawn turned into an
+       * intermediate by a pass of the engine's own before the group
+       * composes, the way the stock composer turned layers on the way
+       * into its scratch. The switch puts the refusal back -- turned
+       * layers go to a window that turns them, or the GPU -- for an A/B
+       * on one binary; the counter keeps the tally of what the refusal
+       * costs. */
       if (!turn_in_merge) {
         transform_refusals_.fetch_add(1, std::memory_order_relaxed);
         ALOGV("plane %u: the engine will not turn a layer", index_);
+        return false;
+      }
+
+      /* And a turned copy has to land somewhere: the intermediates are
+       * cut no larger than the reach says, and a copy that fits none of
+       * them is a group refused at execute time, every frame, which no
+       * ladder walks back. Windows and the GPU turn such a layer
+       * natively -- it goes to them. */
+      if (turn_reach_ != 0 && (src_w > static_cast<float>(turn_reach_) ||
+                               src_h > static_cast<float>(turn_reach_))) {
+        scale_refusals_.fetch_add(1, std::memory_order_relaxed);
+        ALOGV("plane %u: no intermediate holds a turned %gx%g", index_,
+              src_w, src_h);
         return false;
       }
     }
@@ -75,26 +118,11 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
      * stands. Measured against the turned axes, since the turned copy is
      * what the group will resize. Not gated on the turning switch -- the
      * reach binds turned and straight members alike. */
-    if (pi.source_crop.f_rect && pi.display_frame.i_rect) {
-      const auto &src = *pi.source_crop.f_rect;
-      const auto &dst = *pi.display_frame.i_rect;
-      float src_w = src.Width();
-      float src_h = src.Height();
-      if (pi.transform.rotate90)
-        std::swap(src_w, src_h);
-      const auto dst_w = static_cast<float>(dst.Width());
-      const auto dst_h = static_cast<float>(dst.Height());
-
-      if (src_w > 0 && src_h > 0 && dst_w > 0 && dst_h > 0) {
-        const float ratio_w = src_w > dst_w ? src_w / dst_w : dst_w / src_w;
-        const float ratio_h = src_h > dst_h ? src_h / dst_h : dst_h / src_h;
-        if (ratio_w > kEngineScaleReach || ratio_h > kEngineScaleReach) {
-          scale_refusals_.fetch_add(1, std::memory_order_relaxed);
-          ALOGV("plane %u: the engine will not resize %gx%g to %gx%g",
-                index_, src_w, src_h, dst_w, dst_h);
-          return false;
-        }
-      }
+    if (BeyondEngineReach(src_w, src_h, dst_w, dst_h)) {
+      scale_refusals_.fetch_add(1, std::memory_order_relaxed);
+      ALOGV("plane %u: the engine will not resize %gx%g to %gx%g", index_,
+            src_w, src_h, dst_w, dst_h);
+      return false;
     }
     return true;
   }

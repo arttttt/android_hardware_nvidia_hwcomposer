@@ -571,28 +571,31 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
      * for turning, not for that. */
     if (ForcedTestRotation() && !merge.transforms.empty()) {
       const auto &top = merge.layers.back();
-      const float crop_w = top.source_right - top.source_left;
-      const float crop_h = top.source_bottom - top.source_top;
+      /* The turned axes: the crop laid on its side, judged by the same
+       * judge the plane uses, plus the fit no intermediate can offer
+       * past the reach -- the two checks the plane would have made had
+       * it seen the turn. */
+      const float turned_w = top.source_bottom - top.source_top;
+      const float turned_h = top.source_right - top.source_left;
       const auto dst_w =
           static_cast<float>(top.display_right - top.display_left);
       const auto dst_h =
           static_cast<float>(top.display_bottom - top.display_top);
-      if (crop_w > 0 && crop_h > 0 && dst_w > 0 && dst_h > 0) {
-        const float rw = crop_h > dst_w ? crop_h / dst_w : dst_w / crop_h;
-        const float rh = crop_w > dst_h ? crop_w / dst_h : dst_h / crop_w;
-        if (rw <= TegraPlane::kEngineScaleReach &&
-            rh <= TegraPlane::kEngineScaleReach)
-          merge.transforms.back() |= 4;
-      }
+      const auto reach = static_cast<float>(TegraPlane::TurnReach());
+      if (!TegraPlane::BeyondEngineReach(turned_w, turned_h, dst_w, dst_h) &&
+          (reach <= 0 || (turned_w <= reach && turned_h <= reach)))
+        merge.transforms.back() |= 4;
     }
   }
 
   /* As many turns as there are intermediates to hold them, and no more: a
-   * group asking for a third is refused whole, and the ladder walks the
+   * group asking past that is refused whole, and the ladder walks the
    * plan the way it walks every refusal -- toward a direct window or the
-   * client. The stock composer lived with the same shape of limit. Outside
-   * the clip's own guard, so the limit binds whether or not there was a
-   * panel to clip against. */
+   * client. Unreachable today -- a group holds no more members than the
+   * count this limit shares -- and kept as the tripwire that fires
+   * gracefully should one grow without the other. Outside the clip's own
+   * guard, so the limit binds whether or not there was a panel to clip
+   * against. */
   size_t turned = 0;
   for (const uint8_t bits : merge.transforms)
     turned += bits != 0 ? 1 : 0;
@@ -921,6 +924,12 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
 
         buffer_handle_t inter = rotate_pool_->Take(turned_w, turned_h);
         if (inter == nullptr) {
+          /* The pool's refusal and the engine's look identical from the
+           * dump; the log tells them apart, and says what was asked of a
+           * pool holding what. */
+          ALOGE("no intermediate for a turned %ux%u (pool holds %zu of %zu)",
+                turned_w, turned_h, rotate_pool_->held_slots(),
+                rotate_pool_->cap());
           turn_failed = true;
           break;
         }
@@ -980,9 +989,11 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
          * a resize past the engine's reach. A zero on an axis names the
          * first; a wild ratio names the second. */
         std::string geometry;
-        for (const auto &l : drawn) {
-          char one[64];
-          snprintf(one, sizeof(one), " %.0fx%.0f->%dx%d",
+        for (size_t i = 0; i < drawn.size(); ++i) {
+          const auto &l = drawn[i];
+          char one[80];
+          snprintf(one, sizeof(one), " [%zu:t%u] %.0fx%.0f->%dx%d", i,
+                   i < merge.transforms.size() ? merge.transforms[i] : 0,
                    l.source_right - l.source_left,
                    l.source_bottom - l.source_top,
                    l.display_right - l.display_left,

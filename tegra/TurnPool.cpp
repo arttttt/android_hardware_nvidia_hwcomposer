@@ -83,8 +83,29 @@ buffer_handle_t TurnPool::Take(uint32_t width, uint32_t height) {
     return best->handle;
   }
 
-  if (slots_.size() >= cap_)
-    return nullptr;
+  if (slots_.size() >= cap_) {
+    /* Every slot is either spoken for this frame or too small. A pool
+     * full of popup-sized slots must not starve a video's turn for as
+     * long as the scene stands -- that is the execute-refusal storm worn
+     * as a memory hat. The largest idle slot is useless to this ask and
+     * to the small asks that filled the pool, so it is given back and
+     * the ask allocated fresh; an idle slot has no future reader, by the
+     * same invariant that lets the trim free everything. Only when every
+     * slot is taken by this very frame is the ask truly refused. */
+    size_t evict = slots_.size();
+    for (size_t i = 0; i < slots_.size(); i++) {
+      if (slots_[i].taken)
+        continue;
+      if (evict == slots_.size() || slots_[i].bytes > slots_[evict].bytes)
+        evict = i;
+    }
+    if (evict == slots_.size())
+      return nullptr;
+
+    auto &allocator = GraphicBufferAllocator::get();
+    allocator.free(slots_[evict].handle);
+    slots_.erase(slots_.begin() + static_cast<long>(evict));
+  }
 
   Slot slot;
   slot.width = RoundUp(width, max_width_);

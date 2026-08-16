@@ -21,6 +21,7 @@
 
 #include <cutils/properties.h>
 
+#include <algorithm>
 #include <iterator>
 #include <utility>
 
@@ -109,6 +110,15 @@ TegraDisplayPipeline::TegraDisplayPipeline(TegraConnector &tegraConnector,
          * leaving it open would say otherwise to everything downstream. */
         if (!mScratch)
             mVic.reset();
+
+        /* The longest side a turned copy may have, told to the plane whose
+         * answer keeps such copies out of the merge -- the intermediates
+         * they land in are cut no larger. The same figure the state manager
+         * sizes its pool by, and it has to be: the plane promises only what
+         * the pool can hold. */
+        if (mScratch)
+            drm_hwcomposer::TegraPlane::SetTurnReach(
+                std::max(mScratch->width(), mScratch->height()));
     }
 
     /* After the engine, and it has to be: the state manager is handed both

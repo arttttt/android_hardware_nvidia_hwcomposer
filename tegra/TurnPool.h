@@ -77,6 +77,7 @@ class TurnPool {
   /* For the dump: what the pool is holding right now. */
   size_t held_slots() const { return slots_.size(); }
   size_t held_bytes() const;
+  size_t cap() const { return cap_; }
 
  private:
   struct Slot {

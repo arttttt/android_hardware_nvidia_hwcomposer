@@ -105,6 +105,20 @@ class TegraPlane : public Plane {
    * ladder cannot save, so the boundary errs toward refusing here. */
   static constexpr float kEngineScaleReach = 8.0F;
 
+  /* Whether resizing `src` to `dst` is past the engine's reach. The source
+   * axes are given already turned into the display's frame -- the caller
+   * that turns a layer swaps them first. One judge for the plane's own
+   * answer and for the test switch in the state manager, so the two can
+   * never drift apart when the boundary is recalibrated. */
+  static bool BeyondEngineReach(float src_w, float src_h, float dst_w,
+                                float dst_h);
+
+  /* The longest side a turned copy may have -- the intermediates it lands
+   * in are cut no larger. Told once by whoever sizes those intermediates;
+   * zero means no turning machinery exists and no such bound applies. */
+  static void SetTurnReach(uint32_t reach) { turn_reach_ = reach; }
+  static uint32_t TurnReach() { return turn_reach_; }
+
  private:
   const uint32_t index_;
   const hwc::DcHead::WindowCapabilities &caps_;
@@ -112,6 +126,7 @@ class TegraPlane : public Plane {
 
   static std::atomic<uint64_t> transform_refusals_;
   static std::atomic<uint64_t> scale_refusals_;
+  static uint32_t turn_reach_;
 };
 
 }  // namespace android::drm_hwcomposer
