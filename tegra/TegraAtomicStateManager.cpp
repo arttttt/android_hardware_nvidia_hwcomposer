@@ -28,6 +28,7 @@
 
 #include <optional>
 #include <sstream>
+#include <cstdio>
 #include <string>
 
 #include <algorithm>
@@ -747,6 +748,17 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
                                      AtomicCommitResult *out_result) {
   const auto &tegra = static_cast<const TegraAtomicRequest &>(request);
 
+  /* The previous frame's turns are settled first: the slots it took come
+   * free for this frame to take, and a long run of frames that turned
+   * nothing gives the intermediates' memory back. At the top, before any
+   * of the exits below, so every frame counts -- a frame with a remembered
+   * merge, a refused one and a powered-off one are all frames in which
+   * nothing turned. */
+  if (rotate_pool_) {
+    rotate_pool_->FrameEnd(turned_in_frame_);
+    turned_in_frame_ = false;
+  }
+
   /* Lighting the panel comes before showing anything on it: a frame posted
    * to a display that is not scanning out never appears, and nothing later
    * repeats it. Going dark is the other way round for the same reason -- the
@@ -867,11 +879,16 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         if (bits == 0)
           continue;
 
-        /* Two intermediates, made the first time a turned layer ever
-         * arrives -- on most days, never. */
-        if (!rotate_pool_)
-          rotate_pool_ = hwc::ScratchPool::Create(scratch_->width(),
-                                                  scratch_->height(), 2);
+        /* The pool object is made on the first turned layer ever -- on
+         * most days, never -- and even then owns no memory until a slot is
+         * taken. A turned crop can be as tall as the panel is, laid on its
+         * side, so each axis allows the longer of the panel's two. */
+        if (!rotate_pool_) {
+          const uint32_t reach =
+              std::max(scratch_->width(), scratch_->height());
+          rotate_pool_ = std::make_unique<hwc::TurnPool>(reach, reach,
+                                                         kMaxRotatedMembers);
+        }
 
         hwc::VicSession::Layer &l = drawn[i];
         const auto crop_w =
@@ -882,13 +899,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         const uint32_t turned_w = swaps ? crop_h : crop_w;
         const uint32_t turned_h = swaps ? crop_w : crop_h;
 
-        SharedFd never_shown;
-        buffer_handle_t inter = rotate_pool_ != nullptr
-                                    ? rotate_pool_->Next(&never_shown)
-                                    : nullptr;
-        if (inter == nullptr || turned_w == 0 || turned_h == 0 ||
-            turned_w > rotate_pool_->width() ||
-            turned_h > rotate_pool_->height()) {
+        buffer_handle_t inter = rotate_pool_->Take(turned_w, turned_h);
+        if (inter == nullptr) {
           turn_failed = true;
           break;
         }
@@ -906,6 +918,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         merges_.rotate_ns += turn_took;
         if (turn_took > merges_.rotate_ns_max)
           merges_.rotate_ns_max = turn_took;
+        turned_in_frame_ = true;
 
         l.handle = inter;
         l.source_left = 0.F;
@@ -1282,6 +1295,9 @@ std::string TegraAtomicStateManager::DumpState() {
          << " (worst " << (m.rotate_ns_max / 1000) << ")\n"
          << "  turns refused           : " << m.rotate_refused << "\n";
     }
+    if (rotate_pool_ && rotate_pool_->held_slots() != 0)
+      ss << "  intermediates held      : " << rotate_pool_->held_slots()
+         << " (" << (rotate_pool_->held_bytes() / 1024) << " KiB)\n";
     ss << "Engine over its lifetime:\n"
        << "  frames accepted         : " << vic_->composed() << "\n"
        << "  frames refused          : " << vic_->refused() << "\n"

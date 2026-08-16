@@ -28,6 +28,7 @@
 #include "display/DrmMode.h"
 #include "tegra/DcHead.h"
 #include "tegra/ScratchPool.h"
+#include "tegra/TurnPool.h"
 #include "tegra/VicSession.h"
 #include "utils/properties.h"
 
@@ -234,14 +235,21 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * write. Null together where the device was not asked for them. */
   hwc::VicSession *const vic_ = nullptr;
 
-  /* Where turned copies land: two intermediates, taken in turn, never
-   * shown -- the group's pass reads them and the panel never does. Made on
-   * the first turned layer ever, which on most days is never. The ring of
-   * two needs no fences between writes: the engine's channel serialises
-   * our passes, so the group that read an intermediate has run before the
-   * next turn rewrites it. */
-  static constexpr size_t kMaxRotatedMembers = 2;
-  std::unique_ptr<hwc::ScratchPool> rotate_pool_;
+  /* Where turned copies land -- see TurnPool for why it is its own pool
+   * and not the show pool's shape. As many turned members as the engine
+   * takes sources in a pass; the memory behind them is lazy, cut to size,
+   * and given back when nothing has turned for a while, so the cap prices
+   * a scene that actually happens, not a reservation. No fences between
+   * writes: the engine's channel serialises our passes, so the group that
+   * read an intermediate has run before the next turn rewrites it -- held
+   * by the driver's construction (serialize=true, one channel a session),
+   * and by the stock blit's own reliance on the same. */
+  static constexpr size_t kMaxRotatedMembers = hwc::VicSession::kMaxLayers;
+  std::unique_ptr<hwc::TurnPool> rotate_pool_;
+
+  /* Whether the frame being built has turned anything yet -- settled into
+   * the pool's idle accounting at the top of the next Execute. */
+  bool turned_in_frame_ = false;
   hwc::ScratchPool *const scratch_ = nullptr;
 
   bool active_ = true;
