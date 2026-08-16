@@ -402,6 +402,7 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
    * not known any earlier than here and is the whole reason for carrying the
    * handles this far. */
   std::vector<buffer_handle_t> handles(available.size(), nullptr);
+  std::vector<uint64_t> handle_ids(available.size(), 0);
 
   /* Value-initialised on purpose: the geometry fields are only assigned
    * when layers join the group, and every reader is behind a non-empty
@@ -464,6 +465,7 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
 
       handles[slot] = joining.layer.bi ? NativeHandleOf(*joining.layer.bi)
                                        : nullptr;
+      handle_ids[slot] = joining.layer.bi ? joining.layer.bi->unique_id : 0;
     }
   }
 
@@ -572,6 +574,7 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
 
   return std::make_unique<TegraAtomicRequest>(std::move(windows),
                                               std::move(handles),
+                                              std::move(handle_ids),
                                               args.composition != nullptr,
                                               args.power_mode,
                                               std::move(merge),
@@ -725,6 +728,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
    */
   std::vector<hwc::DcHead::Window> windows = tegra.GetWindows();
   const std::vector<buffer_handle_t> &handles = tegra.GetHandles();
+  const std::vector<uint64_t> &ids = tegra.GetHandleIds();
 
   /* What would not fit a window is drawn now, into a buffer of our own, and
    * the window is told to show that instead.
@@ -890,18 +894,24 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
      * did not change -- and there are as many of those passes as there are
      * windows, on a GPU the application needs for its own drawing.
      *
-     * The buffer is recognised by the handle the allocator gave it. An
-     * application draws into a chain of them in turn, so a handle coming back
-     * unchanged from one frame to the next means that layer stood still.
+     * The buffer is recognised by the allocator's unique name for it, not
+     * the handle pointer: an application draws into a chain of buffers in
+     * turn, so the same name coming back means that layer stood still --
+     * while the same ADDRESS coming back can name a different buffer
+     * entirely once the old one is freed and the allocation reused, and a
+     * stale match would show compressed memory as pixels. A buffer the
+     * platform could not name is flattened every time: unprovable is not
+     * unchanged.
      */
-    if (last_flattened_[windows[i].index] == handles[i])
+    const uint64_t id = i < ids.size() ? ids[i] : 0;
+    if (id != 0 && last_flattened_[windows[i].index] == id)
       continue;
 
     SharedFd ready;
     NvGralloc::GetInstance()->PrepareForScanout(handles[i],
                                                 windows[i].preFence, &ready);
 
-    last_flattened_[windows[i].index] = handles[i];
+    last_flattened_[windows[i].index] = id;
 
     /* Nothing handed back means nothing to wait for beyond what was already
      * being waited for, so the window keeps the fence it came with. */
@@ -1116,7 +1126,9 @@ std::string TegraAtomicStateManager::DumpState() {
          << ", nameless " << m.nameless << "\n";
     ss << "Engine over its lifetime:\n"
        << "  frames accepted         : " << vic_->composed() << "\n"
-       << "  frames refused          : " << vic_->refused() << "\n\n";
+       << "  frames refused          : " << vic_->refused() << "\n"
+       << "  turned layers refused   : " << TegraPlane::TransformRefusals()
+       << "\n\n";
   }
 
   /* Quiet when colour was never asked to change: most dumps, on a display
