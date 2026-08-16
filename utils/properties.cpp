@@ -208,7 +208,9 @@ auto Properties::CmuColorPipeline() -> bool {
 auto Properties::CalibratedColorMode() -> bool {
   /* Off unless asked for: the corrected gamut is the better picture on
    * two thirds of the sRGB volume, but it is a visible change of the
-   * display's whole character, and that is the owner's call to make. */
+   * display's whole character, and that is the owner's call to make.
+   * Read once at process start, like every switch here: changing it means
+   * restarting the composer, which restarts the client with it. */
   char value[PROPERTY_VALUE_MAX];
   property_get("vendor.hwc.colormode", value, "native");
   return strcmp(value, "srgb") == 0;

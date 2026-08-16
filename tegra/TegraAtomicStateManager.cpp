@@ -1357,13 +1357,29 @@ void TegraAtomicStateManager::ProgramColorMatrix(
     rm[8] = powf(rm[8], kDisplayGamma);
   }
 
-  /* The panel correction sits inside every framework transform: both live
-   * in linear light by this point, so the composition is a product, the
-   * correction nearest the panel. */
+  /* The panel correction is the LAST step before the panel: the framework
+   * shapes the content, the correction compensates the glass -- so the
+   * total is correction times framework, in that order. Both live in
+   * linear light by this point, so the composition is a plain product; it
+   * commutes for night's diagonals, which is why only a saturation would
+   * ever tell the orders apart -- by thirteen percent of a channel. */
   if (calibrated_home_) {
     float composed[9];
-    MultiplyCsc(rm, kPanelToSrgb, composed);
+    MultiplyCsc(kPanelToSrgb, rm, composed);
     memcpy(rm, composed, sizeof(composed));
+
+    /* The product can leave the coefficient field on extreme saturations
+     * (past roughly 1.97). Scaled down whole rather than clamped apiece:
+     * a uniform scale narrows the gamut a shade, a single clamped
+     * coefficient breaks the row sums and moves white. */
+    float peak = 0.F;
+    for (float v : rm)
+      peak = fmaxf(peak, fabsf(v));
+    if (peak > 1.99F) {
+      const float scale = 1.99F / peak;
+      for (float &v : rm)
+        v *= scale;
+    }
   }
 
   if (head_.setColorMatrix(rm, 0.F)) {
