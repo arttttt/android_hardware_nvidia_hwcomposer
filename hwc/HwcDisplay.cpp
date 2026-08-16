@@ -1626,6 +1626,9 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
           status_or_result.GetStatus().error_code);
     reusable_plan_.reset();
     MarkPlanInvalid(kAllDirty);
+    /* Asked and refused is as unjudged as never asked -- the frame put
+     * nothing on the panel, so nothing remembered of it may outlive it. */
+    GetPipe().atomic_state_manager->NoteFrameUnjudged();
     return status_or_result.GetStatus();
   }
 

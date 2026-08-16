@@ -558,21 +558,26 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
 
     /* The test switch turns the top member, machinery-watching on scenes
      * that have no turned layers of their own. After the clip, so the
-     * forced turn cannot vanish with a clipped member. */
+     * forced turn cannot vanish with a clipped member; deliberately not
+     * gated on the plane's own switch, so the turning path can be driven
+     * through any scene even while real turned layers are being
+     * refused. */
     if (ForcedTestRotation() && !merge.transforms.empty())
       merge.transforms.back() |= 4;
+  }
 
-    /* As many turns as there are intermediates to hold them, and no more:
-     * a group asking for a third is refused whole, and the ladder walks
-     * the plan the way it walks every refusal -- toward a direct window or
-     * the client. The stock composer lived with the same shape of limit. */
-    size_t turned = 0;
-    for (const uint8_t bits : merge.transforms)
-      turned += bits != 0 ? 1 : 0;
-    if (turned > kMaxRotatedMembers) {
-      merges_.rotate_refused++;
-      return nullptr;
-    }
+  /* As many turns as there are intermediates to hold them, and no more: a
+   * group asking for a third is refused whole, and the ladder walks the
+   * plan the way it walks every refusal -- toward a direct window or the
+   * client. The stock composer lived with the same shape of limit. Outside
+   * the clip's own guard, so the limit binds whether or not there was a
+   * panel to clip against. */
+  size_t turned = 0;
+  for (const uint8_t bits : merge.transforms)
+    turned += bits != 0 ? 1 : 0;
+  if (turned > kMaxRotatedMembers) {
+    merges_.rotate_refused++;
+    return nullptr;
   }
 
   /* The group's own frame of reference, found now that its members are
@@ -656,7 +661,8 @@ bool TegraAtomicStateManager::RecognisesMerge(
   if (merge.window != last_merge_window_ ||
       merge.depth != last_merge_depth_ ||
       merge.layers.size() != last_merge_sources_.size() ||
-      merge.source_ids.size() != merge.layers.size()) {
+      merge.source_ids.size() != merge.layers.size() ||
+      merge.transforms.size() != merge.layers.size()) {
     merges_.changed_shape++;
     return false;
   }
