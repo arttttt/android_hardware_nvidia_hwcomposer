@@ -261,6 +261,17 @@ int main() {
   ProbeRatio(0, 4.25F, 256, &achieved, "field 4.25 up-H");
   ProbeRatio(0, 16.0F, 256, &achieved, "exact 16 up-H");
   ProbeRatio(2, 16.0F, 256, &achieved, "exact 16 up-V");
+  {
+    /* Both axes at the boundary at once: the guard judges the axes one by
+     * one, so an engine that refused the pairing while taking each axis
+     * alone would slip a storm through it. */
+    const NvRectF32 s_up = {0, 0, 128.0F, 128.0F};
+    const NvRect d_up = {0, 0, 2048, 2048};
+    Probe(s_up, d_up, "dual exact 16 up");
+    const NvRectF32 s_down = {0, 0, 2048.0F, 2048.0F};
+    const NvRect d_down = {0, 0, 128, 128};
+    Probe(s_down, d_down, "dual exact 16 down");
+  }
   ProbeRatio(1, 32.0F, 256, &achieved, "single 32 down-H");
   ProbeRatio(3, 32.0F, 256, &achieved, "single 32 down-V");
   {
