@@ -222,7 +222,12 @@ class VicSession {
                            const void *) = nullptr;
   void (*configure_blending_)(void *, void *, uint32_t, int, float) = nullptr;
   int (*configure_clear_rects_)(void *, void *) = nullptr;
-  int (*configure_transform_)(void *, void *, uint32_t) = nullptr;
+
+  /* Returns nothing -- the leaked header declares it void, and reading a
+   * result out of a void call is reading a scratch register: it once made
+   * every turn look refused. Any objection to the transform surfaces at
+   * configure time instead. */
+  void (*configure_transform_)(void *, void *, uint32_t) = nullptr;
 };
 
 }  // namespace hwc

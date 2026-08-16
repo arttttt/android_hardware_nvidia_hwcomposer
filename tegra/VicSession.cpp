@@ -462,10 +462,7 @@ drm_hwcomposer::SharedFd VicSession::ComposeRotated(
    * way. */
   configure_blending_(session_, config, 0, kAlphaIgnore, 1.0F);
 
-  if (configure_transform_(session_, config, transform) != kNvSuccess) {
-    refused_++;
-    return {};
-  }
+  configure_transform_(session_, config, transform);
 
   configure_clear_rects_(session_, config);
 
