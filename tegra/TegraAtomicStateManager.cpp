@@ -110,15 +110,6 @@ uint32_t VicTransformFor(uint8_t bits) {
   return kTable[bits & 7];
 }
 
-/* Whether a turned member is drawn as its turned self at all. Off puts the
- * step-one behaviour back -- the merging plane refuses turned layers -- for
- * an A/B on one binary. */
-bool MergeRotationWanted() {
-  static const bool wanted = property_get_bool("vendor.hwc.merge.rotate",
-                                               1) != 0;
-  return wanted;
-}
-
 /* Forces a quarter turn onto the top member of every merge, so that the
  * turning machinery can be watched on a scene that has no turned layers of
  * its own -- which is every scene this tablet usually shows. A test
