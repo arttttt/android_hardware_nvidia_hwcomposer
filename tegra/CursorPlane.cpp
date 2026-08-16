@@ -16,6 +16,8 @@
 
 #include "tegra/CursorPlane.h"
 
+#include <atomic>
+
 #include <drm_fourcc.h>
 
 #include "compositor/LayerData.h"
@@ -24,7 +26,21 @@
 
 namespace android::drm_hwcomposer {
 
+namespace {
+std::atomic<uint64_t> asked{0};
+std::atomic<uint64_t> taken{0};
+}  // namespace
+
+uint64_t TegraCursorPlane::Asked() {
+  return asked.load(std::memory_order_relaxed);
+}
+
+uint64_t TegraCursorPlane::Taken() {
+  return taken.load(std::memory_order_relaxed);
+}
+
 bool TegraCursorPlane::IsValidForLayer(const LayerData *layer) {
+  asked.fetch_add(1, std::memory_order_relaxed);
   if (layer == nullptr || !layer->bi || layer->bi->handle == nullptr)
     return false;
 
@@ -70,6 +86,7 @@ bool TegraCursorPlane::IsValidForLayer(const LayerData *layer) {
     return false;
   }
 
+  taken.fetch_add(1, std::memory_order_relaxed);
   return true;
 }
 

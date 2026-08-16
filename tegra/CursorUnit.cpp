@@ -303,9 +303,7 @@ void CursorUnit::Rearm() {
 
 void CursorUnit::AppendDump(std::ostream &ss) const {
   std::lock_guard<std::mutex> guard(lock_);
-  if (moves_ == 0 && uploads_ == 0 && refused_ == 0)
-    return;
-  ss << "Cursor unit:\n"
+  ss << "Cursor unit (claimed):\n"
      << "  async moves served      : " << moves_ << "\n"
      << "  sprite uploads          : " << uploads_ << "\n"
      << "  refusals                : " << refused_ << "\n"

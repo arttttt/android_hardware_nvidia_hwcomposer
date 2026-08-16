@@ -51,6 +51,12 @@ class TegraCursorPlane : public Plane {
   uint32_t GetId() const override {
     return kPlaneId;
   }
+
+  /* How often the planner offered the seat a layer, and how often the
+   * seat agreed. The pair that says where a pointer that never reaches
+   * the unit is being lost. */
+  static uint64_t Asked();
+  static uint64_t Taken();
 };
 
 }  // namespace android::drm_hwcomposer

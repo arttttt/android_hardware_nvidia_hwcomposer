@@ -1405,6 +1405,10 @@ std::string TegraAtomicStateManager::DumpState() {
   ss << "Frames committed          : " << frames_executed_ << "\n";
   if (cursor_ != nullptr) {
     cursor_->AppendDump(ss);
+    ss << "  seat asked / agreed     : " << TegraCursorPlane::Asked()
+       << " / " << TegraCursorPlane::Taken() << "\n";
+  } else {
+    ss << "Cursor unit               : not claimed\n";
   }
 
   /* Quiet when colour was never asked to change: most dumps, on a display
