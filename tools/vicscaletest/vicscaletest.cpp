@@ -259,6 +259,8 @@ int main() {
   for (int d = 1; d < 4; d++)
     ProbeRatio(d, 1.0F, 256, &achieved, "identity");
   ProbeRatio(0, 4.25F, 256, &achieved, "field 4.25 up-H");
+  ProbeRatio(0, 16.0F, 256, &achieved, "exact 16 up-H");
+  ProbeRatio(2, 16.0F, 256, &achieved, "exact 16 up-V");
   ProbeRatio(1, 32.0F, 256, &achieved, "single 32 down-H");
   ProbeRatio(3, 32.0F, 256, &achieved, "single 32 down-V");
   {
