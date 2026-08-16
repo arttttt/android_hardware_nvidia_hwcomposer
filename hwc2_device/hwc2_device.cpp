@@ -1285,6 +1285,19 @@ static int32_t SetLayerBuffer(hwc2_device_t *device, hwc2_display_t display,
   GET_DISPLAY(display);
   GET_LAYER(layer);
 
+  /* A null handle is a fact of this protocol, not a caller's mistake: the
+   * command carries a slot, and a null says "the buffer you cached there".
+   * The service layer resolves the slot before the call lands here -- but a
+   * cache it cannot resolve from, such as a composer freshly restarted under
+   * a client that remembers its slots as seeded, hands the null through.
+   * The client target's twin of this call has held the same guard all
+   * along; this one lost it between the two eras of the entry point, and a
+   * first boot found it: one null, one dereference, and the composer and
+   * SurfaceFlinger took each other down in a loop. */
+  if (buffer == nullptr) {
+    return 0;
+  }
+
   auto h2l = GetHwc2DeviceLayer(*ilayer);
 
   auto lp = h2l->HandleNextBuffer(buffer, acquire_fence,
