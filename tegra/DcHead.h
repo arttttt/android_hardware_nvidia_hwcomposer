@@ -197,6 +197,14 @@ public:
      */
     int setVBlankReporting(bool enabled);
 
+    /* The head's own descriptor, for the one client of the extension that
+     * is not a window: the cursor unit is claimed and driven through the
+     * same file the flips go through, and the kernel grants it per
+     * descriptor. Borrowed; the head outlives every borrower here. */
+    int fd() const {
+        return mFd.get();
+    }
+
     /* Posts one frame.
      *
      * Returns 0 and, in `outPostFence`, a fence that fires once the frame is

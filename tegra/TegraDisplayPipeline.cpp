@@ -121,12 +121,21 @@ TegraDisplayPipeline::TegraDisplayPipeline(TegraConnector &tegraConnector,
                 std::max(mScratch->width(), mScratch->height()));
     }
 
+    /* The controller's own cursor, claimed through the head's descriptor.
+     * Independent of the engine on purpose: a pointer is cheap precisely
+     * because it involves no composition, and a device with no engine
+     * deserves it all the more. */
+    mCursorUnit = CursorUnit::Claim(mHead->fd());
+    if (mCursorUnit)
+        mCursorPlane = std::make_unique<drm_hwcomposer::TegraCursorPlane>();
+
     /* After the engine, and it has to be: the state manager is handed both
      * and would otherwise be handed nothing on the very boot where they were
      * wanted. */
     atomic_state_manager =
         std::make_unique<drm_hwcomposer::TegraAtomicStateManager>(
-            *mHead, tegraConnector.GetModes(), mVic.get(), mScratch.get());
+            *mHead, tegraConnector.GetModes(), mVic.get(), mScratch.get(),
+            mCursorUnit.get());
 
     /* The planner is not built here. Which one runs is a decision the backend
      * makes from a property, and a pipeline has no business overriding it. */
@@ -233,9 +242,22 @@ drm_hwcomposer::UsablePlanes TegraDisplayPipeline::GetUsablePlanes() const {
         if (plane->IsCursorCandidate() && mVic && mScratch)
             plane->SetMerging();
 
-        if (!plane->IsCursorCandidate() || plane->IsMerging())
+        /* With the cursor unit claimed, the narrow window is never the
+         * cursor's seat: the unit is the better cursor by construction, and
+         * the window -- when the engine has not taken it -- goes into the
+         * ordinary list to answer for what its capabilities honestly
+         * allow. */
+        if (!plane->IsCursorCandidate() || plane->IsMerging() || mCursorUnit)
             usable.first.push_back(std::move(binding));
         else if (!usable.second)
+            usable.second = std::move(binding);
+    }
+
+    /* The unit takes the cursor seat itself, wearing the adapter that
+     * answers the planner's one question. */
+    if (mCursorPlane && !usable.second) {
+        auto binding = mCursorPlane->BindPipeline(this, true);
+        if (binding)
             usable.second = std::move(binding);
     }
 

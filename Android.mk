@@ -152,6 +152,8 @@ LOCAL_SRC_FILES := \
     tegra/TegraBackend.cpp \
     tegra/TegraDevice.cpp \
     tegra/TegraFormat.cpp \
+    tegra/CursorPlane.cpp \
+    tegra/CursorUnit.cpp \
     tegra/TegraPlane.cpp \
     tegra/FbDevice.cpp \
     tegra/TegraDisplayPipeline.cpp \

@@ -21,6 +21,8 @@
 #include <vector>
 
 #include "display/DisplayPipeline.h"
+#include "tegra/CursorPlane.h"
+#include "tegra/CursorUnit.h"
 #include "tegra/DcHead.h"
 #include "tegra/FbDevice.h"
 #include "tegra/TegraConnector.h"
@@ -97,6 +99,12 @@ private:
      * display rather than to a frame, and what a planner is handed points at
      * these. Mutable because being asked is not a change worth calling one. */
     mutable std::vector<std::unique_ptr<drm_hwcomposer::TegraPlane>> mPlanes;
+
+    /* The controller's own cursor and the costume it wears for the
+     * planner. Null together on a head whose cursor another descriptor
+     * already holds. */
+    std::unique_ptr<CursorUnit> mCursorUnit;
+    std::unique_ptr<drm_hwcomposer::TegraCursorPlane> mCursorPlane;
 };
 
 }  // namespace hwc

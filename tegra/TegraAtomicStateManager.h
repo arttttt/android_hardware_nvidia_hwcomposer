@@ -27,6 +27,7 @@
 #include "display/AtomicStateManager.h"
 #include "display/DrmMode.h"
 #include "tegra/DcHead.h"
+#include "tegra/CursorUnit.h"
 #include "tegra/ScratchPool.h"
 #include "tegra/TurnPool.h"
 #include "tegra/VicSession.h"
@@ -89,6 +90,22 @@ class TegraAtomicRequest : public AtomicRequest {
     uint32_t depth;
   };
 
+  /* The one small thing the controller's own cursor is to show, if
+   * anything. Absent on every frame without a pointer, which is most of
+   * them. Uninitialised for the same reason as the Merge fields above --
+   * value-initialisation zeroes them where the request is built. */
+  struct Cursor {
+    bool present;
+    buffer_handle_t handle;
+    uint64_t id;
+    uint32_t width;
+    uint32_t height;
+    uint32_t stride_px;
+    bool premultiplied;
+    int32_t x;
+    int32_t y;
+  };
+
   TegraAtomicRequest(std::vector<hwc::DcHead::Window> windows,
                      std::vector<buffer_handle_t> handles,
                      std::vector<uint64_t> handle_ids,
@@ -96,18 +113,24 @@ class TegraAtomicRequest : public AtomicRequest {
                      std::optional<PowerMode> power_mode,
                      Merge merge = {},
                      std::shared_ptr<const HalColorTransformMatrix>
-                         color_matrix = nullptr)
+                         color_matrix = nullptr,
+                     Cursor cursor = {})
       : windows_(std::move(windows)),
         handles_(std::move(handles)),
         handle_ids_(std::move(handle_ids)),
         has_composition_(has_composition),
         power_mode_(power_mode),
         merge_(std::move(merge)),
-        color_matrix_(std::move(color_matrix)) {
+        color_matrix_(std::move(color_matrix)),
+        cursor_(cursor) {
   }
 
   const Merge &GetMerge() const {
     return merge_;
+  }
+
+  const Cursor &GetCursor() const {
+    return cursor_;
   }
 
   /* The colour transform this frame is to be shown under, or null where the
@@ -164,6 +187,7 @@ class TegraAtomicRequest : public AtomicRequest {
   const std::optional<PowerMode> power_mode_;
   const Merge merge_;
   const std::shared_ptr<const HalColorTransformMatrix> color_matrix_;
+  const Cursor cursor_;
 };
 
 /* Turns plans into frames on this controller.
@@ -174,13 +198,17 @@ class TegraAtomicRequest : public AtomicRequest {
  */
 class TegraAtomicStateManager : public AtomicStateManager {
  public:
-  /* All four belong to the pipeline and outlive this. `vic` and `scratch` are
-   * null together on a device that was not asked for the image compositor,
-   * which is every device by default; nothing then reaches the merge. */
+  /* All five belong to the pipeline and outlive this. `vic` and `scratch`
+   * are null together on a device that was not asked for the image
+   * compositor, which is every device by default; nothing then reaches the
+   * merge. `cursor` is null on a head whose cursor another descriptor
+   * holds, and the cursor seat is then simply never offered. */
   TegraAtomicStateManager(hwc::DcHead &head,
                           const std::vector<DrmMode> &modes,
-                          hwc::VicSession *vic, hwc::ScratchPool *scratch)
-      : head_(head), modes_(modes), vic_(vic), scratch_(scratch) {
+                          hwc::VicSession *vic, hwc::ScratchPool *scratch,
+                          hwc::CursorUnit *cursor)
+      : head_(head), modes_(modes), vic_(vic), scratch_(scratch),
+        cursor_(cursor) {
     count_fences_ = CountFencesFromProperty();
     throttle_to_one_frame_ = ThrottleFromProperty();
     report_engine_reads_ = EngineReadsFromProperty();
@@ -213,6 +241,14 @@ class TegraAtomicStateManager : public AtomicStateManager {
 
   void NoteFrameUnjudged() override {
     ForgetMerge();
+  }
+
+  /* Moves the hardware cursor, if this head has one and it is showing.
+   * Arrives from the framework between frames, at the pointer's own rate;
+   * touches nothing a frame owns, which is the whole point of the unit. */
+  void MoveCursor(int32_t x, int32_t y) override {
+    if (cursor_ != nullptr)
+      cursor_->Move(x, y);
   }
 
  private:
@@ -250,6 +286,18 @@ class TegraAtomicStateManager : public AtomicStateManager {
   /* Whether the frame being built has turned anything yet -- settled into
    * the pool's idle accounting at the top of the next Execute. */
   bool turned_in_frame_ = false;
+
+  /* The controller's cursor, or null where another descriptor holds it.
+   * Whether the previous frame showed it, so a frame without a pointer
+   * hides the sprite exactly once -- the unit draws independently of
+   * frames, and a sprite nobody hides outlives its scene. */
+  hwc::CursorUnit *const cursor_ = nullptr;
+  bool cursor_shown_ = false;
+
+  /* Frames actually committed, whatever they carried. The counter the
+   * cursor's whole promise is judged by: a moving pointer on a still
+   * desktop must leave this exactly where it was. */
+  uint64_t frames_executed_ = 0;
   hwc::ScratchPool *const scratch_ = nullptr;
 
   bool active_ = true;

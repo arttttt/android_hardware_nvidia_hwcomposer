@@ -151,6 +151,12 @@ class AtomicStateManager {
    * a manager that remembers nothing has nothing to forget. */
   virtual void NoteFrameUnjudged() {
   }
+
+  /* The framework moving the hardware cursor between frames, at the
+   * pointer's own rate. No-op by default: most hardware has no cursor of
+   * its own, and a manager without one has nothing to move. */
+  virtual void MoveCursor(int32_t /*x*/, int32_t /*y*/) {
+  }
 };
 
 }  // namespace android::drm_hwcomposer

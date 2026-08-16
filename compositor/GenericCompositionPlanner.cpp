@@ -130,6 +130,10 @@ auto GenericCompositionPlanner::ValidateDisplay(
   const auto* cursor_layer = GetCursorLayer(layers);
   const auto cursor_plane = display->GetCursorPlane();
   if (cursor_layer != nullptr && cursor_plane != nullptr &&
+      // A hardware cursor draws over every plane unconditionally, so the
+      // cursor layer must be the topmost layer of the scene -- anything
+      // meant to be above it would be drawn under it otherwise.
+      !layers.empty() && layers.back() == cursor_layer &&
       !IsClientLayer(display, cursor_layer) &&
       cursor_plane->Get()->IsValidForLayer(&cursor_layer->GetLayerData()) &&
       // TODO: Add a check for cursor plane color transform support.

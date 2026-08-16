@@ -16,6 +16,7 @@
 
 #include "tegra/TegraAtomicStateManager.h"
 
+#include "tegra/CursorPlane.h"
 #include "tegra/TegraPlane.h"
 
 #include <errno.h>
@@ -449,6 +450,7 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
    * guard today -- but an invariant that lives in guards alone is one
    * refactor from undefined reads, and zeroes cost nothing here. */
   TegraAtomicRequest::Merge merge{};
+  TegraAtomicRequest::Cursor cursor{};
 
   const int32_t panel_w =
       modes_.empty() ? 0
@@ -465,6 +467,27 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
         continue;
 
       const uint32_t plane_id = joining.plane->Get()->GetId();
+
+      /* The cursor's binding names no window: what it carries is set aside
+       * whole and told to the unit when the frame is executed. */
+      if (plane_id == TegraCursorPlane::kPlaneId) {
+        const auto &l = joining.layer;
+        if (l.bi && l.pi.display_frame.i_rect) {
+          cursor.present = true;
+          cursor.handle = NativeHandleOf(*l.bi);
+          cursor.id = l.bi->unique_id;
+          cursor.width =
+              static_cast<uint32_t>(l.pi.display_frame.i_rect->Width());
+          cursor.height =
+              static_cast<uint32_t>(l.pi.display_frame.i_rect->Height());
+          cursor.stride_px = l.bi->pitches[0] / 4;
+          cursor.premultiplied =
+              l.bi->blend_mode == BufferBlendMode::kPreMult;
+          cursor.x = l.pi.display_frame.i_rect->left;
+          cursor.y = l.pi.display_frame.i_rect->top;
+        }
+        continue;
+      }
 
       auto it = std::find(available.begin(), available.end(), plane_id);
       if (it == available.end()) {
@@ -667,7 +690,8 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
                                               args.composition != nullptr,
                                               args.power_mode,
                                               std::move(merge),
-                                              args.color_matrix);
+                                              args.color_matrix,
+                                              cursor);
 }
 
 bool TegraAtomicStateManager::Test(const AtomicRequest &request) {
@@ -1133,6 +1157,25 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
 
   const int64_t after_flatten = NowNs();
 
+  /* The pointer, before the frame: the unit latches on the same blank the
+   * flip aims at, so telling it first puts sprite and frame up together.
+   * Hiding is a duty owed the moment the pointer leaves the scene -- the
+   * unit draws independently of frames, and a sprite nobody hides
+   * outlives everything. A refused Show simply leaves this frame without
+   * the unit; the layer goes back through the ordinary negotiation next
+   * frame. */
+  if (cursor_ != nullptr) {
+    const auto &point = tegra.GetCursor();
+    if (point.present) {
+      cursor_shown_ = cursor_->Show(point.handle, point.id, point.width,
+                                    point.height, point.stride_px,
+                                    point.premultiplied, point.x, point.y);
+    } else if (cursor_shown_) {
+      cursor_->Hide();
+      cursor_shown_ = false;
+    }
+  }
+
   const int64_t before_flip = NowNs();
 
   hwc::UniqueFd post_fence;
@@ -1151,6 +1194,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
     }
     return err;
   }
+
+  frames_executed_++;
 
   /* Said even when the flip failed would be wrong -- nothing is showing that
    * buffer then, and holding it back would cost a frame for nothing. Said
@@ -1353,6 +1398,13 @@ std::string TegraAtomicStateManager::DumpState() {
        << "\n"
        << "  scaled beyond its reach : " << TegraPlane::ScaleRefusals()
        << " (limit " << TegraPlane::kEngineScaleReach << "x)\n\n";
+  }
+
+  /* The number the cursor's whole promise is judged by: a pointer moving
+   * over a still desktop must leave it exactly where it was. */
+  ss << "Frames committed          : " << frames_executed_ << "\n";
+  if (cursor_ != nullptr) {
+    cursor_->AppendDump(ss);
   }
 
   /* Quiet when colour was never asked to change: most dumps, on a display
@@ -1636,6 +1688,13 @@ int TegraAtomicStateManager::SetPowered(bool powered) {
     return err;
 
   active_ = powered;
+
+  /* A blanked head refuses cursor calls and a lit one remembers none of
+   * them, so the sprite is re-stated the moment the light comes back --
+   * the same discipline the colour state keeps. */
+  if (powered && cursor_ != nullptr && cursor_shown_)
+    cursor_->Rearm();
+
   return 0;
 }
 

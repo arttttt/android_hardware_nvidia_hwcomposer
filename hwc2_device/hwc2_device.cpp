@@ -1314,11 +1314,20 @@ static int32_t SetLayerDataspace(hwc2_device_t *device, hwc2_display_t display,
   return 0;
 }
 
-static int32_t SetCursorPosition(hwc2_device_t * /*device*/,
-                                 hwc2_display_t /*display*/,
-                                 hwc2_layer_t /*layer*/, int32_t /*x*/,
-                                 int32_t /*y*/) {
+static int32_t SetCursorPosition(hwc2_device_t *device,
+                                 hwc2_display_t display, hwc2_layer_t layer,
+                                 int32_t x, int32_t y) {
   ALOGV("SetCursorPosition");
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+  GET_LAYER(layer);
+  (void)ilayer;
+
+  /* The framework only sends these for a layer whose validated type was
+   * Cursor, so a call arriving here is a pointer the hardware cursor is
+   * already showing -- the position goes straight to it, and no frame is
+   * asked for. */
+  idisplay->GetPipe().atomic_state_manager->MoveCursor(x, y);
   return 0;
 }
 
