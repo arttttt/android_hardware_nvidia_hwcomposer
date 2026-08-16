@@ -16,6 +16,7 @@
 
 #include "tegra/TegraPlane.h"
 
+#include <cutils/properties.h>
 #include <tegra_dc_ext.h>
 
 #include "compositor/LayerData.h"
@@ -46,19 +47,20 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
       return false;
     }
 
-    /* And one thing the engine cannot do at all: turn a layer. Its
-     * transform is a single setting over the whole composition -- this
-     * generation offers no other -- so a member needing a flip or a
-     * quarter turn would be drawn lying on its side and shown that way.
-     * Refused here, the layer finds a window that turns it, or the GPU,
-     * both of which show it right. The stock composer went further and
-     * turned layers with the 2D engine on the way into its scratch; the
-     * refusals counted here are what decide whether that stage is ever
-     * worth building. */
+    /* A turned member is taken now: it is drawn turned into an
+     * intermediate by a pass of the engine's own before the group
+     * composes, the way the stock composer turned layers on the way into
+     * its scratch. The switch puts the refusal back -- turned layers go
+     * to a window that turns them, or the GPU -- for an A/B on one
+     * binary; the counter keeps the tally of what the refusal costs. */
     if (pi.transform.hflip || pi.transform.vflip || pi.transform.rotate90) {
-      transform_refusals_.fetch_add(1, std::memory_order_relaxed);
-      ALOGV("plane %u: the engine will not turn a layer", index_);
-      return false;
+      static const bool turn_in_merge =
+          property_get_bool("vendor.hwc.merge.rotate", 1) != 0;
+      if (!turn_in_merge) {
+        transform_refusals_.fetch_add(1, std::memory_order_relaxed);
+        ALOGV("plane %u: the engine will not turn a layer", index_);
+        return false;
+      }
     }
     return true;
   }

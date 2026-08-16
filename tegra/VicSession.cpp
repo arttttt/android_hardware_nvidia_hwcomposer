@@ -207,7 +207,9 @@ bool VicSession::Resolve() {
          ResolveOne(vic_library_, "NvDdkVicConfigureBlending",
                     &configure_blending_) &&
          ResolveOne(vic_library_, "NvDdkVicConfigureClearRects",
-                    &configure_clear_rects_);
+                    &configure_clear_rects_) &&
+         ResolveOne(vic_library_, "NvDdkVicConfigureTransform",
+                    &configure_transform_);
 }
 
 VicSession::~VicSession() {
@@ -380,6 +382,123 @@ drm_hwcomposer::SharedFd VicSession::Compose(
      * anyone when it finishes was lost. Nothing can be done with a result
      * whose completion cannot be waited on, so it counts as a refusal. */
     ALOGE("the merge has no fence; dropping it");
+    refused_++;
+    return {};
+  }
+
+  composed_++;
+  return drm_hwcomposer::MakeSharedFd(fd);
+}
+
+drm_hwcomposer::SharedFd VicSession::ComposeRotated(
+    buffer_handle_t target, const Layer &layer, uint32_t transform,
+    uint32_t width, uint32_t height, int target_ready) {
+  auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
+  if (gralloc == nullptr || width == 0 || height == 0) {
+    refused_++;
+    return {};
+  }
+
+  const void *target_surfaces = nullptr;
+  size_t target_count = 0;
+  if (!gralloc->GetRawSurfaces(target, &target_surfaces, &target_count) ||
+      target_count != 1) {
+    refused_++;
+    return {};
+  }
+
+  drm_hwcomposer::NvGralloc::Surface target_surface{};
+  if (!gralloc->DescribeSurface(target, &target_surface) ||
+      width > target_surface.width || height > target_surface.height) {
+    refused_++;
+    return {};
+  }
+
+  std::memset(config_.data(), 0, config_.size());
+  void *config = config_.data();
+
+  /* The caller sized this to the turned crop: the destination is given in
+   * the turned geometry -- the axis swap is the caller's, as the engine's
+   * contract has it -- and the engine turns its reading of the source to
+   * fill it. */
+  const NvRect target_rect = {
+      .left = 0,
+      .top = 0,
+      .right = static_cast<int32_t>(width),
+      .bottom = static_cast<int32_t>(height),
+  };
+
+  if (configure_target_(session_, config, target_surfaces,
+                        static_cast<uint32_t>(target_count),
+                        &target_rect) != kNvSuccess) {
+    refused_++;
+    return {};
+  }
+
+  const void *surfaces = nullptr;
+  size_t count = 0;
+  if (!gralloc->GetRawSurfaces(layer.handle, &surfaces, &count) ||
+      count != 1) {
+    refused_++;
+    return {};
+  }
+
+  const NvRectF32 source = {
+      .left = layer.source_left,
+      .top = layer.source_top,
+      .right = layer.source_right,
+      .bottom = layer.source_bottom,
+  };
+
+  if (configure_source_(session_, config, 0, surfaces,
+                        static_cast<uint32_t>(count), &source,
+                        &target_rect) != kNvSuccess) {
+    refused_++;
+    return {};
+  }
+
+  /* A verbatim copy: alpha rides into the intermediate untouched and is
+   * honoured by the pass that composes it. The stock blit copied the same
+   * way. */
+  configure_blending_(session_, config, 0, kAlphaIgnore, 1.0F);
+
+  if (configure_transform_(session_, config, transform) != kNvSuccess) {
+    refused_++;
+    return {};
+  }
+
+  configure_clear_rects_(session_, config);
+
+  if (configure_(session_, config) != kNvSuccess) {
+    refused_++;
+    return {};
+  }
+
+  ExecParameters exec = {};
+  exec.output = target_surfaces;
+  exec.inputs[0][0] = surfaces;
+
+  std::vector<NvRmFence> waits;
+  if (target_ready >= 0 && !AppendWaits(fence_from_fd_, target_ready, waits)) {
+    refused_++;
+    return {};
+  }
+  if (layer.acquire_fence >= 0 &&
+      !AppendWaits(fence_from_fd_, layer.acquire_fence, waits)) {
+    refused_++;
+    return {};
+  }
+
+  NvRmFence done = {};
+  if (execute_(session_, &exec, waits.empty() ? nullptr : waits.data(),
+               static_cast<uint32_t>(waits.size()), &done) != kNvSuccess) {
+    refused_++;
+    return {};
+  }
+
+  int32_t fd = -1;
+  if (fence_to_fd_("hwc-vic", &done, 1, &fd) != kNvSuccess || fd < 0) {
+    ALOGE("the turned copy has no fence; dropping it");
     refused_++;
     return {};
   }

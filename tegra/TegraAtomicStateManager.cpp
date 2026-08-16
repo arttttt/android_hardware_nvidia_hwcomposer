@@ -81,6 +81,54 @@ int64_t NowNs() {
   return (static_cast<int64_t>(ts.tv_sec) * 1000000000) + ts.tv_nsec;
 }
 
+/* The framework's transform, as bits: hflip | vflip << 1 | rotate90 << 2 --
+ * the same encoding the platform's own enum uses. */
+uint8_t TransformBits(const LayerTransform &t) {
+  return static_cast<uint8_t>((t.hflip ? 1 : 0) | (t.vflip ? 2 : 0) |
+                              (t.rotate90 ? 4 : 0));
+}
+
+/* The engine's code for each framework transform.
+ *
+ * Copied from the stock translation, entry for entry, because two of its
+ * rows cannot be derived: the rotations INVERT -- the framework counts
+ * clockwise and the engine's names count the other way, so ROT_90 is the
+ * engine's Rotate270 -- and the two three-bit composites land on the
+ * OPPOSITE transposes than the order of application suggests. The stock
+ * table is the only authority; both traps are its verbatim case lines. */
+uint32_t VicTransformFor(uint8_t bits) {
+  static constexpr uint32_t kTable[8] = {
+      0, /* identity   -- never sent */
+      1, /* FLIP_H     -> FlipX */
+      2, /* FLIP_V     -> FlipY */
+      3, /* ROT_180    -> Rot180 */
+      6, /* ROT_90     -> Rot270: directions invert */
+      7, /* FH|ROT_90  -> InvTranspose */
+      5, /* ROT_270    -> Rot90: directions invert */
+      4, /* FV|ROT_90  -> Transpose */
+  };
+  return kTable[bits & 7];
+}
+
+/* Whether a turned member is drawn as its turned self at all. Off puts the
+ * step-one behaviour back -- the merging plane refuses turned layers -- for
+ * an A/B on one binary. */
+bool MergeRotationWanted() {
+  static const bool wanted = property_get_bool("vendor.hwc.merge.rotate",
+                                               1) != 0;
+  return wanted;
+}
+
+/* Forces a quarter turn onto the top member of every merge, so that the
+ * turning machinery can be watched on a scene that has no turned layers of
+ * its own -- which is every scene this tablet usually shows. A test
+ * switch, off unless asked for, read once. */
+bool ForcedTestRotation() {
+  static const bool wanted = property_get_bool("vendor.hwc.test.rotate",
+                                               0) != 0;
+  return wanted;
+}
+
 /* When a fence came due, or nothing if it has not yet.
  *
  * Read rather than waited on: the question is whether it was due by a given
@@ -455,6 +503,7 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
         merge.source_ids.push_back(joining.layer.bi
                                        ? joining.layer.bi->unique_id
                                        : 0);
+        merge.transforms.push_back(TransformBits(joining.layer.pi.transform));
         continue;
       }
 
@@ -509,10 +558,30 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
 
       merge.layers[kept] = l;
       merge.source_ids[kept] = merge.source_ids[i];
+      merge.transforms[kept] = merge.transforms[i];
       ++kept;
     }
     merge.layers.resize(kept);
     merge.source_ids.resize(kept);
+    merge.transforms.resize(kept);
+
+    /* The test switch turns the top member, machinery-watching on scenes
+     * that have no turned layers of their own. After the clip, so the
+     * forced turn cannot vanish with a clipped member. */
+    if (ForcedTestRotation() && !merge.transforms.empty())
+      merge.transforms.back() |= 4;
+
+    /* As many turns as there are intermediates to hold them, and no more:
+     * a group asking for a third is refused whole, and the ladder walks
+     * the plan the way it walks every refusal -- toward a direct window or
+     * the client. The stock composer lived with the same shape of limit. */
+    size_t turned = 0;
+    for (const uint8_t bits : merge.transforms)
+      turned += bits != 0 ? 1 : 0;
+    if (turned > kMaxRotatedMembers) {
+      merges_.rotate_refused++;
+      return nullptr;
+    }
   }
 
   /* The group's own frame of reference, found now that its members are
@@ -643,6 +712,10 @@ bool TegraAtomicStateManager::RecognisesMerge(
       merges_.changed_blend++;
       return false;
     }
+    if (merge.transforms[i] != s.transform) {
+      merges_.changed_transform++;
+      return false;
+    }
   }
 
   return true;
@@ -661,7 +734,8 @@ void TegraAtomicStateManager::RememberMerge(
         MergedSource{named ? merge.source_ids[i] : 0, l.source_left,
                      l.source_top, l.source_right, l.source_bottom,
                      l.display_left, l.display_top, l.display_right,
-                     l.display_bottom, l.premultiplied, l.alpha});
+                     l.display_bottom, l.premultiplied, l.alpha,
+                     merge.transforms[i]});
   }
 
   last_merge_window_ = merge.window;
@@ -780,8 +854,84 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         return -EBUSY;
       }
 
+      /* Turned members first: each is drawn turned into an intermediate by
+       * a pass of its own, and the group then reads the intermediate as an
+       * ordinary source, its acquire fence the turn's completion. The turn
+       * swallows the whole transform -- the stock composer sometimes left
+       * a window a remainder, but this window turns nothing, so the
+       * remainder is always nought. The group is remembered under its
+       * ORIGINAL sources and transforms: the intermediate is a stage prop,
+       * not an identity. */
+      std::vector<hwc::VicSession::Layer> drawn = merge.layers;
+      std::vector<SharedFd> turned_fences;
+      bool turn_failed = false;
+      for (size_t i = 0; i < drawn.size(); ++i) {
+        const uint8_t bits = merge.transforms[i];
+        if (bits == 0)
+          continue;
+
+        /* Two intermediates, made the first time a turned layer ever
+         * arrives -- on most days, never. */
+        if (!rotate_pool_)
+          rotate_pool_ = hwc::ScratchPool::Create(scratch_->width(),
+                                                  scratch_->height(), 2);
+
+        hwc::VicSession::Layer &l = drawn[i];
+        const auto crop_w =
+            static_cast<uint32_t>(ceilf(l.source_right - l.source_left));
+        const auto crop_h =
+            static_cast<uint32_t>(ceilf(l.source_bottom - l.source_top));
+        const bool swaps = (bits & 4) != 0;
+        const uint32_t turned_w = swaps ? crop_h : crop_w;
+        const uint32_t turned_h = swaps ? crop_w : crop_h;
+
+        SharedFd never_shown;
+        buffer_handle_t inter = rotate_pool_ != nullptr
+                                    ? rotate_pool_->Next(&never_shown)
+                                    : nullptr;
+        if (inter == nullptr || turned_w == 0 || turned_h == 0 ||
+            turned_w > rotate_pool_->width() ||
+            turned_h > rotate_pool_->height()) {
+          turn_failed = true;
+          break;
+        }
+
+        const int64_t before_turn = NowNs();
+        SharedFd done = vic_->ComposeRotated(inter, l, VicTransformFor(bits),
+                                             turned_w, turned_h);
+        const int64_t turn_took = NowNs() - before_turn;
+        if (!done) {
+          turn_failed = true;
+          break;
+        }
+
+        merges_.rotated++;
+        merges_.rotate_ns += turn_took;
+        if (turn_took > merges_.rotate_ns_max)
+          merges_.rotate_ns_max = turn_took;
+
+        l.handle = inter;
+        l.source_left = 0.F;
+        l.source_top = 0.F;
+        l.source_right = static_cast<float>(turned_w);
+        l.source_bottom = static_cast<float>(turned_h);
+        l.acquire_fence = *done;
+        turned_fences.push_back(std::move(done));
+      }
+
+      if (turn_failed) {
+        /* Nothing of the group was drawn into the show pool's slot, and a
+         * frame nobody judged forgets what it remembered -- the same exits
+         * every other engine refusal takes. */
+        scratch_->Rewind();
+        ForgetMerge();
+        merges_.rotate_refused++;
+        ALOGE("a turned member could not be drawn");
+        return -EINVAL;
+      }
+
       const int64_t before_merge = NowNs();
-      merged = vic_->Compose(target, merge.layers, merge.width, merge.height,
+      merged = vic_->Compose(target, drawn, merge.width, merge.height,
                              target_ready ? *target_ready : -1);
       if (!merged) {
         /* The engine would not take it. Nothing has been written, so the
@@ -1117,13 +1267,24 @@ std::string TegraAtomicStateManager::DumpState() {
      * are then the only line explaining what kept being attempted. */
     const uint64_t causes = m.first_sight + m.changed_shape +
                             m.changed_identity + m.changed_geometry +
-                            m.changed_size + m.changed_blend + m.nameless;
+                            m.changed_size + m.changed_blend +
+                            m.changed_transform + m.nameless;
     if (m.frames != 0 || m.reused != 0 || causes != 0)
       ss << "  drawn because           : first " << m.first_sight
          << ", shape " << m.changed_shape << ", buffer "
          << m.changed_identity << ", geometry " << m.changed_geometry
          << ", size " << m.changed_size << ", blend " << m.changed_blend
-         << ", nameless " << m.nameless << "\n";
+         << ", transform " << m.changed_transform << ", nameless "
+         << m.nameless << "\n";
+    if (m.rotated != 0 || m.rotate_refused != 0) {
+      ss << "  members turned          : " << m.rotated << "\n"
+         << "  turn us per pass        : "
+         << (m.rotated != 0 ? m.rotate_ns / 1000 /
+                                  static_cast<int64_t>(m.rotated)
+                            : 0)
+         << " (worst " << (m.rotate_ns_max / 1000) << ")\n"
+         << "  turns refused           : " << m.rotate_refused << "\n";
+    }
     ss << "Engine over its lifetime:\n"
        << "  frames accepted         : " << vic_->composed() << "\n"
        << "  frames refused          : " << vic_->refused() << "\n"

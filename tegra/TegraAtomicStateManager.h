@@ -61,6 +61,14 @@ class TegraAtomicRequest : public AtomicRequest {
      * fresh every time. */
     std::vector<uint64_t> source_ids;
 
+    /* How each member is turned, in step with `layers`: the framework's
+     * bits, hflip | vflip << 1 | rotate90 << 2, nought for most. A turned
+     * member is drawn turned into an intermediate by its own engine pass
+     * before the group composes, and a turn that changed is a different
+     * picture -- so this is part of what the drawn result is recognised
+     * by. */
+    std::vector<uint8_t> transforms;
+
     /* The group's own frame of reference. The layers' rectangles are held
      * relative to this corner, and the engine draws them from the buffer's
      * origin -- where the group sits on the panel is the window's business
@@ -225,6 +233,15 @@ class TegraAtomicStateManager : public AtomicStateManager {
   /* The engine that draws what will not fit a window, and somewhere for it to
    * write. Null together where the device was not asked for them. */
   hwc::VicSession *const vic_ = nullptr;
+
+  /* Where turned copies land: two intermediates, taken in turn, never
+   * shown -- the group's pass reads them and the panel never does. Made on
+   * the first turned layer ever, which on most days is never. The ring of
+   * two needs no fences between writes: the engine's channel serialises
+   * our passes, so the group that read an intermediate has run before the
+   * next turn rewrites it. */
+  static constexpr size_t kMaxRotatedMembers = 2;
+  std::unique_ptr<hwc::ScratchPool> rotate_pool_;
   hwc::ScratchPool *const scratch_ = nullptr;
 
   bool active_ = true;
@@ -329,7 +346,16 @@ class TegraAtomicStateManager : public AtomicStateManager {
     uint64_t changed_geometry = 0; /* layout inside the group */
     uint64_t changed_size = 0;     /* the group resized -- honest redraw */
     uint64_t changed_blend = 0;
+    uint64_t changed_transform = 0;
     uint64_t nameless = 0;
+
+    /* The turning passes: how many ran, what they cost the engine, and how
+     * many groups were refused because they asked for more turns than the
+     * intermediates can hold at once. */
+    uint64_t rotated = 0;
+    int64_t rotate_ns = 0;
+    int64_t rotate_ns_max = 0;
+    uint64_t rotate_refused = 0;
   };
   FenceCounters fences_;
   MergeCounters merges_;
@@ -355,6 +381,7 @@ class TegraAtomicStateManager : public AtomicStateManager {
     int32_t display_left, display_top, display_right, display_bottom;
     bool premultiplied;
     float alpha;
+    uint8_t transform;
   };
   std::vector<MergedSource> last_merge_sources_;
   int32_t last_merge_window_ = -1; /* -1: nothing remembered yet */
