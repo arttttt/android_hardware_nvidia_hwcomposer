@@ -80,6 +80,12 @@ class Crtc : public PipelineBindable<Crtc> {
     return SupportsCtm();
   }
 
+  /* Whether a transform carrying an offset column can be applied. The DRM
+   * CTM property has no addend, so the default is no. */
+  virtual bool SupportsCtmOffset() const {
+    return false;
+  }
+
   /* The lookup table applied before the matrix, and its size. */
   virtual const DrmProperty &GetDegammaLutProperty() const {
     return AbsentProperty();

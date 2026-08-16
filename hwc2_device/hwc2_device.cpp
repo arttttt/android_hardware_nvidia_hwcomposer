@@ -282,8 +282,29 @@ static int HookDevClose(hw_device_t *dev) {
 }
 
 static void HookDevGetCapabilities(hwc2_device_t * /*dev*/, uint32_t *out_count,
-                                   int32_t * /*out_capabilities*/) {
-  *out_count = 0;
+                                   int32_t *out_capabilities) {
+  /* The one claim this device makes: its display controller applies the
+   * client's colour transform itself, so the client must not bake it into
+   * what it composes -- claimed and honoured behind the same switch, read
+   * once by each side, so they cannot disagree. The client reads this list
+   * once at its start; the composer's restart restarts the client, so a
+   * change of the switch reaches both. This build serves one board; were
+   * its DRM pipeline ever used, the claim would need the backend's word
+   * too, because a display without a CTM property would be left with
+   * nobody applying anything. */
+  if (!Properties::CmuColorPipeline()) {
+    *out_count = 0;
+    return;
+  }
+
+  if (out_capabilities == nullptr) {
+    *out_count = 1;
+    return;
+  }
+  if (*out_count >= 1) {
+    out_capabilities[0] = HWC2_CAPABILITY_SKIP_CLIENT_COLOR_TRANSFORM;
+    *out_count = 1;
+  }
 }
 
 // NOLINTBEGIN(cppcoreguidelines-macro-usage)

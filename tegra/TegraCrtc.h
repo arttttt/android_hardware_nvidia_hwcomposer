@@ -36,15 +36,19 @@ public:
     uint32_t GetIndexInResArray() const override { return mIndex; }
 
     /* The head ends in a colour management unit -- a degamma table, a 3x3
-     * matrix, a regamma table -- and the backend programs the matrix from
+     * matrix, a regamma table -- and the backend programs the pipeline from
      * the frame's colour transform, so a transform no longer costs the
-     * frame its hardware composition. Offsets stay with the GPU: the
-     * matrix stage has no addend. So do negative coefficients, until the
-     * coefficient field's sign is demonstrated on this hardware -- the
-     * register keeps ten bits, and a negative written as its bit pattern
-     * would show a wrong colour rather than a missing feature. */
+     * frame its hardware composition. The coefficient field's sign was
+     * demonstrated on this silicon by writing -1.0 into the red row and
+     * watching red die to black rather than triple: ten bits of two's
+     * complement, as on this block's descendants. Offsets are taken too:
+     * the uniform offset of the framework's inversion family runs as a
+     * flipped regamma table, the backend degrading what it cannot represent
+     * rather than refusing it -- with the skip capability claimed there is
+     * nobody left to refuse to. */
     bool SupportsCtm() const override { return true; }
-    bool SupportsSignedCtm() const override { return false; }
+    bool SupportsSignedCtm() const override { return true; }
+    bool SupportsCtmOffset() const override { return true; }
 
 private:
     const uint32_t mIndex;

@@ -196,6 +196,15 @@ auto Properties::BugfixCursorCtmOffset() -> bool {
                             kDefault) != 0);
 }
 
+auto Properties::CmuColorPipeline() -> bool {
+  /* On unless told otherwise. Off unclaims the skip capability and idles
+   * the colour pipeline in one move -- the framework tints in GL again, as
+   * a build without any of this did. Read at process start on every side;
+   * changing it means restarting the composer, which restarts the client. */
+  constexpr int kDefault = 1;
+  return (property_get_bool("vendor.hwc.cmu", kDefault) != 0);
+}
+
 auto Properties::GetBackendOverride() -> std::string {
   char backend_override[PROPERTY_VALUE_MAX];
   property_get("vendor.hwc.backend_override", backend_override, "");

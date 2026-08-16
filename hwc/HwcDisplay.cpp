@@ -1465,12 +1465,12 @@ std::optional<AtomicCommitArgs> HwcDisplay::CreateFrameUpdateCommit(
   const bool all_client_layers = a_args.composition->client_z_order &&
                                  a_args.composition->plan.size() == 1;
   // On a frame composed entirely by the GPU, SurfaceFlinger applies the
-  // client's transform itself -- it does so whenever there is no device
-  // composition and no claimed SKIP_CLIENT_COLOR_TRANSFORM capability, under
-  // every CTM policy alike -- so only the render intent's share may go to
-  // the display, or the frame is tinted twice. The day that capability is
-  // claimed for real, this substitution must be gated on the claim.
-  if (all_client_layers) {
+  // client's transform itself -- whenever there is no device composition
+  // and no claimed SKIP_CLIENT_COLOR_TRANSFORM capability -- so only the
+  // render intent's share may go to the display, or the frame is tinted
+  // twice. With the capability claimed the client never applies anything,
+  // and the display owns the transform on every frame alike.
+  if (all_client_layers && !Properties::CmuColorPipeline()) {
     a_args.color_matrix = render_intent_matrix_;
   }
 
@@ -1714,14 +1714,14 @@ bool HwcDisplay::CtmByGpu() const {
   if (UseColorPipeline())
     return false;
 
-  /* Whether the controller takes this matrix is the controller's answer, and
-   * a matrix with negative coefficients is a harder question than one
-   * without: not every matrix stage has a sign. On DRM both answers are the
-   * CTM property's presence, as before. */
-  const bool ctm_in_hardware =
-      client_ctm_has_negative_ ? GetPipe().crtc->Get()->SupportsSignedCtm()
-                               : GetPipe().crtc->Get()->SupportsCtm();
-  if (ctm_in_hardware && !client_ctm_has_offset_)
+  /* Whether the controller takes this matrix is the controller's answer,
+   * asked per trait: a negative coefficient needs a sign, an offset column
+   * needs an addend, and not every matrix stage has either. On DRM every
+   * answer is the CTM property's presence, as before. */
+  const Crtc &crtc = *GetPipe().crtc->Get();
+  const bool sign_ok = !client_ctm_has_negative_ || crtc.SupportsSignedCtm();
+  const bool offset_ok = !client_ctm_has_offset_ || crtc.SupportsCtmOffset();
+  if (crtc.SupportsCtm() && sign_ok && offset_ok)
     return false;
 
   if (hwc_->GetCtmHandling() == CtmHandling::kDrmOrIgnore)

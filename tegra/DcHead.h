@@ -250,12 +250,14 @@ public:
      * when colour service starts; harmless when nothing was stale. */
     bool writeBootState();
 
-    /* Shows every colour as its distance from white: the per-channel flip,
-     * exact in this hardware where the framework's own cross-channel
+    /* Shows every colour as its tinted distance from white: the per-channel
+     * flip, exact in this hardware where the framework's own cross-channel
      * inversion cannot run at all -- the matrix's sums reach the regamma as
      * an unsigned index, so mixed-sign arithmetic folds to zero. `white` is
-     * the level a black pixel becomes, 1.0 for the full flip. */
-    bool setInversion(float white);
+     * the level a black pixel becomes, 1.0 for the full flip; `tint` scales
+     * each channel before the flip -- night mode over an inverted screen --
+     * and must be non-negative, all ones for the bare inversion. */
+    bool setInversion(float white, const float tint[3]);
 
 private:
     /* Out of line: a member unique_ptr of the forward-declared snapshot

@@ -385,15 +385,10 @@ class TegraAtomicStateManager : public AtomicStateManager {
     uint64_t applied = 0;
     uint64_t restored = 0;
 
-    /* Matrices with a negative coefficient and no offset, left for the
-     * frame to show untransformed: the field's sign is known from the
-     * register layout but has not been demonstrated by a write on this
-     * silicon. */
-    uint64_t skipped_negative = 0;
-
-    /* Non-negative matrices carrying an offset -- nothing sends one today,
-     * and folding it into the regamma would lift its floor, so the guard
-     * keeps them on the frame's own path. */
+    /* Transforms carrying an offset the inversion family did not claim --
+     * nothing sends one today, and folding a bare offset into the regamma
+     * would lift its floor, so the guard keeps them on the frame's own
+     * path. */
     uint64_t skipped_offset = 0;
 
     /* Transforms honoured in a different shape than given: cross-channel

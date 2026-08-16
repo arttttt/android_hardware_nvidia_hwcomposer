@@ -577,7 +577,7 @@ bool DcHead::setColorMatrix(const float matrix[9], float offset) {
     return true;
 }
 
-bool DcHead::setInversion(float white) {
+bool DcHead::setInversion(float white, const float tint[3]) {
     if (!rememberBootCmu())
         return false;
 
@@ -585,13 +585,27 @@ bool DcHead::setInversion(float white) {
      * mixed-sign coefficients, and this pipeline cannot run those: the
      * matrix's sums pass to the regamma as an unsigned index, so every
      * negative result folds to zero. What it can run exactly is the
-     * per-channel flip -- identity tables, identity matrix, and the
-     * regamma answering every level with its distance from white. Same
-     * purpose, light and dark exchanged; hues map differently than on
-     * hardware that has the signed path. The same trade shipped for years
-     * on this block's descendant in another product. */
+     * per-channel flip -- identity tables, the tint alone in the matrix
+     * stage, and the regamma answering every level with its distance from
+     * white. Same purpose, light and dark exchanged; hues map differently
+     * than on hardware that has the signed path. The same trade shipped
+     * for years on this block's descendant in another product.
+     *
+     * The tint multiplies gamma-encoded values here -- the tables are the
+     * identity, so this is the framework's own domain and its diagonal
+     * needs no bridge. Positive by the caller's contract: a negative would
+     * cross the unsigned index this mode exists to avoid. */
     tegra_dc_ext_cmu cmu = *mBootCmu;
     fillIdentityTables(&cmu);
+
+    for (int c = 0; c < 3; ++c) {
+        long v = lroundf(tint[c] * 256.F);
+        if (v < 0)
+            v = 0;
+        if (v > 0x1ff)
+            v = 0x1ff;
+        cmu.csc[c * 3 + c] = static_cast<__u16>(v);
+    }
 
     const long top = lroundf(white * 255.F);
     for (uint32_t i = 0; i < 960; ++i) {
