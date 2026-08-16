@@ -17,6 +17,7 @@
 #include "tegra/CursorPlane.h"
 
 #include <atomic>
+#include <cmath>
 
 #include <drm_fourcc.h>
 
@@ -62,14 +63,9 @@ bool TegraCursorPlane::IsValidForLayer(const LayerData *layer) {
     return false;
   }
 
-  /* One-to-one, upright, whole pixels: the unit places, it does not
-   * draw. */
+  /* Upright only: the unit places, it does not draw. */
   if (pi.transform.hflip || pi.transform.vflip || pi.transform.rotate90) {
     ALOGV("the cursor unit does not turn");
-    return false;
-  }
-  if (pi.RequireScalingOrPhasing()) {
-    ALOGV("the cursor unit does not resize");
     return false;
   }
 
@@ -83,6 +79,24 @@ bool TegraCursorPlane::IsValidForLayer(const LayerData *layer) {
       static_cast<uint32_t>(width) > hwc::CursorUnit::kMaxSide ||
       static_cast<uint32_t>(height) > hwc::CursorUnit::kMaxSide) {
     ALOGV("a %dx%d sprite is not the unit's size", width, height);
+    return false;
+  }
+
+  /* One-to-one in size, and size alone. The framework floats a pointer
+   * at half-pixel positions, which the general machinery counts as
+   * phasing and would resample for; the unit's position register is an
+   * integer and simply rounds, which is what every hardware cursor has
+   * ever done. Judging phasing here would send the pointer back to a
+   * full composed frame for half a pixel of truth nobody can see. */
+  const float src_w = pi.source_crop.f_rect
+                          ? pi.source_crop.f_rect->Width()
+                          : static_cast<float>(bi.width);
+  const float src_h = pi.source_crop.f_rect
+                          ? pi.source_crop.f_rect->Height()
+                          : static_cast<float>(bi.height);
+  if (lroundf(src_w) != width || lroundf(src_h) != height) {
+    ALOGV("the cursor unit does not resize %gx%g to %dx%d", src_w, src_h,
+          width, height);
     return false;
   }
 
