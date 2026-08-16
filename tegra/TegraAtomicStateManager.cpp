@@ -476,10 +476,17 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
           cursor.present = true;
           cursor.handle = NativeHandleOf(*l.bi);
           cursor.id = l.bi->unique_id;
-          cursor.width =
-              static_cast<uint32_t>(l.pi.display_frame.i_rect->Width());
-          cursor.height =
-              static_cast<uint32_t>(l.pi.display_frame.i_rect->Height());
+          /* The sprite's own size, not the frame's: the frame is the
+           * half-pixel position rounded outward and may run a pixel
+           * large, and what the unit shows is the sprite. */
+          const float sprite_w = l.pi.source_crop.f_rect
+                                     ? l.pi.source_crop.f_rect->Width()
+                                     : static_cast<float>(l.bi->width);
+          const float sprite_h = l.pi.source_crop.f_rect
+                                     ? l.pi.source_crop.f_rect->Height()
+                                     : static_cast<float>(l.bi->height);
+          cursor.width = static_cast<uint32_t>(lroundf(sprite_w));
+          cursor.height = static_cast<uint32_t>(lroundf(sprite_h));
           cursor.stride_px = l.bi->pitches[0] / 4;
           cursor.premultiplied =
               l.bi->blend_mode == BufferBlendMode::kPreMult;

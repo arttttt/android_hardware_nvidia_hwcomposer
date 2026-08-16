@@ -112,7 +112,11 @@ bool TegraCursorPlane::IsValidForLayer(const LayerData *layer) {
   const float src_h = pi.source_crop.f_rect
                           ? pi.source_crop.f_rect->Height()
                           : static_cast<float>(bi.height);
-  if (lroundf(src_w) != width || lroundf(src_h) != height) {
+  /* Within one pixel, because the frame is the half-pixel position
+   * rounded outward: a sprite of forty-four at a half lands in a frame
+   * of forty-five, and that is placement, not scaling. The sprite's own
+   * size is what the unit is given to show. */
+  if (labs(lroundf(src_w) - width) > 1 || labs(lroundf(src_h) - height) > 1) {
     ALOGV("the cursor unit does not resize %gx%g to %dx%d", src_w, src_h,
           width, height);
     last_reason.store(7, std::memory_order_relaxed);
