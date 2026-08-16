@@ -165,7 +165,7 @@ bool CursorUnit::UploadLocked(buffer_handle_t sprite, uint32_t width,
       return false;
     }
 
-    auto *gralloc = NvGralloc::GetInstance();
+    auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
     slot.mem_fd = gralloc != nullptr ? gralloc->GetMemFd(slot.handle) : -1;
     if (slot.mem_fd < 0) {
       ALOGE("a sprite slot with no memory descriptor");
