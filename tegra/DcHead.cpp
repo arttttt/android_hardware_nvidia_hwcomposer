@@ -613,6 +613,11 @@ bool DcHead::setInversion(const float tint[3]) {
         cmu.csc[c * 3 + c] = static_cast<__u16>(v);
     }
 
+    /* With the tint at most unity -- there is no whiter than white in this
+     * family -- the matrix output tops out at 4080 of the 4095 the stage
+     * can carry, so the hardware's clamp is never reached. A tint above
+     * unity, should one ever exist, would clip lightly against it. */
+
     if (ioctl(mFd.get(), TEGRA_DC_EXT_SET_CMU_ALIGNED, &cmu) < 0) {
         HWC_LOGE("head %d: SET_CMU_ALIGNED (inversion): %s", mIndex,
                  strerror(errno));

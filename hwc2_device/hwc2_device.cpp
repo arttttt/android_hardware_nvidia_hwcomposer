@@ -287,11 +287,13 @@ static void HookDevGetCapabilities(hwc2_device_t * /*dev*/, uint32_t *out_count,
    * client's colour transform itself, so the client must not bake it into
    * what it composes -- claimed and honoured behind the same switch, read
    * once by each side, so they cannot disagree. The client reads this list
-   * once at its start; the composer's restart restarts the client, so a
-   * change of the switch reaches both. This build serves one board; were
-   * its DRM pipeline ever used, the claim would need the backend's word
-   * too, because a display without a CTM property would be left with
-   * nobody applying anything. */
+   * once at its start; every restart of the composer service restarts the
+   * client through init's onrestart rule -- the same rule that already
+   * guards against a client outliving its composer -- so a change of the
+   * switch reaches both, whatever killed the service. This build serves
+   * one board; were its DRM pipeline ever used, the claim would need the
+   * backend's word too, because a display without a CTM property would be
+   * left with nobody applying anything. */
   if (!Properties::CmuColorPipeline()) {
     *out_count = 0;
     return;
