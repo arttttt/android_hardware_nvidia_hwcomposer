@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
 #include "display/Plane.h"
@@ -74,10 +75,23 @@ class TegraPlane : public Plane {
     return merging_;
   }
 
+  /* How many times a merging plane turned a layer away for carrying a
+   * transform. Counts answers, not distinct layers: the planner asks per
+   * plan weighed, so a persistent transformed layer counts every frame --
+   * read it as none, some, or bursts, never as a population. This is the
+   * number that decides whether the merge ever learns to turn layers
+   * itself, the way the stock composer's scratch path did with the 2D
+   * engine. */
+  static uint64_t TransformRefusals() {
+    return transform_refusals_.load(std::memory_order_relaxed);
+  }
+
  private:
   const uint32_t index_;
   const hwc::DcHead::WindowCapabilities &caps_;
   bool merging_ = false;
+
+  static std::atomic<uint64_t> transform_refusals_;
 };
 
 }  // namespace android::drm_hwcomposer

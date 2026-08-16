@@ -24,6 +24,8 @@
 
 namespace android::drm_hwcomposer {
 
+std::atomic<uint64_t> TegraPlane::transform_refusals_{0};
+
 bool TegraPlane::IsValidForLayer(const LayerData *layer) {
   if (layer == nullptr || !layer->bi) {
     ALOGE("%s: no buffer to judge", __func__);
@@ -41,6 +43,21 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
   if (merging_) {
     if (bi.handle == nullptr) {
       ALOGV("plane %u: no handle to describe this buffer with", index_);
+      return false;
+    }
+
+    /* And one thing the engine cannot do at all: turn a layer. Its
+     * transform is a single setting over the whole composition -- this
+     * generation offers no other -- so a member needing a flip or a
+     * quarter turn would be drawn lying on its side and shown that way.
+     * Refused here, the layer finds a window that turns it, or the GPU,
+     * both of which show it right. The stock composer went further and
+     * turned layers with the 2D engine on the way into its scratch; the
+     * refusals counted here are what decide whether that stage is ever
+     * worth building. */
+    if (pi.transform.hflip || pi.transform.vflip || pi.transform.rotate90) {
+      transform_refusals_.fetch_add(1, std::memory_order_relaxed);
+      ALOGV("plane %u: the engine will not turn a layer", index_);
       return false;
     }
     return true;
