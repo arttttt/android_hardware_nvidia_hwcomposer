@@ -178,10 +178,19 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
    * boundary included, since the stepping arithmetic itself works on
    * (in - 1) / (out - 1).
    *
-   * Then the unwritten rule, bug 1515812 out of the stock composer: the
-   * controller does not filter alpha on scaled overlays, so a translucent
-   * layer that also resizes shows its seams. The stock composer refused the
-   * pairing outright; so does this one. */
+   * There used to be a second rule here, bug 1515812 out of the stock
+   * composer: "dc does not filter alpha channel", so a translucent layer
+   * that also resized was refused outright, and every fading animation
+   * paid the graphics core for it. Nobody had re-examined that word since
+   * 2013 -- so it was put to the panel. The register map has no bit that
+   * would starve the filter of alpha; upstream's driver has scaled blended
+   * planes on four generations without a word of this; and on this very
+   * device the pairing went to a window carrying worst-case content --
+   * single-pixel stripes under a tenfold-slowed fade -- and the eye found
+   * nothing the GPU reference did not also show. The refusal died of the
+   * evidence. If seams ever do surface on some content this test missed,
+   * the vendor's own remedy is on record: a half-pixel inset of the crop
+   * when the filter runs, as their blit library does. */
   if (pi.source_crop.f_rect && pi.display_frame.i_rect) {
     const auto &src = *pi.source_crop.f_rect;
     const auto &dst = *pi.display_frame.i_rect;
@@ -200,26 +209,6 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
         return false;
       }
 
-      const bool scaled = src_w != dst_w || src_h != dst_h;
-      const bool translucent = bi.blend_mode == BufferBlendMode::kPreMult ||
-                               bi.blend_mode == BufferBlendMode::kCoverage ||
-                               pi.alpha < 1.0F;
-      /* The switch lets the pairing through, to be looked at. The refusal
-       * is the stock composer's, thirteen years old and never since
-       * re-examined by anyone: the register map has no bit that would
-       * starve the filter of alpha, upstream's driver has scaled blended
-       * planes on four generations without a word of this, and the likely
-       * root -- the filter's outer taps reading past the crop -- is a
-       * flaw the same vendor cured elsewhere with a half-pixel inset. So
-       * the pairing goes to a window under the switch, worst-case content
-       * goes on screen, and eyes decide whether the refusal keeps
-       * standing. Off, everything behaves as inherited. */
-      static const bool show_alpha_scaled =
-          property_get_bool("vendor.hwc.test.alphascale", 0) != 0;
-      if (scaled && translucent && !show_alpha_scaled) {
-        ALOGV("plane %u cannot filter alpha while resizing", index_);
-        return false;
-      }
     }
   }
 
