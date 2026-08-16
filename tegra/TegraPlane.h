@@ -86,12 +86,32 @@ class TegraPlane : public Plane {
     return transform_refusals_.load(std::memory_order_relaxed);
   }
 
+  /* How many times a merging plane turned a layer away for resizing past
+   * what the engine takes. Same counting rule as above: answers per plan
+   * weighed, not distinct layers. */
+  static uint64_t ScaleRefusals() {
+    return scale_refusals_.load(std::memory_order_relaxed);
+  }
+
+  /* The engine's reach on resizing one source, per axis, either way.
+   *
+   * Empirical, and deliberately shy of the truth: the limit lives in the
+   * engine's own firmware -- its userspace never checks, the stock
+   * composer never checked, and the capability that would say is not
+   * exported -- so all that is known is what the device answered: a ratio
+   * over four passes every time, one over sixteen is refused every time.
+   * Eight keeps everything ever seen to work and stays clear of
+   * everything seen to fail; a refusal past validation is a frame the
+   * ladder cannot save, so the boundary errs toward refusing here. */
+  static constexpr float kEngineScaleReach = 8.0F;
+
  private:
   const uint32_t index_;
   const hwc::DcHead::WindowCapabilities &caps_;
   bool merging_ = false;
 
   static std::atomic<uint64_t> transform_refusals_;
+  static std::atomic<uint64_t> scale_refusals_;
 };
 
 }  // namespace android::drm_hwcomposer

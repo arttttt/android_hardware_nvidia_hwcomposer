@@ -16,6 +16,8 @@
 
 #include "tegra/TegraPlane.h"
 
+#include <utility>
+
 #include <cutils/properties.h>
 #include <tegra_dc_ext.h>
 
@@ -26,6 +28,7 @@
 namespace android::drm_hwcomposer {
 
 std::atomic<uint64_t> TegraPlane::transform_refusals_{0};
+std::atomic<uint64_t> TegraPlane::scale_refusals_{0};
 
 bool TegraPlane::IsValidForLayer(const LayerData *layer) {
   if (layer == nullptr || !layer->bi) {
@@ -60,6 +63,37 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
         transform_refusals_.fetch_add(1, std::memory_order_relaxed);
         ALOGV("plane %u: the engine will not turn a layer", index_);
         return false;
+      }
+    }
+
+    /* The engine's reach on resizing, judged here and not at execute time,
+     * because the two refusals are not the same kind of failure. A layer
+     * refused here falls to the next plane and the plan is re-weighed --
+     * the ordinary path. A set refused by the engine at execute time is a
+     * frame already promised and now dropped, and the next plan is the
+     * same plan: the refusal repeats every frame for as long as the scene
+     * stands. Measured against the turned axes, since the turned copy is
+     * what the group will resize. Not gated on the turning switch -- the
+     * reach binds turned and straight members alike. */
+    if (pi.source_crop.f_rect && pi.display_frame.i_rect) {
+      const auto &src = *pi.source_crop.f_rect;
+      const auto &dst = *pi.display_frame.i_rect;
+      float src_w = src.Width();
+      float src_h = src.Height();
+      if (pi.transform.rotate90)
+        std::swap(src_w, src_h);
+      const auto dst_w = static_cast<float>(dst.Width());
+      const auto dst_h = static_cast<float>(dst.Height());
+
+      if (src_w > 0 && src_h > 0 && dst_w > 0 && dst_h > 0) {
+        const float ratio_w = src_w > dst_w ? src_w / dst_w : dst_w / src_w;
+        const float ratio_h = src_h > dst_h ? src_h / dst_h : dst_h / src_h;
+        if (ratio_w > kEngineScaleReach || ratio_h > kEngineScaleReach) {
+          scale_refusals_.fetch_add(1, std::memory_order_relaxed);
+          ALOGV("plane %u: the engine will not resize %gx%g to %gx%g",
+                index_, src_w, src_h, dst_w, dst_h);
+          return false;
+        }
       }
     }
     return true;

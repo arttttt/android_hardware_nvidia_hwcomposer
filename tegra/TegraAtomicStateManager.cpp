@@ -955,8 +955,22 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
          * the panel is scanning. */
         scratch_->Rewind();
         ForgetMerge();
-        ALOGE("the engine refused a frame of %zu layer(s)",
-              merge.layers.size());
+        /* Each member's geometry rides along, because two very different
+         * faults refuse identically: a rectangle collapsed to nothing and
+         * a resize past the engine's reach. A zero on an axis names the
+         * first; a wild ratio names the second. */
+        std::string geometry;
+        for (const auto &l : drawn) {
+          char one[64];
+          snprintf(one, sizeof(one), " %.0fx%.0f->%dx%d",
+                   l.source_right - l.source_left,
+                   l.source_bottom - l.source_top,
+                   l.display_right - l.display_left,
+                   l.display_bottom - l.display_top);
+          geometry += one;
+        }
+        ALOGE("the engine refused a frame of %zu layer(s):%s",
+              merge.layers.size(), geometry.c_str());
         return -EINVAL;
       }
 
@@ -1302,7 +1316,9 @@ std::string TegraAtomicStateManager::DumpState() {
        << "  frames accepted         : " << vic_->composed() << "\n"
        << "  frames refused          : " << vic_->refused() << "\n"
        << "  turned layers refused   : " << TegraPlane::TransformRefusals()
-       << "\n\n";
+       << "\n"
+       << "  scaled beyond its reach : " << TegraPlane::ScaleRefusals()
+       << " (limit " << TegraPlane::kEngineScaleReach << "x)\n\n";
   }
 
   /* Quiet when colour was never asked to change: most dumps, on a display
