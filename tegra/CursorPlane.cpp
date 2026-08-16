@@ -30,7 +30,17 @@ namespace android::drm_hwcomposer {
 namespace {
 std::atomic<uint64_t> asked{0};
 std::atomic<uint64_t> taken{0};
+std::atomic<uint32_t> last_reason{0};
+std::atomic<uint32_t> seen_format{0};
 }  // namespace
+
+uint32_t TegraCursorPlane::LastRefusal() {
+  return last_reason.load(std::memory_order_relaxed);
+}
+
+uint32_t TegraCursorPlane::SeenFormat() {
+  return seen_format.load(std::memory_order_relaxed);
+}
 
 uint64_t TegraCursorPlane::Asked() {
   return asked.load(std::memory_order_relaxed);
@@ -42,16 +52,20 @@ uint64_t TegraCursorPlane::Taken() {
 
 bool TegraCursorPlane::IsValidForLayer(const LayerData *layer) {
   asked.fetch_add(1, std::memory_order_relaxed);
-  if (layer == nullptr || !layer->bi || layer->bi->handle == nullptr)
+  if (layer == nullptr || !layer->bi || layer->bi->handle == nullptr) {
+    last_reason.store(1, std::memory_order_relaxed);
     return false;
+  }
 
   const BufferInfo &bi = *layer->bi;
   const PresentInfo &pi = layer->pi;
+  seen_format.store(bi.format, std::memory_order_relaxed);
 
   /* The unit's colour is four bytes a pixel and nothing else; the sprite
    * the framework draws is exactly that. */
   if (bi.format != DRM_FORMAT_ABGR8888) {
     ALOGV("the cursor unit shows RGBA and not format 0x%x", bi.format);
+    last_reason.store(2, std::memory_order_relaxed);
     return false;
   }
 
@@ -60,17 +74,20 @@ bool TegraCursorPlane::IsValidForLayer(const LayerData *layer) {
    * not speak, and a faded cursor is not a thing the framework makes. */
   if (bi.blend_mode == BufferBlendMode::kCoverage || pi.alpha < 1.0F) {
     ALOGV("the cursor unit cannot fade a sprite");
+    last_reason.store(3, std::memory_order_relaxed);
     return false;
   }
 
   /* Upright only: the unit places, it does not draw. */
   if (pi.transform.hflip || pi.transform.vflip || pi.transform.rotate90) {
     ALOGV("the cursor unit does not turn");
+    last_reason.store(4, std::memory_order_relaxed);
     return false;
   }
 
   if (!pi.display_frame.i_rect) {
     ALOGV("a cursor with nowhere to be");
+    last_reason.store(5, std::memory_order_relaxed);
     return false;
   }
   const auto width = pi.display_frame.i_rect->Width();
@@ -79,6 +96,7 @@ bool TegraCursorPlane::IsValidForLayer(const LayerData *layer) {
       static_cast<uint32_t>(width) > hwc::CursorUnit::kMaxSide ||
       static_cast<uint32_t>(height) > hwc::CursorUnit::kMaxSide) {
     ALOGV("a %dx%d sprite is not the unit's size", width, height);
+    last_reason.store(6, std::memory_order_relaxed);
     return false;
   }
 
@@ -97,6 +115,7 @@ bool TegraCursorPlane::IsValidForLayer(const LayerData *layer) {
   if (lroundf(src_w) != width || lroundf(src_h) != height) {
     ALOGV("the cursor unit does not resize %gx%g to %dx%d", src_w, src_h,
           width, height);
+    last_reason.store(7, std::memory_order_relaxed);
     return false;
   }
 

@@ -57,6 +57,11 @@ class TegraCursorPlane : public Plane {
    * the unit is being lost. */
   static uint64_t Asked();
   static uint64_t Taken();
+
+  /* Where the last refusal happened and what format was on offer -- the
+   * dump-side stand-in for logs this composer cannot land. */
+  static uint32_t LastRefusal();
+  static uint32_t SeenFormat();
 };
 
 }  // namespace android::drm_hwcomposer

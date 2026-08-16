@@ -1406,7 +1406,10 @@ std::string TegraAtomicStateManager::DumpState() {
   if (cursor_ != nullptr) {
     cursor_->AppendDump(ss);
     ss << "  seat asked / agreed     : " << TegraCursorPlane::Asked()
-       << " / " << TegraCursorPlane::Taken() << "\n";
+       << " / " << TegraCursorPlane::Taken() << "\n"
+       << "  last refusal / format   : " << TegraCursorPlane::LastRefusal()
+       << " / 0x" << std::hex << TegraCursorPlane::SeenFormat() << std::dec
+       << "\n";
   } else {
     ss << "Cursor unit               : not claimed\n";
   }
