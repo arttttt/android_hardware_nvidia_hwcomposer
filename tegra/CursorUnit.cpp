@@ -173,7 +173,44 @@ bool CursorUnit::UploadLocked(buffer_handle_t sprite, uint32_t width,
       slot = {};
       return false;
     }
+
+    /* The unit scans rows of side times four bytes from the buffer's very
+     * start -- no layout, no pitch, no offset register. Anything the
+     * allocator did differently would show as stripes and ghosts, so all
+     * three are demanded outright. */
+    drm_hwcomposer::NvGralloc::Surface described{};
+    if (gralloc->DescribeSurface(slot.handle, &described)) {
+      slot_desc_[0] = described.layout;
+      slot_desc_[1] = described.pitch;
+      slot_desc_[2] = described.offset;
+      if (described.layout != drm_hwcomposer::NvGralloc::kLayoutPitch ||
+          described.pitch != side * 4 || described.offset != 0) {
+        ALOGE("a slot the unit cannot scan: layout %u pitch %u offset %u",
+              described.layout, described.pitch, described.offset);
+        allocator.free(slot.handle);
+        slot = {};
+        return false;
+      }
+    }
     slot.side = side;
+  }
+
+  /* The sprite's own arrangement, for the record: a processor lock of
+   * memory arranged in blocks reads structure, not pixels. */
+  {
+    auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
+    drm_hwcomposer::NvGralloc::Surface described{};
+    if (gralloc != nullptr && gralloc->DescribeSurface(sprite, &described)) {
+      sprite_desc_[0] = described.layout;
+      sprite_desc_[1] = described.pitch;
+      sprite_desc_[2] = described.offset;
+      if (described.layout != drm_hwcomposer::NvGralloc::kLayoutPitch) {
+        ALOGE("a sprite arranged in blocks cannot be read by hand");
+        return false;
+      }
+      if (described.pitch >= 4)
+        stride_px = described.pitch / 4;
+    }
   }
 
   /* The copy. The layer's pixels come in the allocator's RGBA order; the
@@ -307,7 +344,11 @@ void CursorUnit::AppendDump(std::ostream &ss) const {
      << "  async moves served      : " << moves_ << "\n"
      << "  sprite uploads          : " << uploads_ << "\n"
      << "  refusals                : " << refused_ << "\n"
-     << "  showing                 : " << (visible_ ? "yes" : "no") << "\n";
+     << "  showing                 : " << (visible_ ? "yes" : "no") << "\n"
+     << "  slot lay/pitch/offset   : " << slot_desc_[0] << "/"
+     << slot_desc_[1] << "/" << slot_desc_[2] << "\n"
+     << "  sprite lay/pitch/offset : " << sprite_desc_[0] << "/"
+     << sprite_desc_[1] << "/" << sprite_desc_[2] << "\n";
 }
 
 }  // namespace hwc

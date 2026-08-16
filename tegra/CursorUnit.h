@@ -126,6 +126,13 @@ class CursorUnit {
   uint64_t moves_ = 0;
   uint64_t uploads_ = 0;
   uint64_t refused_ = 0;
+
+  /* What the allocator said about the last slot and the last sprite --
+   * layout, pitch, offset -- because the unit scans raw memory from the
+   * buffer's start and every one of those three can silently disagree
+   * with that. Printed in the dump; this composer's logs land nowhere. */
+  uint32_t slot_desc_[3] = {0, 0, 0};
+  uint32_t sprite_desc_[3] = {0, 0, 0};
 };
 
 }  // namespace hwc
