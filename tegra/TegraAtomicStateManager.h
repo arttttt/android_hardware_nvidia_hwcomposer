@@ -29,6 +29,7 @@
 #include "tegra/DcHead.h"
 #include "tegra/ScratchPool.h"
 #include "tegra/VicSession.h"
+#include "utils/properties.h"
 
 namespace android::drm_hwcomposer {
 
@@ -165,6 +166,7 @@ class TegraAtomicStateManager : public AtomicStateManager {
     report_engine_reads_ = EngineReadsFromProperty();
     merge_cache_ = MergeCacheFromProperty();
     cmu_ctm_ = CmuFromProperty();
+    calibrated_home_ = Properties::CalibratedColorMode();
   }
 
   std::unique_ptr<AtomicRequest> GetAtomicModeReqForArgs(
@@ -416,6 +418,11 @@ class TegraAtomicStateManager : public AtomicStateManager {
 
   bool cmu_ctm_ = true;
   static bool CmuFromProperty();
+
+  /* Whether the pipeline's resting state is the panel-to-sRGB correction
+   * rather than the identity: the home the restore path writes, and the
+   * inner factor composed under every framework matrix. */
+  bool calibrated_home_ = false;
 
   /* Off unless asked for. The question costs one call into the kernel per
    * frame, and a frame is the thing being measured. */

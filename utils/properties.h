@@ -42,6 +42,10 @@ class Properties {
    * claim, the all-client substitution, the backend's consumer -- so they
    * cannot disagree. */
   static auto CmuColorPipeline() -> bool;
+
+  /* Whether the pipeline's resting state corrects the panel's gamut toward
+   * sRGB rather than showing the panel as it is. */
+  static auto CalibratedColorMode() -> bool;
   static auto GetBackendOverride() -> std::string;
   static auto GetDevicePath() -> std::string;
   static auto UseColorPipeline() -> bool;

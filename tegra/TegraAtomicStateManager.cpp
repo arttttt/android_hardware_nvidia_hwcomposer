@@ -22,6 +22,7 @@
 #include <inttypes.h>
 #include <math.h>
 #include <ndk/sync.h>
+#include <string.h>
 #include <sync/sync.h>
 #include <time.h>
 
@@ -1188,6 +1189,32 @@ bool TegraAtomicStateManager::CmuFromProperty() {
   return property_get_bool("vendor.hwc.cmu", 1) != 0;
 }
 
+/* The panel's gamut corrected toward sRGB, in linear light -- the inner
+ * factor under every framework matrix, and the resting state when the
+ * calibrated mode is chosen.
+ *
+ * Reconstructed, not measured: no factory colorimetry for this module
+ * exists anywhere public, so the primaries are the ones this 63%-of-sRGB
+ * class of white-LED panel is documented to have, anchored to lab
+ * measurements of the same Sharp module in another product. Rows sum to
+ * one -- white stays white, and no non-negative input can drive the
+ * matrix stage negative. Typical-unit accuracy, not this-unit accuracy:
+ * expected to cut the native hue error roughly in half, never to
+ * eliminate it; a measured matrix can replace these numbers without
+ * touching anything else. */
+static constexpr float kPanelToSrgb[9] = {1.014F,  -0.057F, 0.043F,
+                                          -0.092F, 1.218F,  -0.126F,
+                                          -0.073F, -0.115F, 1.188F};
+
+/* Row-major 3x3 product: out = a * b. */
+static void MultiplyCsc(const float a[9], const float b[9], float out[9]) {
+  for (int r = 0; r < 3; ++r)
+    for (int c = 0; c < 3; ++c)
+      out[r * 3 + c] = a[r * 3 + 0] * b[0 * 3 + c] +
+                       a[r * 3 + 1] * b[1 * 3 + c] +
+                       a[r * 3 + 2] * b[2 * 3 + c];
+}
+
 void TegraAtomicStateManager::ProgramColorMatrix(
     const HalColorTransformMatrix &matrix) {
   /* The steady state: the same matrix arrives with every frame for as long
@@ -1208,11 +1235,17 @@ void TegraAtomicStateManager::ProgramColorMatrix(
   /* The first restore after start writes home even when this instance never
    * programmed anything: a predecessor may have died mid-transform, its
    * state outlives it in the kernel, and a computed home cannot see it --
-   * only overwrite it. Once written, an untouched pipeline is left alone. */
+   * only overwrite it. Once written, an untouched pipeline is left alone.
+   * Home is the boot pipeline, or the panel correction over it when the
+   * calibrated mode is chosen; the true boot state returns when the head
+   * is torn down. */
   const auto restore = [this]() {
     if (!csc_programmed_ && boot_state_written_)
       return;
-    if (head_.writeBootState()) {
+    const bool written = calibrated_home_
+                             ? head_.setColorMatrix(kPanelToSrgb, 0.F)
+                             : head_.writeBootState();
+    if (written) {
       if (csc_programmed_)
         cmu_.restored++;
       csc_programmed_ = false;
@@ -1253,7 +1286,10 @@ void TegraAtomicStateManager::ProgramColorMatrix(
    * the factors -- the affine half of the same composition -- or this is
    * not that family. The true inversion's cross-channel character becomes
    * the per-channel flip: the same feature with a different hue mapping,
-   * counted as the approximation it is. */
+   * counted as the approximation it is. The panel correction is not
+   * composed here -- its linear-light matrix has no seat in this
+   * gamma-domain pipeline, and an inverted screen is no place to judge
+   * gamut fidelity from anyway. */
   if (negative && has_offset && offset > 0.4F) {
     static constexpr float kInvert[9] = {0.402F,  -1.174F, -0.228F,
                                          -0.598F, -0.174F, -0.228F,
@@ -1319,6 +1355,15 @@ void TegraAtomicStateManager::ProgramColorMatrix(
     rm[0] = powf(rm[0], kDisplayGamma);
     rm[4] = powf(rm[4], kDisplayGamma);
     rm[8] = powf(rm[8], kDisplayGamma);
+  }
+
+  /* The panel correction sits inside every framework transform: both live
+   * in linear light by this point, so the composition is a product, the
+   * correction nearest the panel. */
+  if (calibrated_home_) {
+    float composed[9];
+    MultiplyCsc(rm, kPanelToSrgb, composed);
+    memcpy(rm, composed, sizeof(composed));
   }
 
   if (head_.setColorMatrix(rm, 0.F)) {

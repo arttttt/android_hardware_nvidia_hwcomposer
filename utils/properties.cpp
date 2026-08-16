@@ -205,6 +205,15 @@ auto Properties::CmuColorPipeline() -> bool {
   return (property_get_bool("vendor.hwc.cmu", kDefault) != 0);
 }
 
+auto Properties::CalibratedColorMode() -> bool {
+  /* Off unless asked for: the corrected gamut is the better picture on
+   * two thirds of the sRGB volume, but it is a visible change of the
+   * display's whole character, and that is the owner's call to make. */
+  char value[PROPERTY_VALUE_MAX];
+  property_get("vendor.hwc.colormode", value, "native");
+  return strcmp(value, "srgb") == 0;
+}
+
 auto Properties::GetBackendOverride() -> std::string {
   char backend_override[PROPERTY_VALUE_MAX];
   property_get("vendor.hwc.backend_override", backend_override, "");
