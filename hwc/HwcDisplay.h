@@ -502,10 +502,12 @@ class HwcDisplay : public ICompositorDisplay {
   std::optional<CompositionPlanner::ValidatedComposition> reusable_plan_;
 
   /* How the joining plans were laid out, one counter per steering
-   * outcome, for the dump. Mutable for the same reason the invalidator
-   * bits are: counted from a const path. */
+   * outcome, over the lifetime and since the last dump -- the same two
+   * windows every neighbouring section answers for. Mutable for the
+   * same reason the invalidator bits are: counted from a const path. */
   static constexpr size_t kSteeringOutcomes = 6;
   mutable uint64_t steering_outcomes_[kSteeringOutcomes] = {};
+  mutable uint64_t steering_interval_[kSteeringOutcomes] = {};
 
   /* Whether the staged composition was handed back from the kept plan
    * rather than planned anew -- in which case writing it back at present

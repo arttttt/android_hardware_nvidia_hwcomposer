@@ -1587,6 +1587,7 @@ HwcDisplay::CreateLayerToPlaneJoiningPlan(
     const auto outcome = static_cast<size_t>(composition->steering);
     if (outcome < kSteeringOutcomes) {
       steering_outcomes_[outcome]++;
+      steering_interval_[outcome]++;
     }
   }
   return composition;
@@ -1604,6 +1605,12 @@ std::string HwcDisplay::DumpGroupSelector() const {
   for (size_t i = 0; i < kSteeringOutcomes; i++) {
     ss << (i > 0 ? ", " : " ") << kOutcomeNames[i] << " "
        << steering_outcomes_[i];
+  }
+  ss << "\n" << "  since last dumpsys      :";
+  for (size_t i = 0; i < kSteeringOutcomes; i++) {
+    ss << (i > 0 ? ", " : " ") << kOutcomeNames[i] << " "
+       << steering_interval_[i];
+    steering_interval_[i] = 0;
   }
   ss << "\n";
   for (const auto &[id, layer] : layers_) {
