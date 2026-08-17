@@ -129,13 +129,18 @@ TegraDisplayPipeline::TegraDisplayPipeline(TegraConnector &tegraConnector,
     if (mCursorUnit)
         mCursorPlane = std::make_unique<drm_hwcomposer::TegraCursorPlane>();
 
+    /* Whether this panel can be slowed when nobody draws is the kernel's
+     * to answer, once, here. Independent of everything above: a governor
+     * needs only the head's descriptor and the quiet. */
+    mGovernor = RefreshGovernor::Probe(mHead->fd());
+
     /* After the engine, and it has to be: the state manager is handed both
      * and would otherwise be handed nothing on the very boot where they were
      * wanted. */
     atomic_state_manager =
         std::make_unique<drm_hwcomposer::TegraAtomicStateManager>(
             *mHead, tegraConnector.GetModes(), mVic.get(), mScratch.get(),
-            mCursorUnit.get());
+            mCursorUnit.get(), mGovernor.get());
 
     /* The planner is not built here. Which one runs is a decision the backend
      * makes from a property, and a pipeline has no business overriding it. */
@@ -152,6 +157,10 @@ TegraDisplayPipeline::~TegraDisplayPipeline() {
      * stop before the devices it reads from do. */
     mVSync.reset();
     atomic_state_manager.reset();
+    /* After the manager that speaks to it, before the head it speaks
+     * through: letting go restores the native rate over the head's
+     * descriptor. */
+    mGovernor.reset();
     mVic.reset();
     mScratch.reset();
     planner.reset();

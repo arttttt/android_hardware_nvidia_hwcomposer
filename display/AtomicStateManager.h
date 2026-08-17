@@ -157,6 +157,13 @@ class AtomicStateManager {
    * its own, and a manager without one has nothing to move. */
   virtual void MoveCursor(int32_t /*x*/, int32_t /*y*/) {
   }
+
+  /* The framework switching its vsync callbacks on or off -- its own
+   * word on whether anyone wants frames. No-op by default: most
+   * hardware has no use for the confession; one that can slow its
+   * panel does. */
+  virtual void NoteVsyncEnabled(bool /*enabled*/) {
+  }
 };
 
 }  // namespace android::drm_hwcomposer

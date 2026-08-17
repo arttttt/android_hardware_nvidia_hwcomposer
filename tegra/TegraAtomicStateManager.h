@@ -28,6 +28,7 @@
 #include "display/DrmMode.h"
 #include "tegra/DcHead.h"
 #include "tegra/CursorUnit.h"
+#include "tegra/RefreshGovernor.h"
 #include "tegra/ScratchPool.h"
 #include "tegra/TurnPool.h"
 #include "tegra/VicSession.h"
@@ -218,9 +219,10 @@ class TegraAtomicStateManager : public AtomicStateManager {
   TegraAtomicStateManager(hwc::DcHead &head,
                           const std::vector<DrmMode> &modes,
                           hwc::VicSession *vic, hwc::ScratchPool *scratch,
-                          hwc::CursorUnit *cursor)
+                          hwc::CursorUnit *cursor,
+                          hwc::RefreshGovernor *governor)
       : head_(head), modes_(modes), vic_(vic), scratch_(scratch),
-        cursor_(cursor) {
+        cursor_(cursor), governor_(governor) {
     count_fences_ = CountFencesFromProperty();
     throttle_to_one_frame_ = ThrottleFromProperty();
     report_engine_reads_ = EngineReadsFromProperty();
@@ -259,6 +261,11 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * Arrives from the framework between frames, at the pointer's own rate;
    * touches nothing a frame owns, which is the whole point of the unit. */
   void MoveCursor(int32_t x, int32_t y) override {
+    /* The pointer is life too, and it moves without frames by design --
+     * a panel left slow under it would drag the cursor at thirty. */
+    if (governor_ != nullptr)
+      governor_->NoteActivity();
+
     if (cursor_ != nullptr) {
       /* Counted before the unit hears of it: every plan carries the count
        * it was drawn under, and a mismatch at execution says a move like
@@ -266,6 +273,11 @@ class TegraAtomicStateManager : public AtomicStateManager {
       ++cursor_move_seq_;
       cursor_->Move(x, y);
     }
+  }
+
+  void NoteVsyncEnabled(bool enabled) override {
+    if (governor_ != nullptr)
+      governor_->NoteVsyncEnabled(enabled);
   }
 
  private:
@@ -319,6 +331,11 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * into the device -- moves from the binder, plans and frames from the
    * main thread -- comes through the composer's one lock. */
   uint64_t cursor_move_seq_ = 0;
+
+  /* Slows the panel when nobody draws, or null where the kernel offers
+   * no such door. Owned by the pipeline, told of life from here: frames,
+   * pointer moves, and the framework's own vsync confession. */
+  hwc::RefreshGovernor *const governor_ = nullptr;
 
   /* Frames actually committed, whatever they carried. The counter the
    * cursor's whole promise is judged by: a moving pointer on a still

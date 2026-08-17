@@ -25,6 +25,7 @@
 #include "tegra/CursorUnit.h"
 #include "tegra/DcHead.h"
 #include "tegra/FbDevice.h"
+#include "tegra/RefreshGovernor.h"
 #include "tegra/TegraConnector.h"
 #include "tegra/TegraCrtc.h"
 #include "tegra/TegraPlane.h"
@@ -105,6 +106,12 @@ private:
      * already holds. */
     std::unique_ptr<CursorUnit> mCursorUnit;
     std::unique_ptr<drm_hwcomposer::TegraCursorPlane> mCursorPlane;
+
+    /* Slows the panel when nobody draws; null where the kernel offers
+     * no door for it. Reset in the destructor before the head goes,
+     * because letting go restores the native rate through the head's
+     * descriptor. */
+    std::unique_ptr<RefreshGovernor> mGovernor;
 };
 
 }  // namespace hwc

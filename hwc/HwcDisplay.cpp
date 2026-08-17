@@ -717,6 +717,11 @@ void HwcDisplay::SetVsyncCallbacksEnabled(bool enabled) {
     return;
   }
 
+  /* Before anything else: the panel may be living slow, and the enable
+   * that follows is the framework about to take its first timing
+   * sample -- the sample has to find the native rate already back. */
+  GetPipe().atomic_state_manager->NoteVsyncEnabled(enabled);
+
   vsync_event_en_ = enabled;
   std::optional<VSyncWorker::VsyncTimestampCallback> callback = std::nullopt;
   if (vsync_event_en_) {

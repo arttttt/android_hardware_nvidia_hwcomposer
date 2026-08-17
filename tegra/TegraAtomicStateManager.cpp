@@ -804,6 +804,11 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
                                      AtomicCommitResult *out_result) {
   const auto &tegra = static_cast<const TegraAtomicRequest &>(request);
 
+  /* A frame is the loudest possible sign of life: whatever the panel
+   * was slowed to, it comes back before this one shows. */
+  if (governor_ != nullptr)
+    governor_->NoteActivity();
+
   /* The previous frame's turns are settled first: the slots it took come
    * free for this frame to take, and a long run of frames that turned
    * nothing gives the intermediates' memory back. At the top, before any
@@ -1425,6 +1430,11 @@ std::string TegraAtomicStateManager::DumpState() {
   } else {
     ss << "Cursor unit               : not claimed\n";
   }
+
+  if (governor_ != nullptr)
+    governor_->AppendDump(ss);
+  else
+    ss << "Refresh governor          : not running\n";
 
   /* Quiet when colour was never asked to change: most dumps, on a display
    * that spends its life at the identity. */
