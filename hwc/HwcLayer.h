@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -128,6 +129,20 @@ class HwcLayer {
     return taken;
   }
 
+  /* Re-judge this layer's class from the time of its last activity and
+   * say whether the class changed. Activity is a new buffer or a moved
+   * frame, stamped where SetLayerProperties accepts them; the class
+   * decays to quiet after a second of silence. Asymmetric on purpose:
+   * a layer that starts drawing must leave the merge with its first
+   * frame, one that stops may wait a second to enter it. Const for the
+   * same reason TakePlanInvalidators is: the class is bookkeeping about
+   * the layer, not the layer. */
+  bool RefreshLiveness() const;
+
+  bool IsLive() const {
+    return live_;
+  }
+
   auto GetFrontendPrivateData() -> std::shared_ptr<FrontendLayerBase> {
     return frontend_private_data_;
   }
@@ -168,6 +183,14 @@ class HwcLayer {
   std::optional<float> brightness_{};
 
   mutable uint32_t plan_invalidators_ = 0;
+
+  /* One second, like the refresh governor's quiet delay and the
+   * flattening timeout: the one span this system calls settled. Longer
+   * than a blinking text cursor's half-period, so a blinker stays live
+   * in its window instead of rocking the plan twice a second. */
+  static constexpr std::chrono::milliseconds kLayerQuietDelay{1000};
+  std::chrono::steady_clock::time_point last_activity_{};
+  mutable bool live_ = false;
 
   bool prior_buffer_scanout_flag_{};
 

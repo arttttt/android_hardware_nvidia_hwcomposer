@@ -1572,14 +1572,32 @@ HwcDisplay::CreateLayerToPlaneJoiningPlan(
       return nullptr;
     }
     composition_layers.emplace_back(layer->GetLayerData());
+    /* The class the layer was last judged into, for the joining plan's
+     * steering. The client target is a layer here like any other, and
+     * judges itself honestly: it takes a new buffer whenever the GPU
+     * composes, so a busy client chunk reads live and stays out of the
+     * merge. */
+    composition_layers.back().live = layer->IsLive();
   }
   auto composition = LayerToPlaneJoiningPlan::
       CreateLayerToPlaneJoiningPlan(GetPipe(), std::move(composition_layers),
                                     std::move(cursor_layer));
   if (composition) {
     composition->client_z_order = client_z_order;
+    (composition->steered ? steered_plans_ : first_fit_plans_)++;
   }
   return composition;
+}
+
+std::string HwcDisplay::DumpGroupSelector() const {
+  std::stringstream ss;
+  ss << "Group selector            : steered " << steered_plans_
+     << ", first fit " << first_fit_plans_ << "\n";
+  for (const auto &[id, layer] : layers_) {
+    ss << "  layer z=" << layer.GetZOrder() << "             : "
+       << (layer.IsLive() ? "live" : "quiet") << "\n";
+  }
+  return ss.str();
 }
 
 CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {

@@ -58,6 +58,13 @@ enum PlanInvalidator : uint32_t {
 
   /* Anything at all: a failed commit, a torn-down buffer, a fresh start. */
   kAllDirty = 1U << 15,
+
+  /* A layer crossed the line between drawing and quiet. The group
+   * selector reads liveness when it lays out a plan, so a plan made
+   * before the crossing no longer describes the scene. Raised on the
+   * transition only -- a layer that keeps drawing, or keeps not
+   * drawing, raises nothing frame to frame. */
+  kLayerActivity = 1U << 16,
 };
 
 }  // namespace android::drm_hwcomposer

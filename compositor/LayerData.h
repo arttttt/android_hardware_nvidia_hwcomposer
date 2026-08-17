@@ -169,6 +169,11 @@ struct LayerData {
   TransferFunction transfer_func{};
   FrameTimeHistory frame_time_history;
   std::optional<float> brightness;
+
+  /* Whether this layer was drawing recently, judged by the HwcLayer it
+   * was copied from. The joining plan reads it to keep drawing layers
+   * out of the merge; nothing below the planner looks at it. */
+  bool live = false;
 };
 
 }  // namespace android::drm_hwcomposer

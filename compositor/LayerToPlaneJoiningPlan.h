@@ -48,6 +48,11 @@ struct LayerToPlaneJoiningPlan {
   std::vector<LayerToPlaneJoining> plan;
   std::optional<int> client_z_order;
 
+  /* Whether the merge was steered onto the quiet run of the stack
+   * rather than taking the top by first fit. For the counters only --
+   * nothing downstream behaves differently for a steered plan. */
+  bool steered = false;
+
   static auto CreateLayerToPlaneJoiningPlan(
       const DisplayPipeline &pipe, std::vector<LayerData> composition,
       std::optional<LayerData> cursor_layer = std::nullopt)

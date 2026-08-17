@@ -32,6 +32,7 @@
 #include "compositor/DisplayInfo.h"
 #include "compositor/ICompositorDisplay.h"
 #include "compositor/LayerData.h"
+#include "compositor/PlanInvalidation.h"
 #include "display/DisplayPipeline.h"
 #include "drm/drm_mode.h"
 #include "hwc/HwcDisplayConfigs.h"
@@ -130,11 +131,24 @@ class HwcDisplay : public ICompositorDisplay {
     plan_invalidators_ = 0;
     for (const auto &[id, layer] : layers_) {
       taken |= layer.TakePlanInvalidators();
+      /* Liveness is re-judged exactly where the plan's other inputs are
+       * gathered, so a crossing and the replan it demands are one
+       * event. A scene that goes fully quiet raises this at the same
+       * moment flattening starts wanting it -- and loses to it, since
+       * the flatten branch answers before these bits are asked for. */
+      if (layer.RefreshLiveness()) {
+        taken |= kLayerActivity;
+      }
     }
     return taken;
   }
 
   std::vector<const HwcLayer *> GetOrderLayersByZPos() const override;
+
+  /* The group selector's half of the dump: how plans were laid out and
+   * which layers count as drawing right now -- the oscillation of that
+   * answer is the thing to watch in the field. */
+  auto DumpGroupSelector() const -> std::string;
 
   std::string Dump();
 
@@ -486,6 +500,11 @@ class HwcDisplay : public ICompositorDisplay {
    * frame is handed. Empty until a frame has been shown, and emptied by
    * every path that makes the shown frame unrepresentative. */
   std::optional<CompositionPlanner::ValidatedComposition> reusable_plan_;
+
+  /* How the joining plans were laid out, for the dump. Mutable for the
+   * same reason the invalidator bits are: counted from a const path. */
+  mutable uint64_t steered_plans_ = 0;
+  mutable uint64_t first_fit_plans_ = 0;
 
   /* Whether the staged composition was handed back from the kept plan
    * rather than planned anew -- in which case writing it back at present
