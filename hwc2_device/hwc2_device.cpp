@@ -1058,17 +1058,32 @@ static int32_t SetDisplayBrightness(hwc2_device_t * /*device*/,
   return static_cast<int32_t>(HWC2::Error::Unsupported);
 }
 
-static int32_t GetRenderIntents(hwc2_device_t * /*device*/,
-                                hwc2_display_t /*display*/, int32_t mode,
+static int32_t GetRenderIntents(hwc2_device_t *device,
+                                hwc2_display_t display, int32_t mode,
                                 uint32_t *num_intents, int32_t *intents) {
   ALOGV("GetRenderIntents");
 
   if (mode < HAL_COLOR_MODE_NATIVE || mode > HAL_COLOR_MODE_DISPLAY_BT2020)
     return static_cast<int32_t>(HWC2::Error::BadParameter);
 
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
-  intents[0] = static_cast<int32_t>(HAL_RENDER_INTENT_COLORIMETRIC);
-  *num_intents = 1;
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+
+  const auto render_intents = idisplay->GetRenderIntents(
+      static_cast<ColorMode>(mode));
+
+  /* Asked twice, like the colour modes above: once with nowhere to put
+   * the answer, only to learn how much room to make, and again with the
+   * room made. The old stub wrote on the first asking -- a write
+   * through nothing that no 2.1 client ever made, and every 2.2 client
+   * would have. */
+  if (intents != nullptr) {
+    for (uint32_t i = 0; i < render_intents.size(); ++i) {
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
+      intents[i] = static_cast<int32_t>(render_intents[i]);
+    }
+  }
+  *num_intents = render_intents.size();
 
   return 0;
 }
@@ -1077,15 +1092,117 @@ static int32_t SetColorModeWithRenderIntent(hwc2_device_t *device,
                                             hwc2_display_t display,
                                             int32_t mode, int32_t intent) {
   ALOGV("SetColorModeWithRenderIntent");
-  if (mode < HAL_RENDER_INTENT_COLORIMETRIC ||
-      mode > HAL_RENDER_INTENT_TONE_MAP_ENHANCE) {
+  /* The old guard held the mode against the intent's boundaries -- a
+   * transposition that let nothing legal through by accident. The mode
+   * answers to the mode's range and the intent to the intent's, plus
+   * the one vendor value the framework passes through numerically. */
+  if (mode < HAL_COLOR_MODE_NATIVE || mode > HAL_COLOR_MODE_DISPLAY_BT2020)
     return static_cast<int32_t>(HWC2::Error::BadParameter);
+
+  const bool standard_intent = intent >= HAL_RENDER_INTENT_COLORIMETRIC &&
+                               intent <= HAL_RENDER_INTENT_TONE_MAP_ENHANCE;
+  if (!standard_intent &&
+      intent != static_cast<int32_t>(kVendorBoostedRenderIntent))
+    return static_cast<int32_t>(HWC2::Error::BadParameter);
+
+  // HDR color modes should be requested during modeset
+  if (mode == HAL_COLOR_MODE_DISPLAY_BT2020 ||
+      mode == HAL_COLOR_MODE_ADOBE_RGB ||
+      mode == HAL_COLOR_MODE_BT2020 ||
+      mode == HAL_COLOR_MODE_BT2100_PQ ||
+      mode == HAL_COLOR_MODE_BT2100_HLG) {
+    return static_cast<int32_t>(HWC2::Error::Unsupported);
   }
 
-  if (intent != HAL_RENDER_INTENT_COLORIMETRIC)
-    return static_cast<int32_t>(HWC2::Error::Unsupported);
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
 
-  return SetColorMode(device, display, mode);
+  idisplay->SetColorMode(static_cast<ColorMode>(mode),
+                         static_cast<ui::RenderIntent>(intent));
+  return 0;
+}
+
+static int32_t GetDataspaceSaturationMatrix(hwc2_device_t * /*device*/,
+                                            int32_t dataspace,
+                                            float *out_matrix) {
+  ALOGV("GetDataspaceSaturationMatrix");
+  if (dataspace != HAL_DATASPACE_SRGB_LINEAR)
+    return static_cast<int32_t>(HWC2::Error::BadParameter);
+
+  /* Identity, deliberately. This matrix exists for the legacy dataspace
+   * saturation the client composition applies itself; our saturation is
+   * a render intent, applied by the display's own colour machinery.
+   * Anything but identity here and a saturated frame that fell to the
+   * GPU would be saturated twice. */
+  static constexpr float kIdentity[16] = {1, 0, 0, 0,  //
+                                          0, 1, 0, 0,  //
+                                          0, 0, 1, 0,  //
+                                          0, 0, 0, 1};
+  for (int i = 0; i < 16; i++) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
+    out_matrix[i] = kIdentity[i];
+  }
+  return 0;
+}
+
+/* The rest of the 2.2 surface names things this hardware does not do,
+ * and says so the way upstream says it: an honest Unsupported, never a
+ * pretend success. Per-frame metadata is refused at the root -- a key
+ * list of nothing -- so the framework never sends any; readback has no
+ * engine behind it on a controller whose only output is the panel. */
+
+static int32_t GetPerFrameMetadataKeys(hwc2_device_t * /*device*/,
+                                       hwc2_display_t /*display*/,
+                                       uint32_t *num_keys,
+                                       int32_t * /*keys*/) {
+  ALOGV("GetPerFrameMetadataKeys");
+  *num_keys = 0;
+  return 0;
+}
+
+static int32_t SetLayerPerFrameMetadata(hwc2_device_t * /*device*/,
+                                        hwc2_display_t /*display*/,
+                                        hwc2_layer_t /*layer*/,
+                                        uint32_t /*num_elements*/,
+                                        const int32_t * /*keys*/,
+                                        const float * /*metadata*/) {
+  ALOGV("SetLayerPerFrameMetadata");
+  return static_cast<int32_t>(HWC2::Error::Unsupported);
+}
+
+static int32_t SetLayerFloatColor(hwc2_device_t * /*device*/,
+                                  hwc2_display_t /*display*/,
+                                  hwc2_layer_t /*layer*/,
+                                  hwc_float_color_t /*color*/) {
+  ALOGV("SetLayerFloatColor");
+  return static_cast<int32_t>(HWC2::Error::Unsupported);
+}
+
+static int32_t SetReadbackBuffer(hwc2_device_t * /*device*/,
+                                 hwc2_display_t /*display*/,
+                                 buffer_handle_t /*buffer*/,
+                                 int32_t release_fence) {
+  ALOGV("SetReadbackBuffer");
+  /* The fence arrives owned by us whatever the answer is. */
+  if (release_fence >= 0)
+    close(release_fence);
+  return static_cast<int32_t>(HWC2::Error::Unsupported);
+}
+
+static int32_t GetReadbackBufferAttributes(hwc2_device_t * /*device*/,
+                                           hwc2_display_t /*display*/,
+                                           int32_t * /*format*/,
+                                           int32_t * /*dataspace*/) {
+  ALOGV("GetReadbackBufferAttributes");
+  return static_cast<int32_t>(HWC2::Error::Unsupported);
+}
+
+static int32_t GetReadbackBufferFence(hwc2_device_t * /*device*/,
+                                      hwc2_display_t /*display*/,
+                                      int32_t *out_fence) {
+  ALOGV("GetReadbackBufferFence");
+  *out_fence = -1;
+  return static_cast<int32_t>(HWC2::Error::Unsupported);
 }
 
 static int32_t GetDisplayIdentificationData(hwc2_device_t *device,
@@ -1581,6 +1698,20 @@ static hwc2_function_pointer_t HookDevGetFunction(struct hwc2_device * /*dev*/,
       return (hwc2_function_pointer_t)GetRenderIntents;
     case HWC2::FunctionDescriptor::SetColorModeWithRenderIntent:
       return (hwc2_function_pointer_t)SetColorModeWithRenderIntent;
+    case HWC2::FunctionDescriptor::GetDataspaceSaturationMatrix:
+      return (hwc2_function_pointer_t)GetDataspaceSaturationMatrix;
+    case HWC2::FunctionDescriptor::GetPerFrameMetadataKeys:
+      return (hwc2_function_pointer_t)GetPerFrameMetadataKeys;
+    case HWC2::FunctionDescriptor::SetLayerPerFrameMetadata:
+      return (hwc2_function_pointer_t)SetLayerPerFrameMetadata;
+    case HWC2::FunctionDescriptor::SetLayerFloatColor:
+      return (hwc2_function_pointer_t)SetLayerFloatColor;
+    case HWC2::FunctionDescriptor::SetReadbackBuffer:
+      return (hwc2_function_pointer_t)SetReadbackBuffer;
+    case HWC2::FunctionDescriptor::GetReadbackBufferAttributes:
+      return (hwc2_function_pointer_t)GetReadbackBufferAttributes;
+    case HWC2::FunctionDescriptor::GetReadbackBufferFence:
+      return (hwc2_function_pointer_t)GetReadbackBufferFence;
     case HWC2::FunctionDescriptor::GetDisplayIdentificationData:
       return (hwc2_function_pointer_t)GetDisplayIdentificationData;
     case HWC2::FunctionDescriptor::GetDisplayCapabilities:

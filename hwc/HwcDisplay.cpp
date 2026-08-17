@@ -1159,7 +1159,12 @@ auto HwcDisplay::GetColorModes() const -> std::vector<ColorMode> {
 
 auto HwcDisplay::GetRenderIntents(ColorMode /*color_mode*/) const
     -> std::vector<ui::RenderIntent> {
-  return {ui::RenderIntent::COLORIMETRIC,
+  /* Two honest choices and their tone-mapped twins: colorimetric is the
+   * panel as calibrated, enhance is the boosted matrix on the display's
+   * own colour machinery. The vendor value is the same boost under the
+   * number LineageOS passes through numerically from its display
+   * setting. */
+  return {ui::RenderIntent::COLORIMETRIC, ui::RenderIntent::ENHANCE,
           ui::RenderIntent::TONE_MAP_COLORIMETRIC, kVendorBoostedRenderIntent};
 }
 
@@ -1175,6 +1180,12 @@ void HwcDisplay::SetColorMode(ColorMode mode, ui::RenderIntent render_intent) {
     case ui::RenderIntent::COLORIMETRIC:
     case ui::RenderIntent::TONE_MAP_COLORIMETRIC:
       render_intent_matrix_ = GetIdentityCtmPtr();
+      break;
+    case ui::RenderIntent::ENHANCE:
+    case ui::RenderIntent::TONE_MAP_ENHANCE:
+      /* The framework's own name for what the vendor value asks for;
+       * one matrix answers both spellings. */
+      render_intent_matrix_ = GetBoostedCTMPtr();
       break;
     default:
       if (render_intent == kVendorBoostedRenderIntent) {
