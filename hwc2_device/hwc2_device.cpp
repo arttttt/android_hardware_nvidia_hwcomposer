@@ -23,7 +23,6 @@
 #include <cinttypes>
 #include <memory>
 #include <optional>
-#include <sstream>
 
 #include <cutils/native_handle.h>
 #include <hardware/hwcomposer2.h>
@@ -359,20 +358,6 @@ static BufferSampleRange Hwc2ToSampleRange(int32_t dataspace) {
   }
 }
 
-/* Temporary trace: the 2.2-era descriptors the loader asked of
- * getFunction, and those that drew a blank. Composer logs do not reach
- * logcat on this platform; the dump is the only channel out. */
-static uint64_t g_asked_descriptor_mask;
-static uint64_t g_blank_descriptor_mask;
-
-static std::string DescriptorTraceString() {
-  std::stringstream ss;
-  ss << "getFunction 45+ asks      : asked 0x" << std::hex
-     << g_asked_descriptor_mask << ", blank 0x" << g_blank_descriptor_mask
-     << std::dec << "\n";
-  return ss.str();
-}
-
 /* Device functions */
 static int32_t Dump(hwc2_device_t *device, uint32_t *out_size,
                     char *out_buffer) {
@@ -388,16 +373,14 @@ static int32_t Dump(hwc2_device_t *device, uint32_t *out_size,
   LOCK_COMPOSER(device);
 
   if (out_buffer != nullptr) {
-    const std::string full = ihwc->GetLastStateDump() +
-                             DescriptorTraceString();
-    auto copied_bytes = full.copy(out_buffer, *out_size);
+    const std::string &last_dump = ihwc->GetLastStateDump();
+    auto copied_bytes = last_dump.copy(out_buffer, *out_size);
     *out_size = copied_bytes;
     return 0;
   }
 
   const std::string &new_dump = ihwc->RefreshStateDump();
-  *out_size = static_cast<uint32_t>(new_dump.size() +
-                                    DescriptorTraceString().size());
+  *out_size = static_cast<uint32_t>(new_dump.size());
   return 0;
 }
 
@@ -1649,8 +1632,6 @@ static int32_t SetLayerZOrder(hwc2_device_t *device, hwc2_display_t display,
 static hwc2_function_pointer_t HookDevGetFunction(struct hwc2_device * /*dev*/,
                                                   int32_t descriptor) {
   auto func = static_cast<HWC2::FunctionDescriptor>(descriptor);
-  if (descriptor >= HWC2_FUNCTION_SET_LAYER_FLOAT_COLOR && descriptor < 64)
-    g_asked_descriptor_mask |= 1ULL << descriptor;
   switch (func) {
     // Device functions
     case HWC2::FunctionDescriptor::CreateVirtualDisplay:
@@ -1783,8 +1764,6 @@ static hwc2_function_pointer_t HookDevGetFunction(struct hwc2_device * /*dev*/,
       return (hwc2_function_pointer_t)SetLayerZOrder;
     case HWC2::FunctionDescriptor::Invalid:
     default:
-      if (descriptor >= 0 && descriptor < 64)
-        g_blank_descriptor_mask |= 1ULL << descriptor;
       return nullptr;
   }
 }
