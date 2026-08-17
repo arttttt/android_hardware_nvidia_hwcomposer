@@ -1584,15 +1584,28 @@ HwcDisplay::CreateLayerToPlaneJoiningPlan(
                                     std::move(cursor_layer));
   if (composition) {
     composition->client_z_order = client_z_order;
-    (composition->steered ? steered_plans_ : first_fit_plans_)++;
+    const auto outcome = static_cast<size_t>(composition->steering);
+    if (outcome < kSteeringOutcomes) {
+      steering_outcomes_[outcome]++;
+    }
   }
   return composition;
 }
 
 std::string HwcDisplay::DumpGroupSelector() const {
+  /* In enum order. The fallback reasons are the interesting half: they
+   * say whether first-fit frames are the table's size (lives overflow),
+   * the scene's shape (run too long), or nothing to steer at all. */
+  static const char *const kOutcomeNames[kSteeringOutcomes] =
+      {"steered", "fits ordinary", "monotone", "run too long",
+       "lives overflow", "seat refused"};
   std::stringstream ss;
-  ss << "Group selector            : steered " << steered_plans_
-     << ", first fit " << first_fit_plans_ << "\n";
+  ss << "Group selector            :";
+  for (size_t i = 0; i < kSteeringOutcomes; i++) {
+    ss << (i > 0 ? ", " : " ") << kOutcomeNames[i] << " "
+       << steering_outcomes_[i];
+  }
+  ss << "\n";
   for (const auto &[id, layer] : layers_) {
     ss << "  layer z=" << layer.GetZOrder() << "             : "
        << (layer.IsLive() ? "live" : "quiet") << "\n";

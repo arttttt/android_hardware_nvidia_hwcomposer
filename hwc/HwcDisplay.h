@@ -501,10 +501,11 @@ class HwcDisplay : public ICompositorDisplay {
    * every path that makes the shown frame unrepresentative. */
   std::optional<CompositionPlanner::ValidatedComposition> reusable_plan_;
 
-  /* How the joining plans were laid out, for the dump. Mutable for the
-   * same reason the invalidator bits are: counted from a const path. */
-  mutable uint64_t steered_plans_ = 0;
-  mutable uint64_t first_fit_plans_ = 0;
+  /* How the joining plans were laid out, one counter per steering
+   * outcome, for the dump. Mutable for the same reason the invalidator
+   * bits are: counted from a const path. */
+  static constexpr size_t kSteeringOutcomes = 6;
+  mutable uint64_t steering_outcomes_[kSteeringOutcomes] = {};
 
   /* Whether the staged composition was handed back from the kept plan
    * rather than planned anew -- in which case writing it back at present

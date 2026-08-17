@@ -49,8 +49,28 @@ struct LayerToPlaneJoiningPlan {
   std::optional<int> client_z_order;
 
   /* Whether the merge was steered onto the quiet run of the stack
-   * rather than taking the top by first fit. For the counters only --
-   * nothing downstream behaves differently for a steered plan. */
+   * rather than taking the top by first fit, and when it was not --
+   * why. For the counters only; nothing downstream behaves differently
+   * for a steered plan. The reasons matter more than the ratio: they
+   * say whether the fallback is the table's size or the policy's
+   * blindness, which is not a question to settle by assertion. */
+  enum class Steering {
+    kSteered,
+    /* The ordinary planes hold the scene whole; merging would cost an
+     * engine pass for tidiness. */
+    kFitsOrdinary,
+    /* All quiet or all drawing: no run is better than any other. */
+    kMonotone,
+    /* The longest quiet run outnumbers the merging planes. */
+    kRunTooLong,
+    /* What is not in the run outnumbers the ordinary planes: too many
+     * drawing layers for the windows -- the table's actual size. */
+    kLivesOverflow,
+    /* A layer refused the plane class the steering chose for it. */
+    kSeatRefused,
+  };
+  Steering steering = Steering::kFitsOrdinary;
+
   bool steered = false;
 
   static auto CreateLayerToPlaneJoiningPlan(

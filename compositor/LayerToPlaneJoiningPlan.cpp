@@ -82,6 +82,8 @@ bool PlaceFirstFit(LayerToPlaneJoiningPlan &plan,
 bool PlaceSteered(LayerToPlaneJoiningPlan &plan,
                   const std::vector<PlaneRef> &avail_planes,
                   std::vector<LayerData> &composition) {
+  using Steering = LayerToPlaneJoiningPlan::Steering;
+
   size_t ordinary_count = 0;
   size_t merging_count = 0;
   for (const auto &plane : avail_planes) {
@@ -95,6 +97,7 @@ bool PlaceSteered(LayerToPlaneJoiningPlan &plan,
   /* A scene the ordinary planes can hold whole should not pay an engine
    * pass for tidiness. */
   if (merging_count == 0 || composition.size() <= ordinary_count) {
+    plan.steering = Steering::kFitsOrdinary;
     return false;
   }
 
@@ -106,6 +109,7 @@ bool PlaceSteered(LayerToPlaneJoiningPlan &plan,
   /* All quiet or all drawing: no run is better than any other, and the
    * first fit's shape is as good as shapes get. */
   if (!any_live || !any_quiet) {
+    plan.steering = Steering::kMonotone;
     return false;
   }
 
@@ -129,8 +133,12 @@ bool PlaceSteered(LayerToPlaneJoiningPlan &plan,
     i = j;
   }
 
-  if (run_len > merging_count ||
-      composition.size() - run_len > ordinary_count) {
+  if (run_len > merging_count) {
+    plan.steering = Steering::kRunTooLong;
+    return false;
+  }
+  if (composition.size() - run_len > ordinary_count) {
+    plan.steering = Steering::kLivesOverflow;
     return false;
   }
 
@@ -153,6 +161,7 @@ bool PlaceSteered(LayerToPlaneJoiningPlan &plan,
     auto &it = merged ? merging_it : ordinary_it;
     it = std::find_if(it, avail_planes.end(), fits);
     if (it == avail_planes.end()) {
+      plan.steering = Steering::kSeatRefused;
       return false;
     }
     seats.push_back(*it);
@@ -163,6 +172,7 @@ bool PlaceSteered(LayerToPlaneJoiningPlan &plan,
     plan.plan.emplace_back(std::move(composition[i]), std::move(seats[i]),
                            static_cast<int>(plan.plan.size()));
   }
+  plan.steering = Steering::kSteered;
   return true;
 }
 
