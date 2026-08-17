@@ -164,6 +164,15 @@ class AtomicStateManager {
    * panel does. */
   virtual void NoteVsyncEnabled(bool /*enabled*/) {
   }
+
+  /* Whether a vsync timestamp taken right now reflects the display's
+   * native timing. Always true by default; hardware that slows its
+   * panel answers false in the brief shadow after a wake, while a
+   * stretched frame may still be finishing -- a timestamp from there
+   * would mis-teach the framework's timing model. */
+  virtual bool VsyncTimestampTrustworthy() {
+    return true;
+  }
 };
 
 }  // namespace android::drm_hwcomposer

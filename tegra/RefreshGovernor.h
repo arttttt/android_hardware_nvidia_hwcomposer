@@ -73,6 +73,17 @@ class RefreshGovernor {
    * of the first vsync sample the framework will take. */
   void NoteVsyncEnabled(bool enabled);
 
+  /* Whether a vsync timestamp taken now was born of a clean frame.
+   * False inside the raise's shadow -- the stretch of time in which the
+   * hardware may still be finishing a slowed frame after a wake. A
+   * timestamp from that shadow, fed to the framework's timing model,
+   * teaches it a thirty-hertz world that no longer exists; and the
+   * model, once taught, self-confirms -- frames latch on every second
+   * vblank of a healthy panel and the fences agree with the lie, for
+   * seconds, until something forces a resample. Asked from the vsync
+   * thread for every tick. */
+  bool VsyncTimestampTrustworthy() const;
+
   /* For the dump: how long the panel has lived slow, and how often it
    * went there. Time, not frames -- on the floor there are no frames
    * to count. */
@@ -101,6 +112,12 @@ class RefreshGovernor {
    * than this by construction. */
   static constexpr std::chrono::milliseconds kQuietDelay{1000};
 
+  /* How long after a raise a vsync timestamp may still carry the old,
+   * stretched timing: the raise applies at a frame's end, so up to two
+   * slowed frames -- sixty-seven milliseconds -- can complete after the
+   * filing, plus margin. Ticks inside this shadow are not delivered. */
+  static constexpr std::chrono::milliseconds kRaiseShadow{75};
+
   const int fd_;
 
   mutable std::mutex lock_;
@@ -114,6 +131,7 @@ class RefreshGovernor {
   bool floored_ = false;
   std::chrono::steady_clock::time_point last_activity_;
   std::chrono::steady_clock::time_point floored_at_;
+  std::chrono::steady_clock::time_point last_raise_;
 
   uint64_t descents_ = 0;
   std::chrono::nanoseconds floor_total_{0};

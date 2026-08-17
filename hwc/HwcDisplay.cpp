@@ -727,8 +727,17 @@ void HwcDisplay::SetVsyncCallbacksEnabled(bool enabled) {
   if (vsync_event_en_) {
     Hwc *hwc = hwc_;
     DisplayHandle id = handle_;
+    auto *state_manager = GetPipe().atomic_state_manager.get();
     // Callback will be called from the vsync thread.
-    callback = [hwc, id](int64_t timestamp, uint32_t period_ns) {
+    callback = [hwc, id, state_manager](int64_t timestamp,
+                                        uint32_t period_ns) {
+      /* A tick born of a stretched frame is withheld rather than
+       * delivered: fed to the framework's timing model it teaches a
+       * slow world that no longer exists, and the model, once taught,
+       * self-confirms for seconds. The first clean tick is at most a
+       * stretched frame away. */
+      if (!state_manager->VsyncTimestampTrustworthy())
+        return;
       hwc->SendVsyncEventToClient(id, timestamp, period_ns);
     };
   }

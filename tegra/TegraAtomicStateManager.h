@@ -280,6 +280,10 @@ class TegraAtomicStateManager : public AtomicStateManager {
       governor_->NoteVsyncEnabled(enabled);
   }
 
+  bool VsyncTimestampTrustworthy() override {
+    return governor_ == nullptr || governor_->VsyncTimestampTrustworthy();
+  }
+
  private:
   /* Lights the panel or puts it out, and remembers which. Not the head's
    * job: the controller posts frames and has no say over whether the display

@@ -84,8 +84,20 @@ void RefreshGovernor::RaiseLocked() {
     return;
 
   FileVfpLocked(0);
-  floor_total_ += std::chrono::steady_clock::now() - floored_at_;
+  const auto now = std::chrono::steady_clock::now();
+  floor_total_ += now - floored_at_;
+  last_raise_ = now;
   floored_ = false;
+}
+
+bool RefreshGovernor::VsyncTimestampTrustworthy() const {
+  std::lock_guard<std::mutex> guard(lock_);
+
+  if (floored_)
+    return true; /* nobody listens on the floor; whoever does, woke us
+                    first and moved last_raise_. */
+
+  return std::chrono::steady_clock::now() - last_raise_ >= kRaiseShadow;
 }
 
 void RefreshGovernor::NoteActivity() {
