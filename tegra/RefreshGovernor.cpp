@@ -41,7 +41,9 @@ std::unique_ptr<RefreshGovernor> RefreshGovernor::Probe(int dc_fd) {
   /* A release is harmless on a panel already at its native rate, which
    * makes it the honest probe: a kernel without the door answers ENOTTY,
    * a head whose stretch machinery never woke answers ENOSYS, and either
-   * way the governor has no business existing. */
+   * way the governor has no business existing. It also heals: a
+   * predecessor that died on the floor left the panel slow, and this
+   * very probe is what raises it. */
   uint32_t native = 0;
   if (ioctl(dc_fd, kSetActVfp, &native) != 0) {
     ALOGI("no refresh stretch on this kernel (%s), governor not started",
@@ -101,7 +103,13 @@ void RefreshGovernor::NoteVsyncEnabled(bool enabled) {
     if (enabled) {
       /* The wake must complete before this returns: the framework's
        * first timing sample follows the enable, and it has to find the
-       * panel already at its native rate. */
+       * panel already at its native rate. Filing here is enough even
+       * though the kernel applies at the frame's end: the framework
+       * measures intervals, not instants, so at worst ONE interval of
+       * its six-sample model carries the stretched frame's tail -- a
+       * sixth of seventeen extra milliseconds, digested by its own
+       * outlier filters. The two-hundred-millisecond misjudgement this
+       * guards against needs EVERY sample slow, not one. */
       RaiseLocked();
       vsync_off_ = false;
     } else {
