@@ -1408,6 +1408,8 @@ std::string TegraAtomicStateManager::DumpState() {
     if (rotate_pool_ && rotate_pool_->held_slots() != 0)
       ss << "  intermediates held      : " << rotate_pool_->held_slots()
          << " (" << (rotate_pool_->held_bytes() / 1024) << " KiB)\n";
+    if (rotate_pool_ && rotate_pool_->trims() != 0)
+      ss << "  idle trims              : " << rotate_pool_->trims() << "\n";
     ss << "Engine over its lifetime:\n"
        << "  frames accepted         : " << vic_->composed() << "\n"
        << "  frames refused          : " << vic_->refused() << "\n"

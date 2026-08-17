@@ -80,6 +80,12 @@ class TurnPool {
   /* For the dump: what the pool is holding right now. */
   size_t held_slots() const { return slots_.size(); }
   size_t held_bytes() const;
+
+  /* How many times the idle trim gave everything back -- the pool's own
+   * heartbeat for the dump: a count that grows says rotation comes in
+   * episodes, one that never moves says the pool is either always busy
+   * or never used. */
+  uint64_t trims() const { return trims_; }
   size_t cap() const { return cap_; }
 
  private:
@@ -91,6 +97,7 @@ class TurnPool {
     bool taken = false;
   };
 
+  uint64_t trims_ = 0;
   uint32_t max_width_ = 0;
   uint32_t max_height_ = 0;
   size_t cap_ = 0;

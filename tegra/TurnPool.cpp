@@ -152,6 +152,7 @@ void TurnPool::FrameEnd(bool turned_any) {
         allocator.free(slot.handle);
     slots_.clear();
     idle_frames_ = 0;
+    trims_++;
     ALOGI("idle, intermediates given back");
   }
 }
