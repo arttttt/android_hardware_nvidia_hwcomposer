@@ -26,7 +26,9 @@
 #include <utility>
 
 #include "utils/Logging.h"
+#include "utils/properties.h"
 
+#include "backend/BackendDisplayCapabilities.h"
 #include "tegra/FbDevice.h"
 #include "tegra/TegraAtomicStateManager.h"
 
@@ -35,6 +37,27 @@
 
 namespace android {
 namespace hwc {
+
+namespace {
+
+/* The colour modes this display honestly offers. sRGB is the colour
+ * pipeline's doing -- the panel is corrected toward it by the CMU --
+ * so the offer stands only while that pipeline is on. Without it the
+ * panel is only ever its native self, and saying nothing here leaves
+ * the generic answer in charge. */
+class TegraDisplayCapabilities
+    : public drm_hwcomposer::BackendDisplayCapabilities {
+  std::optional<std::vector<drm_hwcomposer::ColorMode>>
+  GetColorModeOverrides() const override {
+    if (!drm_hwcomposer::Properties::CmuColorPipeline())
+      return std::nullopt;
+    return std::vector<drm_hwcomposer::ColorMode>{
+        drm_hwcomposer::ColorMode::kNative,
+        drm_hwcomposer::ColorMode::kSrgb};
+  }
+};
+
+}  // namespace
 
 std::unique_ptr<TegraDisplayPipeline> TegraDisplayPipeline::create(
     TegraConnector &connector) {
@@ -87,6 +110,8 @@ TegraDisplayPipeline::TegraDisplayPipeline(TegraConnector &tegraConnector,
      * would give them back. */
     connector = tegraConnector.BindPipeline(this);
     crtc = mCrtc.BindPipeline(this);
+
+    capabilities = std::make_unique<TegraDisplayCapabilities>();
 
     /* Asked for once, here, rather than the first time a frame needs it: a
      * failure to reach the engine is a fact about the device, and finding it
