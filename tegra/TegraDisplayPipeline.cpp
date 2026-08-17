@@ -189,11 +189,11 @@ drm_hwcomposer::UsablePlanes TegraDisplayPipeline::GetUsablePlanes() const {
              * lands on any of them is drawn into the one buffer that window
              * shows.
              *
-             * That is not a lie it can be caught in. Planes are handed out in
-             * the order they appear here, so these, coming last, take the
-             * topmost layers -- which is exactly the group a single buffer can
-             * hold, because a merged buffer occupies one place in the stack
-             * and anything above it would have to be inside it.
+             * That is not a lie it can be caught in. What lands here must be
+             * one contiguous run of the stack -- a merged buffer occupies one
+             * place in it -- and the joining plan keeps that true from either
+             * direction: by first fit these, coming last, take the topmost
+             * layers; by steering they take the quiet run, wherever it lies.
              *
              * As many as the engine draws in one pass and no more.
              */
@@ -208,18 +208,21 @@ drm_hwcomposer::UsablePlanes TegraDisplayPipeline::GetUsablePlanes() const {
 
     drm_hwcomposer::UsablePlanes usable;
 
-    /* The merge takes the top of the stack: the topmost layers are the ones
-     * a single buffer can hold without anything having to be inside it.
+    /* The merge takes one contiguous run of the stack -- by default the
+     * top, by steering the quiet run wherever it lies.
      *
-     * Taking the bottom instead was tried, on the reasoning that the bottom
-     * is where the buffers short of time live -- a merged layer's buffer is
-     * free the moment the engine has read it, a frame before a window would
-     * let go. The panel answered: the bottom of a transition is three full
-     * screens, and the engine reading all of them and writing a fourth every
-     * frame cost 95 per cent of the ticks to memory bandwidth. The principle
-     * wants a mechanism that can pick the changing layers out of the middle
-     * of the stack; this one can only take a run from one end, so it takes
-     * the end that is cheap. */
+     * Taking the bottom UNCONDITIONALLY was tried once, on the reasoning
+     * that the bottom is where the buffers short of time live -- a merged
+     * layer's buffer is free the moment the engine has read it, a frame
+     * before a window would let go. The panel answered: the bottom of a
+     * transition is three full screens, and the engine reading all of
+     * them and writing a fourth every frame cost 95 per cent of the
+     * ticks to memory bandwidth. The principle wanted a mechanism that
+     * could pick the changing layers out of the middle of the stack, and
+     * the joining plan's steering is that mechanism: it moves the merge
+     * only onto layers that hold still, so the cache answers for them
+     * and the engine does not reread the screens each frame -- the very
+     * cost that buried the unconditional bottom. */
     for (const auto &plane : mPlanes) {
         auto binding = plane->BindPipeline(this, true);
         if (!binding)
