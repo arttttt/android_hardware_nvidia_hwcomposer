@@ -116,12 +116,9 @@ void RefreshGovernor::NoteVsyncEnabled(bool enabled) {
       /* The wake must complete before this returns: the framework's
        * first timing sample follows the enable, and it has to find the
        * panel already at its native rate. Filing here is enough even
-       * though the kernel applies at the frame's end: the framework
-       * measures intervals, not instants, so at worst ONE interval of
-       * its six-sample model carries the stretched frame's tail -- a
-       * sixth of seventeen extra milliseconds, digested by its own
-       * outlier filters. The two-hundred-millisecond misjudgement this
-       * guards against needs EVERY sample slow, not one. */
+       * though the kernel applies at the frame's end, because the
+       * ticks born of the frames still finishing fall inside the
+       * raise's shadow and are never delivered at all. */
       RaiseLocked();
       vsync_off_ = false;
     } else {

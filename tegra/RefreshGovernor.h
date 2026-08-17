@@ -114,8 +114,11 @@ class RefreshGovernor {
 
   /* How long after a raise a vsync timestamp may still carry the old,
    * stretched timing: the raise applies at a frame's end, so up to two
-   * slowed frames -- sixty-seven milliseconds -- can complete after the
-   * filing, plus margin. Ticks inside this shadow are not delivered. */
+   * slowed frames can complete after the filing. The law, should the
+   * ladder ever grow steps: at least two periods of the DEEPEST step
+   * plus margin -- today two thirty-hertz frames, sixty-seven
+   * milliseconds, with eight of slack. A deeper step silently outgrows
+   * a shadow sized to this one. Ticks inside are not delivered. */
   static constexpr std::chrono::milliseconds kRaiseShadow{75};
 
   const int fd_;
