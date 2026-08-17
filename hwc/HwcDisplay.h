@@ -150,6 +150,12 @@ class HwcDisplay : public ICompositorDisplay {
    * answer is the thing to watch in the field. */
   auto DumpGroupSelector() const -> std::string;
 
+  /* The colour bridge's half of the dump: what the framework asked of
+   * the colour surface and what it last set. A colour switch that never
+   * shows on the panel broke in one of two places -- above this surface
+   * or below it -- and these counters say which. */
+  auto DumpColorBridge() const -> std::string;
+
   std::string Dump();
 
   auto GetDisplayName() const -> std::string;
@@ -461,6 +467,12 @@ class HwcDisplay : public ICompositorDisplay {
   // ASSERTION: render_intent_matrix_ must never have offset.
   std::shared_ptr<const HalColorTransformMatrix>
       render_intent_matrix_ = GetIdentityCtmPtr();
+  /* Colour-bridge telemetry; the query counter is mutable because the
+   * query itself is const. */
+  mutable uint32_t render_intent_queries_ = 0;
+  uint32_t color_mode_sets_ = 0;
+  int32_t last_color_mode_ = -1;
+  int32_t last_render_intent_ = -1;
   bool client_ctm_has_offset_ = false;
   bool client_ctm_has_negative_ = false;
   ContentType content_type_ = ContentType::kNoData;

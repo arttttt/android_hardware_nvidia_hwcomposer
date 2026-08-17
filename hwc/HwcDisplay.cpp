@@ -1159,6 +1159,7 @@ auto HwcDisplay::GetColorModes() const -> std::vector<ColorMode> {
 
 auto HwcDisplay::GetRenderIntents(ColorMode /*color_mode*/) const
     -> std::vector<ui::RenderIntent> {
+  render_intent_queries_++;
   /* Two honest choices and their tone-mapped twins: colorimetric is the
    * panel as calibrated, enhance is the boosted matrix on the display's
    * own colour machinery. The vendor value is the same boost under the
@@ -1170,6 +1171,9 @@ auto HwcDisplay::GetRenderIntents(ColorMode /*color_mode*/) const
 
 void HwcDisplay::SetColorMode(ColorMode mode, ui::RenderIntent render_intent) {
   MarkPlanInvalid(kColorMode);
+  color_mode_sets_++;
+  last_color_mode_ = static_cast<int32_t>(mode);
+  last_render_intent_ = static_cast<int32_t>(render_intent);
 
   // If force_color_mode is set, override the color modes.
   colorspace_ = forced_color_mode_
@@ -1628,6 +1632,20 @@ std::string HwcDisplay::DumpGroupSelector() const {
     ss << "  layer z=" << layer.GetZOrder() << "             : "
        << (layer.IsLive() ? "live" : "quiet") << "\n";
   }
+  return ss.str();
+}
+
+std::string HwcDisplay::DumpColorBridge() const {
+  std::stringstream ss;
+  ss << "Colour bridge             : intent queries " << render_intent_queries_
+     << ", mode sets " << color_mode_sets_;
+  if (color_mode_sets_ > 0) {
+    ss << ", last mode " << last_color_mode_ << " intent "
+       << last_render_intent_;
+  }
+  ss << ", intent matrix "
+     << (render_intent_matrix_ == GetBoostedCTMPtr() ? "boost" : "identity")
+     << "\n";
   return ss.str();
 }
 

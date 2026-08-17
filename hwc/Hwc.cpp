@@ -92,6 +92,7 @@ std::string DumpDisplayStats(const HwcDisplay *display,
   }
 
   ss << display->DumpGroupSelector() << "\n";
+  ss << display->DumpColorBridge() << "\n";
 
   auto &state_manager = display->GetPipe().atomic_state_manager;
   if (state_manager) {
