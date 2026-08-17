@@ -676,17 +676,26 @@ static int32_t GetDisplayName(hwc2_device_t *device, hwc2_display_t display,
   return 0;
 }
 
+/* The wide and HDR families are modeset decisions on this display, and
+ * every colour-mode door must agree on that: a mode the setters refuse
+ * is a mode the intent list must not advertise either. Each door still
+ * answers in its own spec vocabulary -- the getter has no Unsupported,
+ * the setters do. */
+static bool IsModesetOnlyColorMode(int32_t mode) {
+  return mode == HAL_COLOR_MODE_DISPLAY_BT2020 ||
+         mode == HAL_COLOR_MODE_ADOBE_RGB ||
+         mode == HAL_COLOR_MODE_BT2020 ||
+         mode == HAL_COLOR_MODE_BT2100_PQ ||
+         mode == HAL_COLOR_MODE_BT2100_HLG;
+}
+
 static int32_t SetColorMode(hwc2_device_t *device, hwc2_display_t display, int32_t mode) {
   ALOGV("SetColorMode");
   if (mode < HAL_COLOR_MODE_NATIVE || mode > HAL_COLOR_MODE_DISPLAY_BT2020)
     return static_cast<int32_t>(HWC2::Error::BadParameter);
 
   // HDR color modes should be requested during modeset
-  if (mode == HAL_COLOR_MODE_DISPLAY_BT2020 ||
-      mode == HAL_COLOR_MODE_ADOBE_RGB ||
-      mode == HAL_COLOR_MODE_BT2020 ||
-      mode == HAL_COLOR_MODE_BT2100_PQ ||
-      mode == HAL_COLOR_MODE_BT2100_HLG) {
+  if (IsModesetOnlyColorMode(mode)) {
     return static_cast<int32_t>(HWC2::Error::Unsupported);
   }
 
@@ -1058,19 +1067,6 @@ static int32_t SetDisplayBrightness(hwc2_device_t * /*device*/,
   return static_cast<int32_t>(HWC2::Error::Unsupported);
 }
 
-/* The wide and HDR families are modeset decisions on this display, and
- * the two colour-mode doors must agree on that: a mode the set refuses
- * is a mode the intent list must not advertise either. Each door still
- * answers in its own spec vocabulary -- the getter has no Unsupported,
- * the setter does. */
-static bool IsModesetOnlyColorMode(int32_t mode) {
-  return mode == HAL_COLOR_MODE_DISPLAY_BT2020 ||
-         mode == HAL_COLOR_MODE_ADOBE_RGB ||
-         mode == HAL_COLOR_MODE_BT2020 ||
-         mode == HAL_COLOR_MODE_BT2100_PQ ||
-         mode == HAL_COLOR_MODE_BT2100_HLG;
-}
-
 static int32_t GetRenderIntents(hwc2_device_t *device,
                                 hwc2_display_t display, int32_t mode,
                                 uint32_t *num_intents, int32_t *intents) {
@@ -1120,11 +1116,7 @@ static int32_t SetColorModeWithRenderIntent(hwc2_device_t *device,
     return static_cast<int32_t>(HWC2::Error::BadParameter);
 
   // HDR color modes should be requested during modeset
-  if (mode == HAL_COLOR_MODE_DISPLAY_BT2020 ||
-      mode == HAL_COLOR_MODE_ADOBE_RGB ||
-      mode == HAL_COLOR_MODE_BT2020 ||
-      mode == HAL_COLOR_MODE_BT2100_PQ ||
-      mode == HAL_COLOR_MODE_BT2100_HLG) {
+  if (IsModesetOnlyColorMode(mode)) {
     return static_cast<int32_t>(HWC2::Error::Unsupported);
   }
 
