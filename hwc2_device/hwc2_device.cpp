@@ -1632,6 +1632,9 @@ static int32_t SetLayerZOrder(hwc2_device_t *device, hwc2_display_t display,
 static hwc2_function_pointer_t HookDevGetFunction(struct hwc2_device * /*dev*/,
                                                   int32_t descriptor) {
   auto func = static_cast<HWC2::FunctionDescriptor>(descriptor);
+  /* Temporary trace: which 2.2+ descriptors the loader asks for. */
+  if (descriptor >= HWC2_FUNCTION_SET_LAYER_FLOAT_COLOR)
+    ALOGI("getFunction asked for descriptor %d", descriptor);
   switch (func) {
     // Device functions
     case HWC2::FunctionDescriptor::CreateVirtualDisplay:
@@ -1764,6 +1767,7 @@ static hwc2_function_pointer_t HookDevGetFunction(struct hwc2_device * /*dev*/,
       return (hwc2_function_pointer_t)SetLayerZOrder;
     case HWC2::FunctionDescriptor::Invalid:
     default:
+      ALOGI("getFunction has nothing for descriptor %d", descriptor);
       return nullptr;
   }
 }
