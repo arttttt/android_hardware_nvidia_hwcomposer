@@ -1312,7 +1312,19 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
      * them leaves it drawing into two.
      */
     if (report_engine_reads_ && merged && !merge.layers.empty()) {
+      /* The buffers named are the framework's own, never ours. This walks
+       * `merge.layers`, the plan as it arrived; the turn path writes its
+       * intermediates into a copy of that list (`drawn` above), so a turned
+       * member's intermediate never lands here and SurfaceFlinger is never
+       * handed a handle it did not hand in. Kept in mind whenever one of the
+       * two lists is reshaped. */
       out_result->engine_fence = merged;
+      /* One fence answers every buffer above. The merged pass is the last
+       * thing the engine runs in this frame, on the one serialised channel a
+       * session owns, so it cannot signal before the turn passes have read
+       * their sources: everything this frame asked the engine to read is
+       * done by the time it comes due. A parallel channel would break that,
+       * and would want the last turn's fence here instead. */
       out_result->engine_read.reserve(merge.layers.size());
       for (const auto &layer : merge.layers)
         if (layer.handle != nullptr)
