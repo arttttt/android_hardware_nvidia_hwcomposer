@@ -255,9 +255,9 @@ std::unique_ptr<ScratchBuffer> NvMapAllocator::Allocate(uint32_t width,
           surface_format_, kFormatA8B8G8R8);
   }
 
-  return ScratchBuffer::FromCarveout(drm_hwcomposer::MakeSharedFd(buffer_fd),
-                                     mem_handle, std::move(surface), width,
-                                     height, pitch);
+  return std::make_unique<ScratchBuffer>(ScratchBuffer::FromCarveout(
+      drm_hwcomposer::MakeSharedFd(buffer_fd), mem_handle,
+      std::move(surface), width, height, pitch));
 }
 
 }  // namespace hwc
