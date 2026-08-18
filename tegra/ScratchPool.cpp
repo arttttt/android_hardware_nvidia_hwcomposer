@@ -20,6 +20,7 @@
 #include <ui/GraphicBufferAllocator.h>
 #include <ui/PixelFormat.h>
 
+#include "tegra/NvMapAllocator.h"
 #include "utils/log.h"
 
 #undef  LOG_TAG
@@ -52,19 +53,51 @@ std::unique_ptr<ScratchPool> ScratchPool::Create(uint32_t width,
   pool->height_ = height;
   pool->slots_.resize(count);
 
+  /* The zone first, the whole pool or nothing: a refusal partway
+   * through is a pool half-carved from a zone that turned out not to
+   * have the room, so the whole pool is let go and asked of gralloc
+   * instead -- one origin per pool, one answer in the dump. */
+  auto *zone = NvMapAllocator::GetInstance();
+  if (zone != nullptr) {
+    bool whole = true;
+    for (size_t i = 0; i < count; i++) {
+      auto buffer = zone->Allocate(width, height);
+      if (!buffer) {
+        ALOGE("the zone gave %zu of %zu %ux%u; taking the pool to gralloc",
+              i, count, width, height);
+        whole = false;
+        break;
+      }
+      pool->slots_[i].buffer = std::move(*buffer);
+    }
+    if (whole) {
+      pool->origin_ = ScratchBuffer::Origin::kCarveout;
+      pool->stride_ = pool->slots_[0].buffer.pitch() / 4;
+      ALOGI("%zu carveout buffers, %ux%u, pitch %u", count, width, height,
+            pool->slots_[0].buffer.pitch());
+      return pool;
+    }
+
+    /* The refused half must be given back before the pool is rebuilt. */
+    for (auto &slot : pool->slots_)
+      slot.buffer = ScratchBuffer();
+  }
+
   auto &allocator = GraphicBufferAllocator::get();
 
   for (size_t i = 0; i < count; i++) {
     uint32_t stride = 0;
+    buffer_handle_t handle = nullptr;
     const status_t err = allocator.allocate(width, height,
                                             PIXEL_FORMAT_RGBA_8888, 1, kUsage,
-                                            &pool->slots_[i].handle, &stride,
-                                            0, "hwc-scratch");
-    if (err != NO_ERROR || pool->slots_[i].handle == nullptr) {
+                                            &handle, &stride, 0,
+                                            "hwc-scratch");
+    if (err != NO_ERROR || handle == nullptr) {
       ALOGE("cannot allocate scratch %zu of %zu at %ux%u: %d", i + 1, count,
             width, height, err);
       return nullptr;
     }
+    pool->slots_[i].buffer = ScratchBuffer::FromGralloc(handle);
 
     /* All of them come out the same shape or the pool is not a pool. */
     if (i == 0)
@@ -80,14 +113,19 @@ std::unique_ptr<ScratchPool> ScratchPool::Create(uint32_t width,
   return pool;
 }
 
-ScratchPool::~ScratchPool() {
+void ScratchPool::FreeSlots() {
   auto &allocator = GraphicBufferAllocator::get();
   for (auto &slot : slots_)
-    if (slot.handle != nullptr)
-      allocator.free(slot.handle);
+    if (slot.buffer.origin() == ScratchBuffer::Origin::kGralloc &&
+        slot.buffer.handle() != nullptr)
+      allocator.free(slot.buffer.handle());
 }
 
-buffer_handle_t ScratchPool::Next(drm_hwcomposer::SharedFd *ready) {
+ScratchPool::~ScratchPool() {
+  FreeSlots();
+}
+
+ScratchBuffer *ScratchPool::Next(drm_hwcomposer::SharedFd *ready) {
   if (slots_.empty())
     return nullptr;
 
@@ -109,7 +147,7 @@ buffer_handle_t ScratchPool::Next(drm_hwcomposer::SharedFd *ready) {
   if (ready != nullptr)
     *ready = slot.freed_when;
 
-  return slot.handle;
+  return &slot.buffer;
 }
 
 void ScratchPool::Rewind() {

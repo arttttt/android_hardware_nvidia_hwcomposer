@@ -23,6 +23,7 @@
 
 #include <cutils/native_handle.h>
 
+#include "tegra/ScratchBuffer.h"
 #include "utils/fd.h"
 
 namespace android {
@@ -73,6 +74,13 @@ class VicSession {
   struct Layer {
     buffer_handle_t handle;
 
+    /* The surface descriptor of a carveout buffer of ours, when this
+     * layer's pixels live in one -- a turned member, whose intermediate
+     * is read by the group pass instead of the framework's buffer.
+     * Mutually exclusive with `handle`: where this is set the handle is
+     * null and nothing is asked of the allocator. */
+    const uint32_t *carveout_words;
+
     float source_left;
     float source_top;
     float source_right;
@@ -122,7 +130,7 @@ class VicSession {
    * the buffer's origin; nought means the whole buffer. The caller that
    * shows only a corner of the target has no reason to pay for the rest of
    * it being written. */
-  drm_hwcomposer::SharedFd Compose(buffer_handle_t target,
+  drm_hwcomposer::SharedFd Compose(const SurfaceView &target,
                                    const std::vector<Layer> &layers,
                                    uint32_t width = 0, uint32_t height = 0,
                                    int target_ready = -1);
@@ -141,7 +149,7 @@ class VicSession {
    * returned fence says when the turned copy may be read. `target_ready`
    * is usually not needed at all -- the channel serialises our passes, so
    * a pass submitted after the group that read this buffer runs after it. */
-  drm_hwcomposer::SharedFd ComposeRotated(buffer_handle_t target,
+  drm_hwcomposer::SharedFd ComposeRotated(const SurfaceView &target,
                                           const Layer &layer,
                                           uint32_t transform,
                                           uint32_t width, uint32_t height,

@@ -918,7 +918,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       /* The buffer and, separately, when it may be written to. The engine is
        * told the second and waits for it itself; nothing here does. */
       SharedFd target_ready;
-      buffer_handle_t target = scratch_->Next(&target_ready);
+      hwc::ScratchBuffer *target = scratch_->Next(&target_ready);
       if (target == nullptr) {
         ForgetMerge();
         return -EBUSY;
@@ -963,8 +963,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         const uint32_t turned_w = swaps ? crop_h : crop_w;
         const uint32_t turned_h = swaps ? crop_w : crop_h;
 
-        buffer_handle_t inter = rotate_pool_->Take(turned_w, turned_h);
-        if (inter == nullptr) {
+        hwc::SurfaceView inter = rotate_pool_->Take(turned_w, turned_h);
+        if (inter.handle == nullptr && inter.carveout_words == nullptr) {
           /* The pool's refusal and the engine's look identical from the
            * dump; the log tells them apart, and says what was asked of a
            * pool holding what. */
@@ -990,7 +990,16 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
           merges_.rotate_ns_max = turn_took;
         turned_in_frame_ = true;
 
-        l.handle = inter;
+        /* The group reads the intermediate instead of the framework's
+         * buffer: a carveout intermediate hands over its ready-made
+         * surface descriptor, a gralloc one its handle, and the handle
+         * field is nulled either way so the engine knows which. */
+        if (inter.carveout_words != nullptr) {
+          l.handle = nullptr;
+          l.carveout_words = inter.carveout_words;
+        } else {
+          l.handle = inter.handle;
+        }
         l.source_left = 0.F;
         l.source_top = 0.F;
         l.source_right = static_cast<float>(turned_w);
@@ -1011,7 +1020,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       }
 
       const int64_t before_merge = NowNs();
-      merged = vic_->Compose(target, drawn, merge.width, merge.height,
+      merged = vic_->Compose(target->View(), drawn, merge.width, merge.height,
                              target_ready ? *target_ready : -1);
       if (!merged) {
         /* The engine would not take it. Nothing has been written, so the
@@ -1053,25 +1062,39 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       if (took > merges_.engine_ns_max)
         merges_.engine_ns_max = took;
 
-      auto *gralloc = NvGralloc::GetInstance();
-      NvGralloc::Surface surface{};
-      const int fd = gralloc != nullptr ? gralloc->GetMemFd(target) : -1;
-      if (fd < 0 || !gralloc->DescribeSurface(target, &surface)) {
-        /* Drawn, but this frame will never reach the panel: the slot goes
-         * back into rotation as the next one to write, and nothing of this
-         * frame is remembered. */
-        scratch_->Rewind();
-        ForgetMerge();
-        ALOGE("cannot describe the buffer the engine just drew");
-        return -EINVAL;
+      int buffer_fd = -1;
+      uint32_t buffer_offset = 0;
+      uint32_t buffer_stride = 0;
+      if (target->origin() == hwc::ScratchBuffer::Origin::kCarveout) {
+        /* Ours: the zone's own rows, described by the fields this
+         * composer chose, not by anything asked of the allocator. */
+        buffer_fd = target->fd();
+        buffer_stride = target->pitch();
+      } else {
+        auto *gralloc = NvGralloc::GetInstance();
+        NvGralloc::Surface surface{};
+        buffer_fd =
+            gralloc != nullptr ? gralloc->GetMemFd(target->handle()) : -1;
+        if (buffer_fd < 0 ||
+            !gralloc->DescribeSurface(target->handle(), &surface)) {
+          /* Drawn, but this frame will never reach the panel: the slot goes
+           * back into rotation as the next one to write, and nothing of this
+           * frame is remembered. */
+          scratch_->Rewind();
+          ForgetMerge();
+          ALOGE("cannot describe the buffer the engine just drew");
+          return -EINVAL;
+        }
+        buffer_offset = surface.offset;
+        buffer_stride = surface.pitch;
       }
 
       hwc::DcHead::Window &window = windows[merge.slot];
       window = hwc::DcHead::Window{};
       window.index = merge.window;
-      window.bufferFd = fd;
-      window.offset = surface.offset;
-      window.stride = surface.pitch;
+      window.bufferFd = buffer_fd;
+      window.offset = buffer_offset;
+      window.stride = buffer_stride;
 
       /* Ours to know rather than to ask about: this buffer was allocated by
        * this composer, as thirty-two bit colour laid out in rows, which is

@@ -124,7 +124,7 @@ void Run() {
     return;
 
   /* Never shown, so nothing is waiting on it and the fence is empty. */
-  buffer_handle_t target = pool->Next(nullptr);
+  ScratchBuffer *target = pool->Next(nullptr);
   if (target == nullptr)
     return;
 
@@ -169,7 +169,7 @@ void Run() {
   ALOGI("merging %ux%u over %ux%u into %ux%u", second.width, second.height,
         first.width, first.height, pool->width(), pool->height());
 
-  auto fence = session->Compose(target, layers);
+  auto fence = session->Compose(target->View(), layers);
   if (!fence) {
     ALOGE("the engine would not take it (%llu refused)",
           static_cast<unsigned long long>(session->refused()));

@@ -226,7 +226,7 @@ VicSession::~VicSession() {
 }
 
 drm_hwcomposer::SharedFd VicSession::Compose(
-    buffer_handle_t target, const std::vector<Layer> &layers,
+    const SurfaceView &target, const std::vector<Layer> &layers,
     uint32_t width, uint32_t height, int target_ready) {
   if (layers.empty() || layers.size() > kMaxLayers) {
     refused_++;
@@ -241,8 +241,12 @@ drm_hwcomposer::SharedFd VicSession::Compose(
 
   const void *target_surfaces = nullptr;
   size_t target_count = 0;
-  if (!gralloc->GetRawSurfaces(target, &target_surfaces, &target_count) ||
-      target_count != 1) {
+  if (target.carveout_words != nullptr) {
+    target_surfaces = target.carveout_words;
+    target_count = 1;
+  } else if (!gralloc->GetRawSurfaces(target.handle, &target_surfaces,
+                                      &target_count) ||
+             target_count != 1) {
     refused_++;
     return {};
   }
@@ -271,16 +275,25 @@ drm_hwcomposer::SharedFd VicSession::Compose(
    *
    * The buffer's own size still comes from the allocator rather than from
    * the layers: the bound is clamped to the buffer, not trusted over it. */
-  drm_hwcomposer::NvGralloc::Surface target_surface{};
-  if (!gralloc->DescribeSurface(target, &target_surface)) {
-    refused_++;
-    return {};
+  uint32_t buffer_width = 0;
+  uint32_t buffer_height = 0;
+  if (target.carveout_words != nullptr) {
+    buffer_width = target.carveout_width;
+    buffer_height = target.carveout_height;
+  } else {
+    drm_hwcomposer::NvGralloc::Surface target_surface{};
+    if (!gralloc->DescribeSurface(target.handle, &target_surface)) {
+      refused_++;
+      return {};
+    }
+    buffer_width = target_surface.width;
+    buffer_height = target_surface.height;
   }
 
-  if (width == 0 || width > target_surface.width)
-    width = target_surface.width;
-  if (height == 0 || height > target_surface.height)
-    height = target_surface.height;
+  if (width == 0 || width > buffer_width)
+    width = buffer_width;
+  if (height == 0 || height > buffer_height)
+    height = buffer_height;
 
   const NvRect target_rect = {
       .left = 0,
@@ -316,8 +329,11 @@ drm_hwcomposer::SharedFd VicSession::Compose(
 
     const void *surfaces = nullptr;
     size_t count = 0;
-    if (!gralloc->GetRawSurfaces(layer.handle, &surfaces, &count) ||
-        count != 1) {
+    if (layer.carveout_words != nullptr) {
+      surfaces = layer.carveout_words;
+      count = 1;
+    } else if (!gralloc->GetRawSurfaces(layer.handle, &surfaces, &count) ||
+               count != 1) {
       refused_++;
       return {};
     }
@@ -391,7 +407,7 @@ drm_hwcomposer::SharedFd VicSession::Compose(
 }
 
 drm_hwcomposer::SharedFd VicSession::ComposeRotated(
-    buffer_handle_t target, const Layer &layer, uint32_t transform,
+    const SurfaceView &target, const Layer &layer, uint32_t transform,
     uint32_t width, uint32_t height, int target_ready) {
   auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
   if (gralloc == nullptr || width == 0 || height == 0) {
@@ -401,15 +417,32 @@ drm_hwcomposer::SharedFd VicSession::ComposeRotated(
 
   const void *target_surfaces = nullptr;
   size_t target_count = 0;
-  if (!gralloc->GetRawSurfaces(target, &target_surfaces, &target_count) ||
-      target_count != 1) {
+  if (target.carveout_words != nullptr) {
+    target_surfaces = target.carveout_words;
+    target_count = 1;
+  } else if (!gralloc->GetRawSurfaces(target.handle, &target_surfaces,
+                                      &target_count) ||
+             target_count != 1) {
     refused_++;
     return {};
   }
 
-  drm_hwcomposer::NvGralloc::Surface target_surface{};
-  if (!gralloc->DescribeSurface(target, &target_surface) ||
-      width > target_surface.width || height > target_surface.height) {
+  uint32_t buffer_width = 0;
+  uint32_t buffer_height = 0;
+  if (target.carveout_words != nullptr) {
+    buffer_width = target.carveout_width;
+    buffer_height = target.carveout_height;
+  } else {
+    drm_hwcomposer::NvGralloc::Surface target_surface{};
+    if (!gralloc->DescribeSurface(target.handle, &target_surface)) {
+      refused_++;
+      return {};
+    }
+    buffer_width = target_surface.width;
+    buffer_height = target_surface.height;
+  }
+
+  if (width > buffer_width || height > buffer_height) {
     refused_++;
     return {};
   }

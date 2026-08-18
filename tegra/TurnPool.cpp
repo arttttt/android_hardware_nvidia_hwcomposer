@@ -20,6 +20,7 @@
 #include <ui/GraphicBufferAllocator.h>
 #include <ui/PixelFormat.h>
 
+#include "tegra/NvMapAllocator.h"
 #include "utils/log.h"
 
 #undef  LOG_TAG
@@ -57,17 +58,24 @@ uint32_t RoundUp(uint32_t v, uint32_t max) {
 TurnPool::TurnPool(uint32_t max_width, uint32_t max_height, size_t cap)
     : max_width_(max_width), max_height_(max_height), cap_(cap) {}
 
-TurnPool::~TurnPool() {
-  auto &allocator = GraphicBufferAllocator::get();
-  for (auto &slot : slots_)
-    if (slot.handle != nullptr)
-      allocator.free(slot.handle);
+void TurnPool::FreeSlot(Slot &slot) {
+  if (slot.buffer.origin() == ScratchBuffer::Origin::kGralloc) {
+    auto &allocator = GraphicBufferAllocator::get();
+    if (slot.buffer.handle() != nullptr)
+      allocator.free(slot.buffer.handle());
+  }
+  slot.buffer = ScratchBuffer();
 }
 
-buffer_handle_t TurnPool::Take(uint32_t width, uint32_t height) {
+TurnPool::~TurnPool() {
+  for (auto &slot : slots_)
+    FreeSlot(slot);
+}
+
+SurfaceView TurnPool::Take(uint32_t width, uint32_t height) {
   if (width == 0 || height == 0 || width > max_width_ ||
       height > max_height_)
-    return nullptr;
+    return {};
 
   /* The smallest idle slot that fits, so a popup's turn does not squat in
    * the one full-screen slot a video will want. */
@@ -80,7 +88,7 @@ buffer_handle_t TurnPool::Take(uint32_t width, uint32_t height) {
   }
   if (best != nullptr) {
     best->taken = true;
-    return best->handle;
+    return best->buffer.View();
   }
 
   if (slots_.size() >= cap_) {
@@ -100,10 +108,9 @@ buffer_handle_t TurnPool::Take(uint32_t width, uint32_t height) {
         evict = i;
     }
     if (evict == slots_.size())
-      return nullptr;
+      return {};
 
-    auto &allocator = GraphicBufferAllocator::get();
-    allocator.free(slots_[evict].handle);
+    FreeSlot(slots_[evict]);
     slots_.erase(slots_.begin() + static_cast<long>(evict));
   }
 
@@ -111,24 +118,43 @@ buffer_handle_t TurnPool::Take(uint32_t width, uint32_t height) {
   slot.width = RoundUp(width, max_width_);
   slot.height = RoundUp(height, max_height_);
 
+  /* The zone first; gralloc catches what it will not give. The refusal
+   * is counted, so the dump can tell a pool that never needs the
+   * fallback from one that lives on it. */
+  auto *zone = NvMapAllocator::GetInstance();
+  if (zone != nullptr) {
+    auto buffer = zone->Allocate(slot.width, slot.height);
+    if (buffer != nullptr) {
+      slot.buffer = std::move(*buffer);
+      slot.bytes = slot.buffer.pitch() * slot.height;
+      slot.taken = true;
+      slots_.push_back(std::move(slot));
+      ALOGI("intermediate %zu of %zu, %ux%u, carveout", slots_.size(), cap_,
+            slot.width, slot.height);
+      return slots_.back().buffer.View();
+    }
+    zone_refusals_++;
+  }
+
   uint32_t stride = 0;
+  buffer_handle_t handle = nullptr;
   auto &allocator = GraphicBufferAllocator::get();
   const status_t err = allocator.allocate(slot.width, slot.height,
                                           PIXEL_FORMAT_RGBA_8888, 1, kUsage,
-                                          &slot.handle, &stride, 0,
-                                          "hwc-turn");
-  if (err != NO_ERROR || slot.handle == nullptr) {
+                                          &handle, &stride, 0, "hwc-turn");
+  if (err != NO_ERROR || handle == nullptr) {
     ALOGE("cannot allocate a %ux%u intermediate: %d", slot.width,
           slot.height, err);
-    return nullptr;
+    return {};
   }
 
+  slot.buffer = ScratchBuffer::FromGralloc(handle);
   slot.bytes = stride * slot.height * 4;
   slot.taken = true;
-  slots_.push_back(slot);
+  slots_.push_back(std::move(slot));
   ALOGI("intermediate %zu of %zu, %ux%u", slots_.size(), cap_, slot.width,
         slot.height);
-  return slot.handle;
+  return slots_.back().buffer.View();
 }
 
 void TurnPool::FrameEnd(bool turned_any) {
@@ -146,10 +172,8 @@ void TurnPool::FrameEnd(bool turned_any) {
     /* Nothing has turned for hundreds of frames, so nothing will read these
      * again: the only reader an intermediate ever has is the group pass of
      * its own frame, and the channel finished those long ago. */
-    auto &allocator = GraphicBufferAllocator::get();
     for (auto &slot : slots_)
-      if (slot.handle != nullptr)
-        allocator.free(slot.handle);
+      FreeSlot(slot);
     slots_.clear();
     idle_frames_ = 0;
     trims_++;
@@ -162,6 +186,18 @@ size_t TurnPool::held_bytes() const {
   for (const auto &slot : slots_)
     total += slot.bytes;
   return total;
+}
+
+size_t TurnPool::carved_slots() const {
+  size_t total = 0;
+  for (const auto &slot : slots_)
+    if (slot.buffer.origin() == ScratchBuffer::Origin::kCarveout)
+      total++;
+  return total;
+}
+
+size_t TurnPool::gralloc_slots() const {
+  return slots_.size() - carved_slots();
 }
 
 }  // namespace hwc

@@ -20,7 +20,7 @@
 #include <cstdint>
 #include <vector>
 
-#include <cutils/native_handle.h>
+#include "tegra/ScratchBuffer.h"
 
 namespace android {
 namespace hwc {
@@ -62,13 +62,20 @@ class TurnPool {
   /* A buffer at least `width` by `height`, for this frame only.
    *
    * Reuses an idle slot that fits, or allocates one cut to the asked size
-   * (rounded up so the next popup-sized turn lands in the same slot).
-   * Returns null when the cap is spent or the allocator refuses -- the
-   * caller's turn fails the way every engine refusal fails.
+   * (rounded up so the next popup-sized turn lands in the same slot) --
+   * from the composer's own carveout zone when there is one, from gralloc
+   * when the zone refuses. Returns an empty view when the cap is spent or
+   * every allocator refuses -- the caller's turn fails the way every
+   * engine refusal fails.
+   *
+   * What comes back is a snapshot, not a loan of pool storage: the pool
+   * may cut its next slot while this one is held, and slots move when the
+   * vector grows. The descriptor it points into is the buffer's own,
+   * which no pool reshuffle touches.
    *
    * No fence comes back on purpose: the only reader is the group pass of
    * the same frame, ordered behind the write by the engine's own channel. */
-  buffer_handle_t Take(uint32_t width, uint32_t height);
+  SurfaceView Take(uint32_t width, uint32_t height);
 
   /* The frame is over: what was taken may be taken again next frame, and
    * `turned_any` says whether the frame turned anything at all. A few
@@ -77,9 +84,14 @@ class TurnPool {
    * to reach even the longest-tail percentile. */
   void FrameEnd(bool turned_any);
 
-  /* For the dump: what the pool is holding right now. */
+  /* For the dump: what the pool is holding right now, and where its
+   * slots were born -- the zone's report card for whether the fallback
+   * ever runs. */
   size_t held_slots() const { return slots_.size(); }
   size_t held_bytes() const;
+  size_t carved_slots() const;
+  size_t gralloc_slots() const;
+  uint64_t zone_refusals() const { return zone_refusals_; }
 
   /* How many times the idle trim gave everything back -- the pool's own
    * heartbeat for the dump: a count that grows says rotation comes in
@@ -90,14 +102,17 @@ class TurnPool {
 
  private:
   struct Slot {
-    buffer_handle_t handle = nullptr;
+    ScratchBuffer buffer;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t bytes = 0;
     bool taken = false;
   };
 
+  void FreeSlot(Slot &slot);
+
   uint64_t trims_ = 0;
+  uint64_t zone_refusals_ = 0;
   uint32_t max_width_ = 0;
   uint32_t max_height_ = 0;
   size_t cap_ = 0;
