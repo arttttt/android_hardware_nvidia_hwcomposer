@@ -64,7 +64,8 @@ class ScratchBuffer {
   ScratchBuffer &operator=(const ScratchBuffer &) = delete;
 
   static ScratchBuffer FromGralloc(buffer_handle_t handle);
-  static ScratchBuffer FromCarveout(SharedFd fd, void *mem_handle,
+  static ScratchBuffer FromCarveout(drm_hwcomposer::SharedFd fd,
+                                    void *mem_handle,
                                     std::unique_ptr<uint32_t[]> surface,
                                     uint32_t width, uint32_t height,
                                     uint32_t pitch);
@@ -78,7 +79,7 @@ class ScratchBuffer {
   buffer_handle_t handle() const { return handle_; }
 
   /* Carveout half, valid when origin is kCarveout. */
-  int fd() const { return fd_ != nullptr ? fd_->get() : -1; }
+  int fd() const { return fd_ ? *fd_ : -1; }
   uint32_t width() const { return width_; }
   uint32_t height() const { return height_; }
   uint32_t pitch() const { return pitch_; }
@@ -87,7 +88,7 @@ class ScratchBuffer {
   Origin origin_ = Origin::kGralloc;
   buffer_handle_t handle_ = nullptr;
 
-  SharedFd fd_;
+  drm_hwcomposer::SharedFd fd_;
   void *mem_handle_ = nullptr;
   std::unique_ptr<uint32_t[]> surface_;
   uint32_t width_ = 0;

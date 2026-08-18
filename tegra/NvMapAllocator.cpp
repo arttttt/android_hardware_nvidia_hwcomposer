@@ -86,8 +86,9 @@ ScratchBuffer ScratchBuffer::FromGralloc(buffer_handle_t handle) {
 }
 
 ScratchBuffer ScratchBuffer::FromCarveout(
-    SharedFd fd, void *mem_handle, std::unique_ptr<uint32_t[]> surface,
-    uint32_t width, uint32_t height, uint32_t pitch) {
+    drm_hwcomposer::SharedFd fd, void *mem_handle,
+    std::unique_ptr<uint32_t[]> surface, uint32_t width, uint32_t height,
+    uint32_t pitch) {
   ScratchBuffer buffer;
   buffer.origin_ = Origin::kCarveout;
   buffer.fd_ = std::move(fd);
