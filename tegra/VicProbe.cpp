@@ -18,6 +18,7 @@
 
 #include <fcntl.h>
 #include <sync/sync.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include <memory>
@@ -63,18 +64,55 @@ std::vector<buffer_handle_t> &Collected() {
   return collected;
 }
 
+/* Copies `height` rows of `width` pixels, each `stride` pixels from the
+ * last, into the probe's output file. Row by row rather than in one go
+ * because a buffer is free to pad a row, and the padding is not part of
+ * the picture. */
+bool WriteRows(const void *pixels, uint32_t width, uint32_t height,
+               uint32_t stride) {
+  const int out = open(kOutput, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (out < 0) {
+    ALOGE("cannot write %s: %s", kOutput, strerror(errno));
+    return false;
+  }
+
+  bool ok = true;
+  const auto *row = static_cast<const uint8_t *>(pixels);
+  for (uint32_t y = 0; y < height && ok; y++) {
+    ok = write(out, row, size_t{width} * 4) == static_cast<ssize_t>(width) * 4;
+    row += size_t{stride} * 4;
+  }
+  if (!ok)
+    ALOGE("short write to %s: %s", kOutput, strerror(errno));
+
+  close(out);
+  return ok;
+}
+
 /* Reads back what the engine wrote and puts it where it can be looked at.
  *
- * The buffer was asked for as one the processor reads often, so it is laid
- * out in rows and this is a straight copy. Row by row rather than in one go
- * because the allocator is free to pad a row, and the padding is not part of
- * the picture. */
-bool WriteOut(buffer_handle_t handle, uint32_t width, uint32_t height,
+ * A carveout buffer is this composer's own, laid out in rows with no mapper
+ * behind it, so it is read straight through its dma-buf; a gralloc one goes
+ * through the mapper, which alone knows how to reach it. Both were asked for
+ * as ones the processor reads often, so both are a straight row copy. */
+bool WriteOut(const ScratchBuffer &target, uint32_t width, uint32_t height,
               uint32_t stride) {
+  if (target.origin() == ScratchBuffer::Origin::kCarveout) {
+    const size_t length = size_t{stride} * 4 * height;
+    void *pixels = mmap(nullptr, length, PROT_READ, MAP_SHARED, target.fd(), 0);
+    if (pixels == MAP_FAILED) {
+      ALOGE("cannot map the merge back: %s", strerror(errno));
+      return false;
+    }
+    const bool ok = WriteRows(pixels, width, height, stride);
+    munmap(pixels, length);
+    return ok;
+  }
+
   void *pixels = nullptr;
   auto &mapper = GraphicBufferMapper::get();
 
-  const status_t err = mapper.lock(handle, GRALLOC_USAGE_SW_READ_OFTEN,
+  const status_t err = mapper.lock(target.handle(), GRALLOC_USAGE_SW_READ_OFTEN,
                                    Rect(static_cast<int32_t>(width),
                                         static_cast<int32_t>(height)),
                                    &pixels);
@@ -83,23 +121,8 @@ bool WriteOut(buffer_handle_t handle, uint32_t width, uint32_t height,
     return false;
   }
 
-  bool ok = true;
-  const int out = open(kOutput, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-  if (out < 0) {
-    ALOGE("cannot write %s: %s", kOutput, strerror(errno));
-    ok = false;
-  } else {
-    const auto *row = static_cast<const uint8_t *>(pixels);
-    for (uint32_t y = 0; y < height && ok; y++) {
-      ok = write(out, row, size_t{width} * 4) == static_cast<ssize_t>(width) * 4;
-      row += size_t{stride} * 4;
-    }
-    if (!ok)
-      ALOGE("short write to %s: %s", kOutput, strerror(errno));
-    close(out);
-  }
-
-  mapper.unlock(handle);
+  const bool ok = WriteRows(pixels, width, height, stride);
+  mapper.unlock(target.handle());
   return ok;
 }
 
@@ -181,7 +204,7 @@ void Run() {
     return;
   }
 
-  if (WriteOut(target, pool->width(), pool->height(), pool->stride()))
+  if (WriteOut(*target, pool->width(), pool->height(), pool->stride()))
     ALOGI("merge written to %s, %ux%u RGBA", kOutput, pool->width(),
           pool->height());
 }
