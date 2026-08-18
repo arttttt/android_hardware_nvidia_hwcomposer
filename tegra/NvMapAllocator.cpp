@@ -240,8 +240,18 @@ std::unique_ptr<ScratchBuffer> NvMapAllocator::Allocate(uint32_t width,
   }
 
   auto surface = std::make_unique<uint32_t[]>(kSurfaceWords);
-  surface_init_rm_pitch_(surface.get(), width, height, kFormatA8B8G8R8,
-                         pitch, mem_handle, 0);
+  /* Nine arguments, not the seven the last published headers spell.
+   * Between the height and the format this build takes a slot it then
+   * drops, and the colour space travels after the format -- so the
+   * pitch and the memory handle both sit one place further along than
+   * the headers say. Read out of the binary, after the fact: called
+   * with seven, the library writes the row length into the format word
+   * -- the first boot's dump saw exactly that, six thousand one hundred
+   * forty-four standing where a colour should be -- and reads the
+   * memory handle out of stack that was never passed, and the engine
+   * refuses every frame built on such a surface. */
+  surface_init_rm_pitch_(surface.get(), width, height, 0, kFormatA8B8G8R8,
+                         kColorSpaceLinearRgba, pitch, mem_handle, 0);
 
   /* The library's answer is read back, once, for the dump: what it
    * actually put in the colour-format word, against what was asked. A
