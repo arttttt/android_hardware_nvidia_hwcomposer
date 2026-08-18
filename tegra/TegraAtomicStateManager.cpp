@@ -49,6 +49,7 @@
 #include "display/Plane.h"
 #include "display/PipelineBinding.h"
 #include "tegra/FbDevice.h"
+#include "tegra/NvMapAllocator.h"
 #include "tegra/TegraFormat.h"
 #include "utils/Logging.h"
 #include "utils/log.h"
@@ -1434,6 +1435,14 @@ std::string TegraAtomicStateManager::DumpState() {
                  ? "carveout"
                  : "gralloc")
          << " (" << scratch_->width() << "x" << scratch_->height() << ")\n";
+    if (auto *zone = hwc::NvMapAllocator::GetInstance(); zone != nullptr) {
+      ss << "  zone surface format     : 0x" << std::hex
+         << zone->surface_format() << std::dec;
+      if (zone->format_mismatch())
+        ss << " (MISMATCH, expected 0x" << std::hex << zone->expected_format()
+           << std::dec << ")";
+      ss << "\n";
+    }
     if (rotate_pool_ && rotate_pool_->held_slots() != 0)
       ss << "  intermediates held      : " << rotate_pool_->held_slots()
          << " (" << (rotate_pool_->held_bytes() / 1024) << " KiB, carveout "

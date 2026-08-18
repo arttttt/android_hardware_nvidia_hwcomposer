@@ -58,6 +58,15 @@ class NvMapAllocator {
    * whether the fallback ever actually runs. */
   uint64_t refusals() const { return refusals_; }
 
+  /* What the library actually wrote into the surface's colour-format
+   * word, and whether it agreed with the constant this code asked for.
+   * Read back once per buffer, for the dump alone: a mismatch is the
+   * earliest, quietest sign that the device's libnvrm and this code
+   * have drifted apart about what thirty-two bit colour means. */
+  uint32_t surface_format() const { return surface_format_; }
+  uint32_t expected_format() const { return kFormatA8B8G8R8; }
+  bool format_mismatch() const { return format_mismatch_; }
+
   /* Frees a memory handle this allocator made. Called by the scratch
    * buffer's destructor; a no-op for a null handle, which lets buffers
    * be released whether or not the allocator ever resolved. */
@@ -70,6 +79,11 @@ class NvMapAllocator {
 
  private:
   NvMapAllocator();
+
+  /* Thirty-two bit colour as the engine spells it:
+   * NV_COLOR_MAKE_FORMAT(LinearRGBA, WZYX, X8Y8Z8W8) -- little-endian
+   * bytes R, G, B, A, which is the framework's RGBA_8888. */
+  static constexpr uint32_t kFormatA8B8G8R8 = 0x2010531A;
 
   bool usable_ = false;
   int nvmap_fd_ = -1;
@@ -84,6 +98,8 @@ class NvMapAllocator {
                                  uint32_t, void *, uint32_t) = nullptr;
 
   uint64_t refusals_ = 0;
+  uint32_t surface_format_ = 0;
+  bool format_mismatch_ = false;
 };
 
 }  // namespace hwc

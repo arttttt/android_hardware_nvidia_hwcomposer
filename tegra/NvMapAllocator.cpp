@@ -52,11 +52,6 @@ uint32_t RoundUp(uint32_t v) {
  * has to be nonzero. */
 constexpr uint32_t kComposerTag = 0x4343;
 
-/* Thirty-two bit colour as the engine spells it:
- * NV_COLOR_MAKE_FORMAT(LinearRGBA, WZYX, X8Y8Z8W8) -- little-endian
- * bytes R, G, B, A, which is the framework's RGBA_8888. */
-constexpr uint32_t kFormatA8B8G8R8 = 0x2010531A;
-
 /* Words of headroom for the surface descriptor. The structure belongs
  * to libnvrm and its true size is the library's own -- forty-eight
  * bytes in this device's build, as its memset shows. Sixty-four words
@@ -64,6 +59,11 @@ constexpr uint32_t kFormatA8B8G8R8 = 0x2010531A;
  * what it knows, and a build that outgrew this would want to be heard,
  * not truncated. */
 constexpr size_t kSurfaceWords = 64;
+
+/* The colour-format word within that descriptor, read as a run of
+ * thirty-two bit words -- the same index the gralloc wrapper reads it
+ * at (NvGralloc.cpp, SurfaceWord::kColorFormat). */
+constexpr size_t kSurfaceWordFormat = 2;
 
 template <typename Fn>
 bool ResolveOne(void *library, const char *name, Fn *slot) {
@@ -241,6 +241,18 @@ std::unique_ptr<ScratchBuffer> NvMapAllocator::Allocate(uint32_t width,
   auto surface = std::make_unique<uint32_t[]>(kSurfaceWords);
   surface_init_rm_pitch_(surface.get(), width, height, kFormatA8B8G8R8,
                          pitch, mem_handle, 0);
+
+  /* The library's answer is read back, once, for the dump: what it
+   * actually put in the colour-format word, against what was asked. A
+   * library that silently renumbered its formats would still draw, but
+   * with the wrong bytes per pixel, and this is the earliest place
+   * that difference is visible. */
+  surface_format_ = surface[kSurfaceWordFormat];
+  if (surface_format_ != kFormatA8B8G8R8 && !format_mismatch_) {
+    format_mismatch_ = true;
+    ALOGE("the library wrote surface format 0x%08x, asked for 0x%08x",
+          surface_format_, kFormatA8B8G8R8);
+  }
 
   return ScratchBuffer::FromCarveout(drm_hwcomposer::MakeSharedFd(buffer_fd),
                                      mem_handle, std::move(surface), width,
