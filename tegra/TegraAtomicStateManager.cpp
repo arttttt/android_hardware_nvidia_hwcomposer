@@ -1428,9 +1428,20 @@ std::string TegraAtomicStateManager::DumpState() {
          << " (worst " << (m.rotate_ns_max / 1000) << ")\n"
          << "  turns refused           : " << m.rotate_refused << "\n";
     }
+    if (scratch_ != nullptr)
+      ss << "  scratch pool            : "
+         << (scratch_->origin() == hwc::ScratchBuffer::Origin::kCarveout
+                 ? "carveout"
+                 : "gralloc")
+         << " (" << scratch_->width() << "x" << scratch_->height() << ")\n";
     if (rotate_pool_ && rotate_pool_->held_slots() != 0)
       ss << "  intermediates held      : " << rotate_pool_->held_slots()
-         << " (" << (rotate_pool_->held_bytes() / 1024) << " KiB)\n";
+         << " (" << (rotate_pool_->held_bytes() / 1024) << " KiB, carveout "
+         << rotate_pool_->carved_slots() << ", gralloc "
+         << rotate_pool_->gralloc_slots() << ")\n";
+    if (rotate_pool_ && rotate_pool_->zone_refusals() != 0)
+      ss << "  zone refusals           : " << rotate_pool_->zone_refusals()
+         << "\n";
     if (rotate_pool_ && rotate_pool_->trims() != 0)
       ss << "  idle trims              : " << rotate_pool_->trims() << "\n";
     ss << "Engine over its lifetime:\n"
