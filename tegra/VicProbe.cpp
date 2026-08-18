@@ -98,6 +98,12 @@ bool WriteRows(const void *pixels, uint32_t width, uint32_t height,
 bool WriteOut(const ScratchBuffer &target, uint32_t width, uint32_t height,
               uint32_t stride) {
   if (target.origin() == ScratchBuffer::Origin::kCarveout) {
+    /* A carveout buffer is mapped write-back and read here with no cache
+     * maintenance, while the engine wrote it through the SMMU -- so a
+     * stale line could in theory be read. Left knowingly: the probe is a
+     * diagnostic, a stale read is a wrong test picture rather than a
+     * wrong product, and this is the only place a scratch is ever read
+     * by the processor at all. */
     const size_t length = size_t{stride} * 4 * height;
     void *pixels = mmap(nullptr, length, PROT_READ, MAP_SHARED, target.fd(), 0);
     if (pixels == MAP_FAILED) {
