@@ -112,6 +112,26 @@ uint32_t SurfaceGainedOverride() {
   return static_cast<uint32_t>(parsed);
 }
 
+/* The caching policy of the zone's slots, overridable per boot: a
+ * cacheable device buffer is a documented route to corruption in nvmap
+ * (the flush happens only at free), so the policy is worth being able
+ * to change without a rebuild. 0 is uncached, 1 is write-combine,
+ * anything else the default cacheable. */
+uint32_t ZoneCacheFlags() {
+  char value[PROPERTY_VALUE_MAX];
+  if (property_get("persist.vendor.hwc.zonecache", value, "") <= 0)
+    return NVMAP_HANDLE_CACHEABLE;
+  const int choice = atoi(value);
+  switch (choice) {
+    case 0:
+      return NVMAP_HANDLE_UNCACHEABLE;
+    case 1:
+      return NVMAP_HANDLE_WRITE_COMBINE;
+    default:
+      return NVMAP_HANDLE_CACHEABLE;
+  }
+}
+
 /* The library's own surface words for a same-sized buffer, to lay
  * against ours. The allocator describes its buffers through its own C
  * interface; a buffer of the same geometry is asked for and released
@@ -341,7 +361,7 @@ std::unique_ptr<ScratchBuffer> NvMapAllocator::Allocate(uint32_t width,
   struct nvmap_alloc_handle alloc = {};
   alloc.handle = static_cast<uint32_t>(handle_fd);
   alloc.heap_mask = NVMAP_HEAP_CARVEOUT_COMPOSER;
-  alloc.flags = NVMAP_HANDLE_CACHEABLE | (kComposerTag << 16);
+  alloc.flags = ZoneCacheFlags() | (kComposerTag << 16);
   alloc.align = 4096;
   if (ioctl(nvmap_fd_, NVMAP_IOC_ALLOC, &alloc) != 0) {
     ALOGE("the zone would not give %ux%u: %s", width, height,

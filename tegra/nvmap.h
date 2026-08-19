@@ -34,8 +34,11 @@
 #define NVMAP_HEAP_CARVEOUT_COMPOSER (1ul << 26)
 
 /* Allocation flags: the memory is read and written by the engine and
- * never mapped into this process. */
-#define NVMAP_HANDLE_CACHEABLE (0x3ul << 0)
+ * never mapped into this process. The two bits pick the caching policy:
+ * write-combine (0x2), uncached (0x1), or cacheable (0x3, both set). */
+#define NVMAP_HANDLE_UNCACHEABLE  (0x1ul << 0)
+#define NVMAP_HANDLE_WRITE_COMBINE (0x2ul << 0)
+#define NVMAP_HANDLE_CACHEABLE    (0x3ul << 0)
 
 struct nvmap_create_handle {
   union {
