@@ -135,6 +135,13 @@ class TegraAtomicRequest : public AtomicRequest {
       /* Where the layer was seated: 'w' a window, 'm' the merge, 'c' the
        * cursor unit. */
       char seat = 'w';
+      /* The window's own number, so the seat says not just "a window" but
+       * which one -- a layer migrating between windows is the thing the
+       * ring exists to catch. */
+      uint32_t plane = 0;
+      /* How the buffer's pixels carry their alpha: 'p' premultiplied, 'c'
+       * coverage, '-' no alpha worth honouring. */
+      char blend = '-';
       float alpha = 1.F;
       /* Source against destination, one per axis: 1 where the layer is
        * shown unresized. */

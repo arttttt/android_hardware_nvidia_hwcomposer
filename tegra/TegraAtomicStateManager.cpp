@@ -490,6 +490,11 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
       const LayerData &note_layer = joining.layer;
       if (note_layer.bi) {
         row.id = note_layer.bi->unique_id;
+        row.blend = note_layer.bi->blend_mode == BufferBlendMode::kPreMult
+                        ? 'p'
+                        : note_layer.bi->blend_mode == BufferBlendMode::kCoverage
+                              ? 'c'
+                              : '-';
         const float src_w = note_layer.pi.source_crop.f_rect
                                 ? note_layer.pi.source_crop.f_rect->Width()
                                 : static_cast<float>(note_layer.bi->width);
@@ -521,6 +526,7 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
       }
 
       const uint32_t plane_id = joining.plane->Get()->GetId();
+      row.plane = plane_id;
 
       /* The cursor's binding names no window: what it carries is set aside
        * whole and told to the unit when the frame is executed. */
@@ -1445,9 +1451,9 @@ void TegraAtomicStateManager::NoteFrame(
        << (merge_reused ? " reuse" : "") << " L";
   for (const auto &row : tegra.GetFrameNote().layers) {
     char b[128];
-    snprintf(b, sizeof(b), " %llu%c a%.2f s%.2fx%.2f @%d,%d",
-             static_cast<unsigned long long>(row.id), row.seat, row.alpha,
-             row.scale_w, row.scale_h, row.x, row.y);
+    snprintf(b, sizeof(b), " %llu%c%u%c a%.2f s%.2fx%.2f @%d,%d",
+             static_cast<unsigned long long>(row.id), row.seat, row.plane,
+             row.blend, row.alpha, row.scale_w, row.scale_h, row.x, row.y);
     line << b;
   }
   line << " | W";
