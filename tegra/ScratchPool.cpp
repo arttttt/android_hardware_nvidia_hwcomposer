@@ -119,19 +119,25 @@ std::unique_ptr<ScratchPool> ScratchPool::Create(uint32_t width,
   pool->height_ = height;
   pool->slots_.resize(count);
 
-  /* 1 asks the vendor library's own allocator for the slots, through the
-   * engine session's resource manager. The whole pool or nothing: a refusal
-   * partway through is a pool half-born of a library that turned out not to
-   * have the room, so the whole pool is let go and asked of gralloc instead
-   * -- one origin per pool, one answer in the dump. */
+  /* 1 asks the vendor library's own allocator for the slots, 2 asks the
+   * composer's own carveout zone -- both through the engine session's
+   * resource manager, so either way the buffer is the library's own client
+   * from birth. The whole pool or nothing: a refusal partway through is a
+   * pool half-born of a source that turned out not to have the room, so the
+   * whole pool is let go and asked of gralloc instead -- one origin per
+   * pool, one answer in the dump. */
   const int zone = property_get_int32("persist.vendor.hwc.zone", 0);
-  if (zone == 1 && vic != nullptr && vic->OffersVendorBuffers()) {
+  const bool custom =
+      vic != nullptr && ((zone == 1 && vic->OffersVendorBuffers()) ||
+                         (zone == 2 && vic->OffersZoneBuffers()));
+  if (custom) {
     bool whole = true;
     for (size_t i = 0; i < count; i++) {
-      auto buffer = vic->AllocateTarget(width, height);
+      auto buffer = zone == 2 ? vic->AllocateZoneTarget(width, height)
+                              : vic->AllocateTarget(width, height);
       if (!buffer) {
-        ALOGE("the vendor allocator gave %zu of %zu %ux%u; taking the pool "
-              "to gralloc", i, count, width, height);
+        ALOGE("zone %d gave %zu of %zu %ux%u; taking the pool to gralloc",
+              zone, i, count, width, height);
         whole = false;
         break;
       }
@@ -146,8 +152,10 @@ std::unique_ptr<ScratchPool> ScratchPool::Create(uint32_t width,
     }
     if (whole) {
       pool->vendor_ = true;
+      pool->zone_ = zone;
       pool->stride_ = pool->slots_[0].vendor->pitch / 4;
-      ALOGI("%zu vendor-born buffers, %ux%u, pitch %u", count, width, height,
+      ALOGI("%zu %s buffers, %ux%u, pitch %u", count,
+            zone == 2 ? "zone-born" : "vendor-born", width, height,
             pool->slots_[0].vendor->pitch);
       return pool;
     }

@@ -1438,9 +1438,8 @@ std::string TegraAtomicStateManager::DumpState() {
     if (rotate_pool_ && rotate_pool_->trims() != 0)
       ss << "  idle trims              : " << rotate_pool_->trims() << "\n";
     if (scratch_ != nullptr)
-      ss << "  scratch pool            : "
-         << (scratch_->vendor() ? "vendor" : "gralloc") << " ("
-         << scratch_->width() << "x" << scratch_->height() << ")\n"
+      ss << "  scratch pool            : " << scratch_->source_name()
+         << " (" << scratch_->width() << "x" << scratch_->height() << ")\n"
          << scratch_->DumpSlots();
     ss << vic_->last_target_probe();
     ss << "Engine over its lifetime:\n"

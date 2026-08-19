@@ -34,16 +34,17 @@ class NvGralloc;
 
 namespace hwc {
 
-/* A merge buffer born through the engine session's own resource manager.
+/* A merge buffer whose handle is the library's own client's, from birth.
  *
  * The engine's relationship with its target is the thing under test, so the
- * buffer is the library's from birth: the memory is allocated by the vendor
- * allocator in the very context the session was opened with, and the surface
- * descriptor is built by the library's own call, not assembled by hand. What
- * this side adds is the dma-buf for the window, a CPU mapping of the whole
- * buffer -- the slot is painted through it before its first use, and the dump
- * reads the result back through it -- and the words of the descriptor as the
- * library filled them.
+ * buffer is the library's either way: allocated by the vendor allocator in
+ * the very context the session was opened with, or cut from the composer's
+ * own carveout zone and adopted by the library's import through that same
+ * instance. The surface descriptor is built by the library's own call, not
+ * assembled by hand. What this side adds is the dma-buf for the window, a
+ * CPU mapping of the whole buffer -- the slot is painted through it before
+ * its first use, and the dump reads the result back through it -- and the
+ * words of the descriptor as the library filled them.
  *
  * Releases itself: the mapping is unmapped and the memory handle handed back
  * through the same library entry point that a handle of this birth expects,
@@ -214,6 +215,28 @@ class VicSession {
   std::unique_ptr<VendorBuffer> AllocateTarget(uint32_t width,
                                                uint32_t height);
 
+  /* Whether the composer's own carveout zone can be offered: the library's
+   * import entry point and its descriptor builder resolved. The zone
+   * itself is only knocked on when an allocation is actually asked for. */
+  bool OffersZoneBuffers() const;
+
+  /* A panel-sized buffer cut from the composer's own carveout zone: the
+   * memory is allocated straight from nvmap under the zone's heap bit,
+   * exported as a dma-buf, and handed to the library's own import call --
+   * through this session's instance of the library, so the handle is born
+   * in the client the engine calls its own. The descriptor is built by
+   * the library exactly as for AllocateTarget.
+   *
+   * The allocation is write-combined and the paint mapping follows it:
+   * the zone's previous incarnation zeroed its slots through a cacheable
+   * mapping and never flushed, and the stale lines that later evicted
+   * over the engine's writes were the likely shape of that era's
+   * corruption. Cacheable mappings of these buffers are not made.
+   *
+   * Null, having said what failed, if the zone would not give one. */
+  std::unique_ptr<VendorBuffer> AllocateZoneTarget(uint32_t width,
+                                                   uint32_t height);
+
   /* Draws one layer into `target` turned by `transform` -- the engine's own
    * transform code, which the caller owes to the stock translation table,
    * not to arithmetic of its own. The write is bounded to `width` by
@@ -307,6 +330,13 @@ class VicSession {
   void (*surface_init_rm_pitch_)(void *, uint32_t, uint32_t, uint32_t,
                                  uint32_t, uint32_t, uint32_t, void *,
                                  uint32_t) = nullptr;
+
+  /* The zone path: the library's own import, which adopts a dma-buf as a
+   * memory handle of this client, and the zone's device, opened on the
+   * first ask rather than at boot -- a session whose pool is gralloc's
+   * never needs it. */
+  int (*mem_handle_from_fd_)(int, void **) = nullptr;
+  int nvmap_fd_ = -1;
 
   /* Thirty-two bit colour as the engine spells it, and the tag gralloc's
    * own RGB output carries -- the pair proven against a gralloc-produced

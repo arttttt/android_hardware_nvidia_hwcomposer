@@ -59,15 +59,18 @@ struct VendorBuffer;
  * 0 is gralloc, the reference arrangement whose picture is clean, and the
  * default; 1 is the vendor library's own allocator, reached through the
  * engine session's resource manager, so that the buffer is the library's
- * from birth. One origin per pool, never a mix -- a refusal partway through
- * takes the whole pool to gralloc, so the dump holds one answer.
+ * from birth; 2 is the composer's own carveout zone, cut straight from
+ * nvmap and adopted by the library's own import through the session's
+ * instance of it. One origin per pool, never a mix -- a refusal partway
+ * through takes the whole pool to gralloc, so the dump holds one answer.
  *
- * A vendor-born slot is painted before its first use, through the CPU
- * mapping the session made of it: vertical stripes over a colour of the
- * slot's own. A slot the engine never wrote stands on the panel whole and
- * striped, and the question "does it write at all" is answered by looking,
- * without a single dump; a slot written with a wrong pitch or layout shows
- * the stripes skewed or scattered, which says how it wrote.
+ * A slot born of either custom source is painted before its first use,
+ * through the CPU mapping the session made of it: vertical stripes over a
+ * colour of the slot's own. A slot the engine never wrote stands on the
+ * panel whole and striped, and the question "does it write at all" is
+ * answered by looking, without a single dump; a slot written with a wrong
+ * pitch or layout shows the stripes skewed or scattered, which says how
+ * it wrote.
  */
 class ScratchPool {
  public:
@@ -136,7 +139,15 @@ class ScratchPool {
   uint32_t stride() const { return stride_; }
 
   /* Where the pool's buffers were born -- the dump's one-line answer for
-   * which arrangement is on the panel. */
+   * which arrangement is on the panel: "gralloc", "vendor" for the
+   * library's own allocator, "zone" for the composer's carveout. */
+  const char *source_name() const {
+    return vendor_ ? (zone_ == 2 ? "zone" : "vendor") : "gralloc";
+  }
+
+  /* True for either custom source -- the caller that branches on it wants
+   * to know whether slots carry descriptors of their own, not which of
+   * the two bore them. */
   bool vendor() const { return vendor_; }
 
   /* What the slots hold, for the dump: each slot's descriptor as whoever
@@ -171,6 +182,7 @@ class ScratchPool {
   uint32_t height_ = 0;
   uint32_t stride_ = 0;
   bool vendor_ = false;
+  int zone_ = 0;
 
   /* The slot the last frame was drawn into, which the next frame posted will
    * replace on screen. Past the end until a frame has been posted. */

@@ -17,6 +17,7 @@
 #include "tegra/VicSession.h"
 
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -26,6 +27,7 @@
 
 
 #include "bufferinfo/NvGralloc.h"
+#include "tegra/nvmap.h"
 #include "utils/log.h"
 
 #undef  LOG_TAG
@@ -38,6 +40,12 @@ namespace {
 
 /* Success, in this vendor's numbering. */
 constexpr int kNvSuccess = 0;
+
+/* A tag in the nvmap flags' upper half: the kernel prints a warning for
+ * every untagged client once, and the resource manager's own clients all
+ * carry one. "CC", composer carveout -- nothing reads it, it only has to
+ * be nonzero. */
+constexpr uint32_t kComposerTag = 0x4343;
 
 /* How the engine is told to read the alpha the pixels carry. Its own
  * numbering, and the only three values there are. */
@@ -199,6 +207,11 @@ bool VicSession::Open() {
   ResolveOne(nvrm_library_, "NvRmMemGetFd", &mem_get_fd_);
   ResolveOne(nvrm_library_, "NvRmMemHandleFree", &mem_handle_free_);
   ResolveOne(nvrm_library_, "NvRmSurfaceInitRmPitch", &surface_init_rm_pitch_);
+
+  /* The zone path's half of the same: the library's own import, through
+   * this very instance of the library, so an adopted dma-buf is a handle
+   * of the client the engine calls its own. */
+  ResolveOne(nvrm_library_, "NvRmMemHandleFromFd", &mem_handle_from_fd_);
   return true;
 }
 
@@ -231,6 +244,8 @@ VicSession::~VicSession() {
     free_session_(session_);
   if (rm_device_ != nullptr && rm_close_ != nullptr)
     rm_close_(rm_device_);
+  if (nvmap_fd_ >= 0)
+    close(nvmap_fd_);
 
   /* The libraries are left open. Everything above was made from them and is
    * only now gone, and this object is made once per display and released when
@@ -668,6 +683,121 @@ std::unique_ptr<VendorBuffer> VicSession::AllocateTarget(uint32_t width,
   /* The library's own builder, asked for rows -- its fourth argument never
    * reaches the body, and the size word it leaves zero is filled by hand
    * with the very size the allocation was asked for. */
+  buffer->surface.assign(kSurfaceWords, 0);
+  surface_init_rm_pitch_(buffer->surface.data(), width, height, 0,
+                         kFormatA8B8G8R8, kColorTagRgb, pitch, mem_handle, 0);
+  buffer->surface[kSurfaceWordSize] = size;
+
+  return buffer;
+}
+
+bool VicSession::OffersZoneBuffers() const {
+  return mem_handle_from_fd_ != nullptr && mem_handle_free_ != nullptr &&
+         surface_init_rm_pitch_ != nullptr;
+}
+
+std::unique_ptr<VendorBuffer> VicSession::AllocateZoneTarget(
+    uint32_t width, uint32_t height) {
+  if (!OffersZoneBuffers() || width == 0 || height == 0) {
+    ALOGE("zone buffer: not available in this session");
+    return nullptr;
+  }
+
+  /* The zone's device, opened on the first ask rather than at boot: a
+   * session whose pool is gralloc's never pays for it. */
+  if (nvmap_fd_ < 0) {
+    nvmap_fd_ = open("/dev/nvmap", O_RDWR | O_CLOEXEC);
+    if (nvmap_fd_ < 0) {
+      ALOGE("zone buffer: /dev/nvmap: %s", strerror(errno));
+      return nullptr;
+    }
+  }
+
+  /* Rows in the same grain, sized by the same rule as the library-born
+   * buffer, so the two paths differ in nothing but where the memory comes
+   * from. */
+  const uint32_t grain = 256;
+  const uint32_t pitch = ((width * 4 + grain - 1) / grain) * grain;
+  const uint64_t raw =
+      static_cast<uint64_t>(pitch) * ((height + 3) & ~3u);
+  const auto size = static_cast<uint32_t>((raw + 131071) / 131072 * 131072);
+
+  struct nvmap_create_handle create = {};
+  create.size = size;
+  if (ioctl(nvmap_fd_, NVMAP_IOC_CREATE, &create) != 0) {
+    ALOGE("zone buffer: cannot create a %ux%u handle: %s", width, height,
+          strerror(errno));
+    return nullptr;
+  }
+  const int handle_id = static_cast<int>(create.handle);
+
+  /* The composer's own carveout heap, write-combined: the paint and the
+   * dump's reads go through a mapping of this buffer, and a cacheable one
+   * is what poisoned the zone's previous incarnation -- lines dirtied by
+   * its zeroing were never flushed and later evicted over the engine's
+   * writes. Not overridable on purpose: what this path exists to prove is
+   * read off a single, known caching policy. */
+  struct nvmap_alloc_handle alloc = {};
+  alloc.handle = static_cast<uint32_t>(handle_id);
+  alloc.heap_mask = NVMAP_HEAP_CARVEOUT_COMPOSER;
+  alloc.flags = NVMAP_HANDLE_WRITE_COMBINE | (kComposerTag << 16);
+  alloc.align = 4096;
+  if (ioctl(nvmap_fd_, NVMAP_IOC_ALLOC, &alloc) != 0) {
+    ALOGE("zone buffer: the zone would not give %ux%u: %s", width, height,
+          strerror(errno));
+    ioctl(nvmap_fd_, NVMAP_IOC_FREE, handle_id);
+    return nullptr;
+  }
+
+  struct nvmap_create_handle get = {};
+  get.handle = static_cast<uint32_t>(handle_id);
+  if (ioctl(nvmap_fd_, NVMAP_IOC_GET_FD, &get) != 0) {
+    ALOGE("zone buffer: cannot take a dma-buf for %ux%u: %s", width, height,
+          strerror(errno));
+    ioctl(nvmap_fd_, NVMAP_IOC_FREE, handle_id);
+    return nullptr;
+  }
+  const int buffer_fd = get.fd;
+  /* The dma-buf holds the reference from here on; the id is done. */
+  ioctl(nvmap_fd_, NVMAP_IOC_FREE, handle_id);
+
+  /* Mapped for the buffer's whole life, as for the library-born path: the
+   * pool paints the slot through this mapping, the dump reads through it,
+   * and a buffer that cannot be read back cannot answer the question the
+   * paint asks -- so a mapping failure refuses the buffer outright. The
+   * mapping inherits the handle's write-combined policy. */
+  void *pixels = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                      buffer_fd, 0);
+  if (pixels == MAP_FAILED) {
+    ALOGE("zone buffer: the dma-buf would not map: %s", strerror(errno));
+    close(buffer_fd);
+    return nullptr;
+  }
+
+  /* Adopted by the library's own import, through this session's instance
+   * of it: the handle the descriptor names is born in the client the
+   * engine calls its own, not in a stranger's. */
+  void *mem_handle = nullptr;
+  if (mem_handle_from_fd_(buffer_fd, &mem_handle) != kNvSuccess ||
+      mem_handle == nullptr) {
+    ALOGE("zone buffer: the library would not adopt fd %d", buffer_fd);
+    munmap(pixels, size);
+    close(buffer_fd);
+    return nullptr;
+  }
+
+  auto buffer = std::unique_ptr<VendorBuffer>(new VendorBuffer());
+  buffer->fd = drm_hwcomposer::MakeSharedFd(buffer_fd);
+  buffer->mem_handle = mem_handle;
+  buffer->release = mem_handle_free_;
+  buffer->width = width;
+  buffer->height = height;
+  buffer->pitch = pitch;
+  buffer->size = size;
+  buffer->pixels = static_cast<uint32_t *>(pixels);
+  buffer->mapped = size;
+
+  /* The library's own builder, exactly as for the library-born path. */
   buffer->surface.assign(kSurfaceWords, 0);
   surface_init_rm_pitch_(buffer->surface.data(), width, height, 0,
                          kFormatA8B8G8R8, kColorTagRgb, pitch, mem_handle, 0);
