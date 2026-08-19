@@ -531,7 +531,7 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
          * the path that describes these surfaces does not pass through the
          * buffer-info getter, and a probe wired only there would never see
          * a merge and answer nothing. */
-        if (joining.layer.bi != nullptr)
+        if (joining.layer.bi)
           hwc::VicProbe::Offer(joining.layer.bi->handle);
         merge.source_ids.push_back(joining.layer.bi
                                        ? joining.layer.bi->unique_id
