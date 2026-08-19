@@ -316,3 +316,58 @@ six, and lowers log2_blockheight until the block covers the height. Kinds
 canonicalise as {0xdb,0xfe} -> 0xfe, 0 -> 0, anything else -> 0xff, and a
 non-canonical kind is what forces the 128 KiB alignment. The compressed kind
 also brings the CPU-view offsets in words 16 and 17.
+
+================================================================================
+ANDROID HAL CORRESPONDENCE  (part 1 of the mapping task; source side)
+================================================================================
+The gralloc source translates Android formats with one macro table and a few
+stray cases (graphics-partner/android/include/nvgrsurfutil.h:32, plus
+NvGrGetNvFormat's own cases):
+
+  HAL_PIXEL_FORMAT_RGBA_8888 (1)  -> NvColorFormat_A8B8G8R8
+  HAL_PIXEL_FORMAT_RGBX_8888 (2)  -> NvColorFormat_X8B8G8R8
+  HAL_PIXEL_FORMAT_RGB_888   (3)  -> NvColorFormat_R8_G8_B8
+  HAL_PIXEL_FORMAT_RGB_565   (4)  -> NvColorFormat_R5G6B5
+  HAL_PIXEL_FORMAT_BGRA_8888 (5)  -> NvColorFormat_A8R8G8B8
+  HAL_PIXEL_FORMAT_Y8            -> NvColorFormat_L8
+  HAL_PIXEL_FORMAT_Y16           -> NvColorFormat_L16
+  HAL_PIXEL_FORMAT_RAW_SENSOR    -> NvColorFormat_L16
+  HAL_PIXEL_FORMAT_BLOB          -> NvColorFormat_A8B8G8R8 (fake 32bpp shell)
+  YUV multiplanar (YV12/NV12/NV21/YCbCr_420_888/422 variants)
+                                 -> per-plane {Y8, U8, V8} or {Y8, U8_V8/V8_U8}
+                                    via NvRmMultiplanarSurfaceSetup
+
+Joined against the cross-verified rows 0-31 of the table above:
+
+  RGBA_8888 -> A8B8G8R8 -> 0x00d12120 t1   (row 25)
+  RGBX_8888 -> X8B8G8R8 -> 0x0a882120 t1   (row 30)
+  RGB_888   -> R8_G8_B8 -> 0x0a0a1310 t1   (row 22)
+  RGB_565   -> R5G6B5   -> 0x060a1710 t1   (row 18)
+  BGRA_8888 -> A8R8G8B8 -> 0x0a0a1918 t1   (row 24)
+
+DIALECT TRAP. The nvcolor.h macros in this tree do not reproduce the blob's
+codes: NV_COLOR_MAKE_FORMAT(LinearRGBA, WZYX, X8Y8Z8W8) -- the header's own
+spelling of A8B8G8R8 -- evaluates to 0x0010531A, not 0x00d12120. The enum
+values the blobs pass on the wire belong to the blob's generation; this tree's
+headers are another. Never build a descriptor word from the header macros;
+take the code from the table (or from a gralloc-produced descriptor, which is
+how the parity was proven in the first place).
+
+One tension is resolved, and worth spelling out because it reads like an
+error. The encoding section above glosses b2 0xd1 as "A8B8G8R8 -- Android's
+RGBA_8888", yet the arc-B2 parity work (surfcmp, all twenty words equal to a
+gralloc RGBA_8888 buffer) pinned the observed w2 at 0x00532120 -- the row
+named R8G8B8A8. Both facts stand: the device gralloc's own enum generation
+maps its A8B8G8R8 to the code this table names R8G8B8A8. The lesson is that
+names do not arbitrate between generations -- the consistency of the
+(writer's code, reader's enum) pair does, and that pair was proven clean on
+device, down to the DC window format it was shown through.
+
+TAG AS THE SECOND KEY. The descriptor's third word is the record's tag, and
+the tag is a family selector, not a colourspace only: plain RGB rows carry t1,
+the whole packed-and-planar YUV menagerie (Y8, U8, V8, U8_V8, V8_U8, UYVY,
+YUYV, VYUY, YVYU and the rest) sits at t10, the sRGB/709/2020 seconds of a
+32-bit format pair across t2..t7, and the Bayer patterns take t13..t19. A
+format's identity on the wire is the (code, tag) pair, which is why the
+descriptor needed w3=1 to match gralloc's RGB output -- the same lesson as
+the encoding section, seen from the table's side.
