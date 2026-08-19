@@ -119,6 +119,33 @@ class TegraAtomicRequest : public AtomicRequest {
     SharedFd acquire;
   };
 
+  /* The frame's own record: what the plan decided about each layer.
+   *
+   * Carried by the request rather than asked of the plan again, because the
+   * request is also built for frames that are only weighed -- and the frame
+   * ring this feeds must hear only of frames that actually went up. */
+  struct FrameNote {
+    /* LayerToPlaneJoiningPlan::Steering, as a number: the plan's header is
+     * not this one's business, and the ring prints the word. */
+    int steering = 0;
+
+    struct Row {
+      /* The allocator's name for the buffer; nought where it has none. */
+      uint64_t id = 0;
+      /* Where the layer was seated: 'w' a window, 'm' the merge, 'c' the
+       * cursor unit. */
+      char seat = 'w';
+      float alpha = 1.F;
+      /* Source against destination, one per axis: 1 where the layer is
+       * shown unresized. */
+      float scale_w = 1.F;
+      float scale_h = 1.F;
+      /* Where on the panel the layer lands. */
+      int32_t x = 0, y = 0, w = 0, h = 0;
+    };
+    std::vector<Row> layers;
+  };
+
   TegraAtomicRequest(std::vector<hwc::DcHead::Window> windows,
                      std::vector<buffer_handle_t> handles,
                      std::vector<uint64_t> handle_ids,
@@ -127,7 +154,8 @@ class TegraAtomicRequest : public AtomicRequest {
                      Merge merge = {},
                      std::shared_ptr<const HalColorTransformMatrix>
                          color_matrix = nullptr,
-                     Cursor cursor = {})
+                     Cursor cursor = {},
+                     FrameNote note = {})
       : windows_(std::move(windows)),
         handles_(std::move(handles)),
         handle_ids_(std::move(handle_ids)),
@@ -135,7 +163,8 @@ class TegraAtomicRequest : public AtomicRequest {
         power_mode_(power_mode),
         merge_(std::move(merge)),
         color_matrix_(std::move(color_matrix)),
-        cursor_(cursor) {
+        cursor_(cursor),
+        note_(std::move(note)) {
   }
 
   const Merge &GetMerge() const {
@@ -192,6 +221,10 @@ class TegraAtomicRequest : public AtomicRequest {
     return power_mode_;
   }
 
+  const FrameNote &GetFrameNote() const {
+    return note_;
+  }
+
  private:
   const std::vector<hwc::DcHead::Window> windows_;
   const std::vector<buffer_handle_t> handles_;
@@ -201,6 +234,7 @@ class TegraAtomicRequest : public AtomicRequest {
   const Merge merge_;
   const std::shared_ptr<const HalColorTransformMatrix> color_matrix_;
   const Cursor cursor_;
+  const FrameNote note_;
 };
 
 /* Turns plans into frames on this controller.
@@ -584,6 +618,21 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * client standing still with nothing to blame. Diagnostic only. */
   SharedFd handed_out_fence_;
   int64_t handed_out_ns_ = 0;
+
+  /* The last frames as they went up, one line each, for the dump.
+   *
+   * The flicker hunt's question is whether the seating breathes from frame
+   * to frame -- which layer sits in the merge, which on a window, with what
+   * alpha and at what scale -- and no answer to it survives the frame it
+   * belongs to anywhere else: this composer's lines never reach the system
+   * log on this platform, so the dump is the only channel. A ring, because
+   * the defect is reproduced first and asked about after. */
+  static constexpr size_t kFrameRing = 64;
+  std::vector<std::string> frame_ring_;
+  size_t frame_ring_pos_ = 0; /* where the next line goes, once full */
+  void NoteFrame(const TegraAtomicRequest &tegra,
+                 const std::vector<hwc::DcHead::Window> &windows,
+                 bool merge_reused);
 };
 
 }  // namespace android::drm_hwcomposer

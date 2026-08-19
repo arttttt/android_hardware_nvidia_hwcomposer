@@ -232,6 +232,19 @@ uint32_t DepthForZPos(int z_pos) {
   return height >= kFurthestBack ? 0 : kFurthestBack - height;
 }
 
+/* The selector's outcomes, as words. The same list the display's own dump
+ * keeps; duplicated rather than shared because the two dumps answer to
+ * different owners, and a shared table would couple them. */
+const char *SteeringWord(int steering) {
+  static const char *const kNames[] = {"steered",       "fits ordinary",
+                                       "monotone",      "run too long",
+                                       "lives overflow", "seat refused"};
+  if (steering < 0 ||
+      steering >= static_cast<int>(sizeof(kNames) / sizeof(kNames[0])))
+    return "?";
+  return kNames[steering];
+}
+
 /* Fills one window from one layer of a plan. False if the layer cannot be
  * described to this controller at all, which the planner should already have
  * ruled out by asking the plane -- so it is a fault worth logging rather than
@@ -451,6 +464,7 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
    * refactor from undefined reads, and zeroes cost nothing here. */
   TegraAtomicRequest::Merge merge{};
   TegraAtomicRequest::Cursor cursor{};
+  TegraAtomicRequest::FrameNote note{};
 
   const int32_t panel_w =
       modes_.empty() ? 0
@@ -462,15 +476,56 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
                                                 .vdisplay);
 
   if (args.composition) {
+    /* The frame's record is filled as the layers are walked: each layer's
+     * seat, alpha, scale and landing place, beside the plan's own verdict.
+     * It travels with the request and is printed only if the frame is put
+     * up -- a request built to be weighed never reaches the ring. */
+    note.steering = static_cast<int>(args.composition->steering);
+
     for (const auto &joining : args.composition->plan) {
       if (!joining.plane)
         continue;
+
+      TegraAtomicRequest::FrameNote::Row &row = note.layers.emplace_back();
+      const LayerData &note_layer = joining.layer;
+      if (note_layer.bi) {
+        row.id = note_layer.bi->unique_id;
+        const float src_w = note_layer.pi.source_crop.f_rect
+                                ? note_layer.pi.source_crop.f_rect->Width()
+                                : static_cast<float>(note_layer.bi->width);
+        const float src_h = note_layer.pi.source_crop.f_rect
+                                ? note_layer.pi.source_crop.f_rect->Height()
+                                : static_cast<float>(note_layer.bi->height);
+        const float dst_w = note_layer.pi.display_frame.i_rect
+                                ? static_cast<float>(
+                                      note_layer.pi.display_frame.i_rect
+                                          ->Width())
+                                : static_cast<float>(note_layer.bi->width);
+        const float dst_h = note_layer.pi.display_frame.i_rect
+                                ? static_cast<float>(
+                                      note_layer.pi.display_frame.i_rect
+                                          ->Height())
+                                : static_cast<float>(note_layer.bi->height);
+        if (dst_w > 0)
+          row.scale_w = src_w / dst_w;
+        if (dst_h > 0)
+          row.scale_h = src_h / dst_h;
+      }
+      row.alpha = note_layer.pi.alpha;
+      if (note_layer.pi.display_frame.i_rect) {
+        const auto &dst = *note_layer.pi.display_frame.i_rect;
+        row.x = dst.left;
+        row.y = dst.top;
+        row.w = dst.Width();
+        row.h = dst.Height();
+      }
 
       const uint32_t plane_id = joining.plane->Get()->GetId();
 
       /* The cursor's binding names no window: what it carries is set aside
        * whole and told to the unit when the frame is executed. */
       if (plane_id == TegraCursorPlane::kPlaneId) {
+        row.seat = 'c';
         const auto &l = joining.layer;
         if (l.bi && l.pi.display_frame.i_rect) {
           cursor.present = true;
@@ -513,6 +568,7 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
        * each of those would cost more than the merge saves. */
       const auto *plane = static_cast<const TegraPlane *>(joining.plane->Get());
       if (plane->IsMerging()) {
+        row.seat = 'm';
         /* Several planes can name the same window -- that is how a planner
          * which gives one layer to one plane is told that this one takes
          * more. They arrive in order of height, so the first is the bottom of
@@ -700,7 +756,8 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
                                               args.power_mode,
                                               std::move(merge),
                                               args.color_matrix,
-                                              cursor);
+                                              cursor,
+                                              std::move(note));
 }
 
 bool TegraAtomicStateManager::Test(const AtomicRequest &request) {
@@ -885,6 +942,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
    * drawn by the GPU, so there is nothing in it to flatten.
    */
   SharedFd merged;
+  bool merge_reused = false;
   const auto &merge = tegra.GetMerge();
   if (!merge.layers.empty()) {
     if (vic_ == nullptr || scratch_ == nullptr) {
@@ -905,6 +963,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
        * reuse submits this same description again, so a dropped frame
        * retries itself out of what is remembered. */
       merges_.reused++;
+      merge_reused = true;
       windows[merge.slot] = last_merge_described_;
       windows[merge.slot].preFence = last_merge_fence_ ? *last_merge_fence_
                                                        : -1;
@@ -1221,6 +1280,10 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
 
   frames_executed_++;
 
+  /* The frame as it went up: the ring's line is written only here, past
+   * every refusal above, so what the ring says was shown was shown. */
+  NoteFrame(tegra, windows, merge_reused);
+
   /* Said even when the flip failed would be wrong -- nothing is showing that
    * buffer then, and holding it back would cost a frame for nothing. Said
    * here, with the fence this flip returned: the buffer is free to be drawn
@@ -1368,6 +1431,45 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   return 0;
 }
 
+void TegraAtomicStateManager::NoteFrame(
+    const TegraAtomicRequest &tegra,
+    const std::vector<hwc::DcHead::Window> &windows, bool merge_reused) {
+  /* One line a frame, kept dense on purpose: the ring holds a second of
+   * frames, and a line that sprawls would make the dump itself the thing
+   * nobody reads. Per layer: the buffer's name, the seat the plan gave it,
+   * its alpha and its scale, and where it lands. Per window: the buffer it
+   * shows, the rectangle it shows it in, and its depth. */
+  std::ostringstream line;
+  line << "#" << frames_executed_ << " "
+       << SteeringWord(tegra.GetFrameNote().steering)
+       << (merge_reused ? " reuse" : "") << " L";
+  for (const auto &row : tegra.GetFrameNote().layers) {
+    char b[128];
+    snprintf(b, sizeof(b), " %llu%c a%.2f s%.2fx%.2f @%d,%d",
+             static_cast<unsigned long long>(row.id), row.seat, row.alpha,
+             row.scale_w, row.scale_h, row.x, row.y);
+    line << b;
+  }
+  line << " | W";
+  for (const auto &window : windows) {
+    if (window.bufferFd == 0)
+      continue;
+    char b[128];
+    snprintf(b, sizeof(b), " %d:fd%d %d,%d %dx%d z%u", window.index,
+             window.bufferFd, window.outX, window.outY, window.outWidth,
+             window.outHeight, window.z);
+    line << b;
+  }
+  line << "\n";
+
+  if (frame_ring_.size() < kFrameRing) {
+    frame_ring_.push_back(line.str());
+  } else {
+    frame_ring_[frame_ring_pos_] = line.str();
+    frame_ring_pos_ = (frame_ring_pos_ + 1) % kFrameRing;
+  }
+}
+
 std::string TegraAtomicStateManager::DumpState() {
   std::stringstream ss;
 
@@ -1479,6 +1581,19 @@ std::string TegraAtomicStateManager::DumpState() {
          << "  approximated in shape   : " << c.approximated << "\n"
          << "  holding a transform now : " << (csc_programmed_ ? "yes" : "no")
          << "\n\n";
+    }
+  }
+
+  /* The ring reads newest-last and survives the dump unchanged: its whole
+   * use is to bracket a defect that has to be reproduced first, so a dump
+   * must not spend it. */
+  if (!frame_ring_.empty()) {
+    ss << "Frames shown lately, oldest first:\n";
+    for (size_t i = 0; i < frame_ring_.size(); ++i) {
+      const size_t at = frame_ring_.size() < kFrameRing
+                            ? i
+                            : (frame_ring_pos_ + i) % frame_ring_.size();
+      ss << frame_ring_[at];
     }
   }
 

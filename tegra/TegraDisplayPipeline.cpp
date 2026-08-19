@@ -276,7 +276,21 @@ drm_hwcomposer::UsablePlanes TegraDisplayPipeline::GetUsablePlanes() const {
          * weigh against. Rewire any of the three and a merging plane
          * without modes would slip an unweighed, unclipped window past the
          * bandwidth question. */
-        if (plane->IsCursorCandidate() && mVic && mScratch)
+        /* The merge can be switched out of the scene whole, for an A/B on
+         * one binary:
+         *
+         *     setprop persist.vendor.hwc.merge 0
+         *
+         * Persistent because an ordinary property dies with a reboot, and a
+         * service restart simplifies the scene until no merge is left to
+         * measure -- the switch has to survive the way the experiment is
+         * run. Asked once: the seating of planes is built once, and a switch
+         * that exists to measure with can afford a restart. Off, the merging
+         * window is never marked, and a scene that needed the merge falls to
+         * the client the way it always has. */
+        static const bool merge_offered =
+            property_get_bool("persist.vendor.hwc.merge", 1) != 0;
+        if (merge_offered && plane->IsCursorCandidate() && mVic && mScratch)
             plane->SetMerging();
 
         /* With the cursor unit claimed, the narrow window is never the
