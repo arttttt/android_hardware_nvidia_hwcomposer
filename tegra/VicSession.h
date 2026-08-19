@@ -237,9 +237,15 @@ class VicSession {
    * over the engine's writes were the likely shape of that era's
    * corruption. Cacheable mappings of these buffers are not made.
    *
+   * `pitch_grain` is what the row length is rounded up to. The default is
+   * what the engine's parser demands of a target it writes in rows; a
+   * caller whose reader wants dense rows instead -- the controller's
+   * cursor unit scans them with no padding at all -- asks for four.
+   *
    * Null, having said what failed, if the zone would not give one. */
   std::unique_ptr<VendorBuffer> AllocateZoneTarget(uint32_t width,
-                                                   uint32_t height);
+                                                   uint32_t height,
+                                                   uint32_t pitch_grain = 256);
 
   /* Draws one layer into `target` turned by `transform` -- the engine's own
    * transform code, which the caller owes to the stock translation table,

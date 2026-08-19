@@ -568,8 +568,9 @@ bool VicSession::OffersZoneBuffers() const {
 }
 
 std::unique_ptr<VendorBuffer> VicSession::AllocateZoneTarget(
-    uint32_t width, uint32_t height) {
-  if (!OffersZoneBuffers() || width == 0 || height == 0) {
+    uint32_t width, uint32_t height, uint32_t pitch_grain) {
+  if (!OffersZoneBuffers() || width == 0 || height == 0 ||
+      pitch_grain == 0) {
     ALOGE("zone buffer: not available in this session");
     return nullptr;
   }
@@ -584,10 +585,10 @@ std::unique_ptr<VendorBuffer> VicSession::AllocateZoneTarget(
     }
   }
 
-  /* Rows in the same grain, sized by the same rule as the library-born
-   * buffer, so the two paths differ in nothing but where the memory comes
-   * from. */
-  const uint32_t grain = 256;
+  /* Rows in the grain the reader wants: the engine's parser demands two
+   * hundred and fifty-six for a target it writes, the cursor unit reads
+   * rows with no padding at all. */
+  const uint32_t grain = pitch_grain;
   const uint32_t pitch = ((width * 4 + grain - 1) / grain) * grain;
   const uint64_t raw =
       static_cast<uint64_t>(pitch) * ((height + 3) & ~3u);

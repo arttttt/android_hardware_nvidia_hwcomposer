@@ -28,6 +28,7 @@ namespace android {
 namespace hwc {
 
 class VicSession;
+struct VendorBuffer;
 
 /* The controller's own cursor.
  *
@@ -115,9 +116,9 @@ class CursorUnit {
   bool UploadLocked(buffer_handle_t sprite, uint32_t width, uint32_t height,
                     uint32_t stride_px, bool premultiplied,
                     int acquire_fence);
-  buffer_handle_t LinearizeLocked(buffer_handle_t sprite, uint32_t width,
-                                  uint32_t height, int acquire_fence,
-                                  uint32_t *stride_px);
+  const VendorBuffer *LinearizeLocked(buffer_handle_t sprite, uint32_t width,
+                                      uint32_t height, int acquire_fence,
+                                      uint32_t *stride_px);
   bool PointLocked(int32_t x, int32_t y, bool visible);
   void ReleaseSlotsLocked();
 
@@ -126,15 +127,20 @@ class CursorUnit {
 
   /* Where a block-arranged sprite is laid flat before the hand-copy: one
    * engine pass writes it here in rows, and rows are what a processor
-   * lock honestly reads. */
-  buffer_handle_t staging_ = nullptr;
+   * read honestly sees. Cut from the composer's own zone, like everything
+   * else this composer allocates -- and it must be, since the engine
+   * writes into it. */
+  std::unique_ptr<VendorBuffer> staging_;
   uint32_t staging_side_ = 0;
   uint32_t staging_stride_px_ = 0;
 
   mutable std::mutex lock_;
 
+  /* The two buffers the unit scans its sprite out of, also cut from the
+   * zone -- but with dense rows, which is the one thing the unit's
+   * hardware demands and the engine's parser does not. */
   struct Slot {
-    buffer_handle_t handle = nullptr;
+    std::unique_ptr<VendorBuffer> buffer;
     int mem_fd = -1;
     uint32_t side = 0;
   };

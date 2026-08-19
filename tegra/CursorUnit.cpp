@@ -22,9 +22,7 @@
 #include <sys/ioctl.h>
 
 #include <hardware/gralloc.h>
-#include <ui/GraphicBufferAllocator.h>
 #include <ui/GraphicBufferMapper.h>
-#include <ui/PixelFormat.h>
 #include <ui/Rect.h>
 
 #include <sync/sync.h>
@@ -92,12 +90,6 @@ uint32_t SideFor(uint32_t width, uint32_t height) {
   return 0;
 }
 
-/* Written by the processor on the rare sprite change, read by the display
- * continuously. */
-constexpr uint64_t kSlotUsage = GRALLOC_USAGE_HW_COMPOSER |
-                                GRALLOC_USAGE_SW_WRITE_OFTEN |
-                                GRALLOC_USAGE_SW_READ_OFTEN;
-
 }  // namespace
 
 std::unique_ptr<CursorUnit> CursorUnit::Claim(int dc_fd, VicSession *vic) {
@@ -120,47 +112,38 @@ CursorUnit::~CursorUnit() {
 }
 
 void CursorUnit::ReleaseSlotsLocked() {
-  auto &allocator = GraphicBufferAllocator::get();
-  for (auto &slot : slots_) {
-    if (slot.handle != nullptr)
-      allocator.free(slot.handle);
+  /* Each buffer frees itself with its slot: the mapping, the library's
+   * handle and the zone's memory go together. */
+  for (auto &slot : slots_)
     slot = {};
-  }
-  if (staging_ != nullptr) {
-    allocator.free(staging_);
-    staging_ = nullptr;
-    staging_side_ = 0;
-    staging_stride_px_ = 0;
-  }
+  staging_.reset();
+  staging_side_ = 0;
+  staging_stride_px_ = 0;
 }
 
-buffer_handle_t CursorUnit::LinearizeLocked(buffer_handle_t sprite,
-                                            uint32_t width, uint32_t height,
-                                            int acquire_fence,
-                                            uint32_t *stride_px) {
+const VendorBuffer *CursorUnit::LinearizeLocked(buffer_handle_t sprite,
+                                                uint32_t width,
+                                                uint32_t height,
+                                                int acquire_fence,
+                                                uint32_t *stride_px) {
   if (vic_ == nullptr)
     return nullptr;
 
   const uint32_t side = SideFor(width, height);
-  auto &allocator = GraphicBufferAllocator::get();
+  if (side == 0)
+    return nullptr;
 
-  if (staging_ != nullptr && staging_side_ < side) {
-    allocator.free(staging_);
-    staging_ = nullptr;
-  }
-  if (staging_ == nullptr) {
-    uint32_t stride = 0;
-    const status_t err = allocator.allocate(side, side,
-                                            PIXEL_FORMAT_RGBA_8888, 1,
-                                            kSlotUsage, &staging_, &stride, 0,
-                                            "hwc-cursor-staging");
-    if (err != NO_ERROR || staging_ == nullptr) {
-      ALOGE("cannot allocate a staging surface: %d", err);
-      staging_ = nullptr;
+  if (staging_ && staging_side_ < side)
+    staging_.reset();
+
+  if (!staging_) {
+    staging_ = vic_->AllocateZoneTarget(side, side);
+    if (!staging_) {
+      ALOGE("the zone would not give a %ux%u staging surface", side, side);
       return nullptr;
     }
     staging_side_ = side;
-    staging_stride_px_ = stride;
+    staging_stride_px_ = staging_->pitch / 4;
   }
 
   /* One engine pass, unturned, lays the block-arranged sprite out in
@@ -176,7 +159,7 @@ buffer_handle_t CursorUnit::LinearizeLocked(buffer_handle_t sprite,
   layer.alpha = 1.0F;
   layer.acquire_fence = acquire_fence;
 
-  auto done = vic_->ComposeRotated(staging_, layer, 0, width, height);
+  auto done = vic_->ComposeRotated(*staging_, layer, 0, width, height);
   if (!done) {
     ALOGE("the engine would not lay the sprite flat");
     return nullptr;
@@ -184,7 +167,7 @@ buffer_handle_t CursorUnit::LinearizeLocked(buffer_handle_t sprite,
   sync_wait(*done, 100);
 
   *stride_px = staging_stride_px_;
-  return staging_;
+  return staging_.get();
 }
 
 bool CursorUnit::UploadLocked(buffer_handle_t sprite, uint32_t width,
@@ -196,66 +179,48 @@ bool CursorUnit::UploadLocked(buffer_handle_t sprite, uint32_t width,
   if (side == 0)
     return false;
 
-  auto &allocator = GraphicBufferAllocator::get();
   Slot &slot = slots_[at_ ^ 1];
 
-  if (slot.handle != nullptr && slot.side != side) {
-    allocator.free(slot.handle);
+  if (slot.buffer && slot.side != side)
     slot = {};
-  }
 
-  if (slot.handle == nullptr) {
-    uint32_t stride = 0;
-    const status_t err = allocator.allocate(side, side,
-                                            PIXEL_FORMAT_RGBA_8888, 1,
-                                            kSlotUsage, &slot.handle, &stride,
-                                            0, "hwc-cursor");
-    if (err != NO_ERROR || slot.handle == nullptr) {
-      ALOGE("cannot allocate a %ux%u sprite slot: %d", side, side, err);
+  if (!slot.buffer) {
+    /* Dense rows: the unit scans side times four bytes from the buffer's
+     * very start, with no layout, pitch or offset register to tell it
+     * otherwise. The zone is asked for exactly that grain -- and the ask
+     * is checked, because a rounded-up row would shear the sprite
+     * silently. */
+    slot.buffer = vic_->AllocateZoneTarget(side, side, 4);
+    if (!slot.buffer) {
+      ALOGE("the zone would not give a %ux%u sprite slot", side, side);
+      slot = {};
+      return false;
+    }
+    if (slot.buffer->pitch != side * 4) {
+      ALOGE("sprite slot pitch %u for width %u; the unit reads dense rows",
+            slot.buffer->pitch, side);
       slot = {};
       return false;
     }
 
-    /* The unit reads rows with no padding at all. An allocator that pads
-     * the stride would shear the sprite silently -- refused here instead,
-     * loudly, once. */
-    if (stride != side) {
-      ALOGE("sprite slot stride %u for width %u; the unit reads dense rows",
-            stride, side);
-      allocator.free(slot.handle);
-      slot = {};
-      return false;
-    }
-
-    auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
-    slot.mem_fd = gralloc != nullptr ? gralloc->GetMemFd(slot.handle) : -1;
+    slot.mem_fd = slot.buffer->mem_fd();
     if (slot.mem_fd < 0) {
       ALOGE("a sprite slot with no memory descriptor");
-      allocator.free(slot.handle);
       slot = {};
       return false;
     }
 
-    /* The unit scans rows of side times four bytes from the buffer's very
-     * start -- no layout, no pitch, no offset register. Anything the
-     * allocator did differently would show as stripes and ghosts, so all
-     * three are demanded outright. */
-    drm_hwcomposer::NvGralloc::Surface described{};
-    if (gralloc->DescribeSurface(slot.handle, &described)) {
-      slot_desc_[0] = described.layout;
-      slot_desc_[1] = described.pitch;
-      slot_desc_[2] = described.offset;
-      if (described.layout != drm_hwcomposer::NvGralloc::kLayoutPitch ||
-          described.pitch != side * 4 || described.offset != 0) {
-        ALOGE("a slot the unit cannot scan: layout %u pitch %u offset %u",
-              described.layout, described.pitch, described.offset);
-        allocator.free(slot.handle);
-        slot = {};
-        return false;
-      }
-    }
+    /* Kept for the dump in the shape the allocator's own answer had:
+     * rows, dense, from the start. */
+    slot_desc_[0] = drm_hwcomposer::NvGralloc::kLayoutPitch;
+    slot_desc_[1] = slot.buffer->pitch;
+    slot_desc_[2] = 0;
     slot.side = side;
   }
+
+  /* Set when the sprite had to be laid flat first: then the pixels come
+   * from our staging buffer rather than from the sprite itself. */
+  const VendorBuffer *flattened = nullptr;
 
   /* The sprite's own arrangement: a processor lock of memory arranged in
    * blocks reads structure, not pixels -- the framework draws its
@@ -270,9 +235,9 @@ bool CursorUnit::UploadLocked(buffer_handle_t sprite, uint32_t width,
       sprite_desc_[1] = described.pitch;
       sprite_desc_[2] = described.offset;
       if (described.layout != drm_hwcomposer::NvGralloc::kLayoutPitch) {
-        sprite = LinearizeLocked(sprite, width, height, acquire_fence,
-                                 &stride_px);
-        if (sprite == nullptr)
+        flattened = LinearizeLocked(sprite, width, height, acquire_fence,
+                                    &stride_px);
+        if (flattened == nullptr)
           return false;
       } else if (described.pitch >= 4) {
         stride_px = described.pitch / 4;
@@ -285,29 +250,31 @@ bool CursorUnit::UploadLocked(buffer_handle_t sprite, uint32_t width,
    * same word read the other way around. Rows past the sprite are cleared
    * to transparent, so a sprite smaller than its slot ends at its own
    * edge. */
+  /* The pixels to read: either the sprite as the framework drew it, or
+   * the flat copy the engine laid out in the staging surface -- which is
+   * one of ours, and read through its own standing mapping rather than
+   * through a lock. */
   auto &mapper = GraphicBufferMapper::get();
-  void *src_ptr = nullptr;
-  void *dst_ptr = nullptr;
-  if (mapper.lock(sprite, GRALLOC_USAGE_SW_READ_OFTEN,
-                  Rect(static_cast<int32_t>(width),
-                       static_cast<int32_t>(height)),
-                  &src_ptr) != NO_ERROR ||
-      src_ptr == nullptr) {
-    ALOGE("cannot read the sprite's pixels");
-    return false;
-  }
-  if (mapper.lock(slot.handle, GRALLOC_USAGE_SW_WRITE_OFTEN,
-                  Rect(static_cast<int32_t>(side),
-                       static_cast<int32_t>(side)),
-                  &dst_ptr) != NO_ERROR ||
-      dst_ptr == nullptr) {
-    mapper.unlock(sprite);
-    ALOGE("cannot write the sprite slot");
-    return false;
+  const uint32_t *src = nullptr;
+  buffer_handle_t locked = nullptr;
+  if (flattened != nullptr) {
+    src = flattened->pixels;
+  } else {
+    void *src_ptr = nullptr;
+    if (mapper.lock(sprite, GRALLOC_USAGE_SW_READ_OFTEN,
+                    Rect(static_cast<int32_t>(width),
+                         static_cast<int32_t>(height)),
+                    &src_ptr) != NO_ERROR ||
+        src_ptr == nullptr) {
+      ALOGE("cannot read the sprite's pixels");
+      return false;
+    }
+    src = static_cast<const uint32_t *>(src_ptr);
+    locked = sprite;
   }
 
-  const auto *src = static_cast<const uint32_t *>(src_ptr);
-  auto *dst = static_cast<uint32_t *>(dst_ptr);
+  auto *dst = slot.buffer->pixels;
+
   for (uint32_t row = 0; row < side; ++row) {
     for (uint32_t col = 0; col < side; ++col) {
       const uint32_t word = row < height && col < width
@@ -317,8 +284,8 @@ bool CursorUnit::UploadLocked(buffer_handle_t sprite, uint32_t width,
     }
   }
 
-  mapper.unlock(slot.handle);
-  mapper.unlock(sprite);
+  if (locked != nullptr)
+    mapper.unlock(locked);
 
   DcCursorImage image = {};
   image.buff_id = static_cast<uint32_t>(slot.mem_fd);
@@ -410,7 +377,7 @@ void CursorUnit::Rearm() {
   /* The image is still in the slot the hardware was last told about --
    * only the telling has to happen again. */
   const Slot &slot = slots_[at_];
-  if (slot.handle == nullptr)
+  if (!slot.buffer)
     return;
 
   DcCursorImage image = {};
