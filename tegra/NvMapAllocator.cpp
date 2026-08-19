@@ -265,7 +265,7 @@ ScratchBuffer ScratchBuffer::FromGralloc(buffer_handle_t handle) {
 ScratchBuffer ScratchBuffer::FromCarveout(
     drm_hwcomposer::SharedFd fd, void *mem_handle,
     std::unique_ptr<uint32_t[]> surface, uint32_t width, uint32_t height,
-    uint32_t pitch) {
+    uint32_t pitch, uint32_t address) {
   ScratchBuffer buffer;
   buffer.origin_ = Origin::kCarveout;
   buffer.fd_ = std::move(fd);
@@ -274,6 +274,7 @@ ScratchBuffer ScratchBuffer::FromCarveout(
   buffer.width_ = width;
   buffer.height_ = height;
   buffer.pitch_ = pitch;
+  buffer.address_ = address;
   return buffer;
 }
 
@@ -500,7 +501,7 @@ std::unique_ptr<ScratchBuffer> NvMapAllocator::Allocate(uint32_t width,
 
   return std::make_unique<ScratchBuffer>(ScratchBuffer::FromCarveout(
       drm_hwcomposer::MakeSharedFd(buffer_fd), mem_handle,
-      std::move(surface), width, height, pitch));
+      std::move(surface), width, height, pitch, mem_address_));
 }
 
 }  // namespace hwc

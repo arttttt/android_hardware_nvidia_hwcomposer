@@ -193,51 +193,50 @@ void ScratchPool::Presented(const drm_hwcomposer::SharedFd &fence) {
   anything_showing_ = true;
 }
 
-std::string ScratchPool::DumpSlotContent() const {
-  if (slots_.empty())
-    return "";
-
-  /* The slot the last frame was drawn into, or the first if none has been
-   * posted yet. Only carveout slots are reachable by our own fd; a gralloc
-   * slot belongs to the allocator and is not read this way. */
-  const size_t at = anything_showing_ ? showing_ : 0;
-  const ScratchBuffer &buffer = slots_[at].buffer;
-  if (buffer.origin() != ScratchBuffer::Origin::kCarveout)
-    return "not a carveout slot";
-
-  const int fd = buffer.fd();
-  if (fd < 0)
-    return "";
-
-  const size_t length = static_cast<size_t>(buffer.pitch()) * buffer.height();
-  void *pixels = mmap(nullptr, length, PROT_READ, MAP_SHARED, fd, 0);
-  if (pixels == MAP_FAILED)
-    return "";
-
-  const auto *words = static_cast<const uint32_t *>(pixels);
+std::string ScratchPool::DumpSlotsContent() const {
   std::string out;
-  out += "  slot content (" + std::to_string(buffer.width()) + "x" +
-         std::to_string(buffer.height()) + ", pitch " +
-         std::to_string(buffer.pitch()) + "):\n  row0 words:";
-  for (int i = 0; i < 8 && i < static_cast<int>(buffer.pitch() / 4); ++i) {
-    char w[16];
-    snprintf(w, sizeof(w), " %08x", words[i]);
-    out += w;
+  for (size_t i = 0; i < slots_.size(); ++i) {
+    const ScratchBuffer &buffer = slots_[i].buffer;
+    if (buffer.origin() != ScratchBuffer::Origin::kCarveout) {
+      out += "  slot " + std::to_string(i) + ": gralloc\n";
+      continue;
+    }
+    out += "  slot " + std::to_string(i) + ": base 0x";
+    char base[16];
+    snprintf(base, sizeof(base), "%08x", buffer.address());
+    out += base;
+
+    const int fd = buffer.fd();
+    if (fd < 0)
+      continue;
+    const size_t length =
+        static_cast<size_t>(buffer.pitch()) * buffer.height();
+    void *pixels = mmap(nullptr, length, PROT_READ, MAP_SHARED, fd, 0);
+    if (pixels == MAP_FAILED) {
+      out += " (unreadable)\n";
+      continue;
+    }
+
+    const auto *words = static_cast<const uint32_t *>(pixels);
+    out += " row0:";
+    for (int w = 0; w < 8 && w < static_cast<int>(buffer.pitch() / 4); ++w) {
+      char one[16];
+      snprintf(one, sizeof(one), " %08x", words[w]);
+      out += one;
+    }
+
+    const uint32_t cx = buffer.width() / 2;
+    const uint32_t cy = buffer.height() / 2;
+    const uint32_t *row =
+        static_cast<const uint32_t *>(pixels) +
+        static_cast<size_t>(cy) * (buffer.pitch() / 4);
+    char centre[16];
+    snprintf(centre, sizeof(centre), " centre %08x", row[cx]);
+    out += centre;
+    out += "\n";
+
+    munmap(pixels, length);
   }
-
-  /* The centre pixel, split into its bytes: whether it reads as a colour
-   * (a picture was written) or as noise. */
-  const uint32_t cx = buffer.width() / 2;
-  const uint32_t cy = buffer.height() / 2;
-  const uint32_t *row =
-      static_cast<const uint32_t *>(pixels) +
-      static_cast<size_t>(cy) * (buffer.pitch() / 4);
-  const uint32_t centre = row[cx];
-  char c[16];
-  snprintf(c, sizeof(c), "  centre %08x", centre);
-  out += c;
-
-  munmap(pixels, length);
   return out;
 }
 

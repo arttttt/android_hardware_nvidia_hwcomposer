@@ -1071,8 +1071,14 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
          * composer chose, not by anything asked of the allocator. */
         buffer_fd = target->fd();
         buffer_stride = target->pitch();
+        merges_.zone_windows++;
+        merges_.last_target_address = target->address();
+        merges_.last_window_fd = buffer_fd;
       } else {
         auto *gralloc = NvGralloc::GetInstance();
+        merges_.gralloc_windows++;
+        merges_.last_target_address = 0;
+        merges_.last_window_fd = 0;
         NvGralloc::Surface surface{};
         buffer_fd =
             gralloc != nullptr ? gralloc->GetMemFd(target->handle()) : -1;
@@ -1448,10 +1454,15 @@ std::string TegraAtomicStateManager::DumpState() {
                  : "gralloc")
          << " (" << scratch_->width() << "x" << scratch_->height() << ")\n";
     if (scratch_ != nullptr) {
-      const std::string slot = scratch_->DumpSlotContent();
-      if (!slot.empty())
-        ss << slot << "\n";
+      const std::string slots = scratch_->DumpSlotsContent();
+      if (!slots.empty())
+        ss << slots;
     }
+    ss << "  merged windows          : zone " << merges_.zone_windows
+       << ", gralloc " << merges_.gralloc_windows << "\n"
+       << "  last merge              : target 0x" << std::hex
+       << merges_.last_target_address << std::dec << ", window fd "
+       << merges_.last_window_fd << "\n";
     if (auto *zone = hwc::NvMapAllocator::GetInstance(); zone != nullptr) {
       ss << "  zone surface format     : 0x" << std::hex
          << zone->surface_format() << std::dec;

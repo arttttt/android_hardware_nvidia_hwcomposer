@@ -115,12 +115,13 @@ class ScratchPool {
   uint32_t height() const { return height_; }
   uint32_t stride() const { return stride_; }
 
-  /* Reads the pixels of the slot the last frame was drawn into, for the
-   * dump: the first row's leading words and the centre pixel. Whether
-   * the engine writes a picture or noise in that slot is the one split
+  /* Reads the pixels of every slot, for the dump: each slot's base
+   * address and its first row's leading words and centre pixel. Whether
+   * the engine writes a picture or noise into a slot is the one split
    * that says where a corruption lives -- in the writing or in the
-   * reading. Empty if the slot cannot be read. */
-  std::string DumpSlotContent() const;
+   * reading -- and all slots are shown because the rotation can serve
+   * any one of them. */
+  std::string DumpSlotsContent() const;
 
   /* Where the pool's buffers were born -- the dump's one-line answer
    * for whether the zone is doing its job on this device. */

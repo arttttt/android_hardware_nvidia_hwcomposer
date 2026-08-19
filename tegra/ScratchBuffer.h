@@ -68,7 +68,7 @@ class ScratchBuffer {
                                     void *mem_handle,
                                     std::unique_ptr<uint32_t[]> surface,
                                     uint32_t width, uint32_t height,
-                                    uint32_t pitch);
+                                    uint32_t pitch, uint32_t address);
 
   Origin origin() const { return origin_; }
 
@@ -83,6 +83,7 @@ class ScratchBuffer {
   uint32_t width() const { return width_; }
   uint32_t height() const { return height_; }
   uint32_t pitch() const { return pitch_; }
+  uint32_t address() const { return address_; }
 
  private:
   Origin origin_ = Origin::kGralloc;
@@ -94,6 +95,7 @@ class ScratchBuffer {
   uint32_t width_ = 0;
   uint32_t height_ = 0;
   uint32_t pitch_ = 0;
+  uint32_t address_ = 0;
 };
 
 }  // namespace hwc
