@@ -1489,7 +1489,10 @@ void TegraAtomicStateManager::NoteFrame(
              window.outHeight, window.z);
     line << b;
   }
-  line << "\n";
+  /* When the line was written, in the same clock the engine's timings use.
+   * Appended last so the field order the ring has always had is untouched;
+   * intervals and percentiles are computed from it elsewhere. */
+  line << " t" << NowNs() << "\n";
 
   if (frame_ring_.size() < kFrameRing) {
     frame_ring_.push_back(line.str());
