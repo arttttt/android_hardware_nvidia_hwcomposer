@@ -464,7 +464,7 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
    * refactor from undefined reads, and zeroes cost nothing here. */
   TegraAtomicRequest::Merge merge{};
   TegraAtomicRequest::Cursor cursor{};
-  TegraAtomicRequest::FrameNote note{};
+  FrameNote note{};
 
   const int32_t panel_w =
       modes_.empty() ? 0
@@ -486,7 +486,7 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
       if (!joining.plane)
         continue;
 
-      TegraAtomicRequest::FrameNote::Row &row = note.layers.emplace_back();
+      FrameNote::Row &row = note.layers.emplace_back();
       const LayerData &note_layer = joining.layer;
       if (note_layer.bi) {
         row.id = note_layer.bi->unique_id;

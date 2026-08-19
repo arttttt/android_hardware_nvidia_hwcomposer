@@ -36,6 +36,45 @@
 
 namespace android::drm_hwcomposer {
 
+/* The frame's own record: what the plan decided about each layer.
+ *
+ * Carried by the request rather than asked of the plan again, because the
+ * request is also built for frames that are only weighed -- and the frame
+ * ring this feeds must hear only of frames that actually went up.
+ *
+ * A namespace citizen rather than a member of the request: a note is ABOUT
+ * a frame, not part of one -- and a nested struct with field initializers
+ * cannot be a default argument of its own enclosing class's constructor,
+ * which is exactly where this one is handed over. */
+struct FrameNote {
+  /* LayerToPlaneJoiningPlan::Steering, as a number: the plan's header is
+   * not this one's business, and the ring prints the word. */
+  int steering = 0;
+
+  struct Row {
+    /* The allocator's name for the buffer; nought where it has none. */
+    uint64_t id = 0;
+    /* Where the layer was seated: 'w' a window, 'm' the merge, 'c' the
+     * cursor unit. */
+    char seat = 'w';
+    /* The window's own number, so the seat says not just "a window" but
+     * which one -- a layer migrating between windows is the thing the
+     * ring exists to catch. */
+    uint32_t plane = 0;
+    /* How the buffer's pixels carry their alpha: 'p' premultiplied, 'c'
+     * coverage, '-' no alpha worth honouring. */
+    char blend = '-';
+    float alpha = 1.F;
+    /* Source against destination, one per axis: 1 where the layer is
+     * shown unresized. */
+    float scale_w = 1.F;
+    float scale_h = 1.F;
+    /* Where on the panel the layer lands. */
+    int32_t x = 0, y = 0, w = 0, h = 0;
+  };
+  std::vector<Row> layers;
+};
+
 /* One commit, described in the terms this hardware takes.
  *
  * Built from the arguments and then handed back to be carried out, so that
@@ -117,40 +156,6 @@ class TegraAtomicRequest : public AtomicRequest {
      * paints its pointer on the graphics core, and reading it before
      * this comes due reads a half-painted sprite. */
     SharedFd acquire;
-  };
-
-  /* The frame's own record: what the plan decided about each layer.
-   *
-   * Carried by the request rather than asked of the plan again, because the
-   * request is also built for frames that are only weighed -- and the frame
-   * ring this feeds must hear only of frames that actually went up. */
-  struct FrameNote {
-    /* LayerToPlaneJoiningPlan::Steering, as a number: the plan's header is
-     * not this one's business, and the ring prints the word. */
-    int steering = 0;
-
-    struct Row {
-      /* The allocator's name for the buffer; nought where it has none. */
-      uint64_t id = 0;
-      /* Where the layer was seated: 'w' a window, 'm' the merge, 'c' the
-       * cursor unit. */
-      char seat = 'w';
-      /* The window's own number, so the seat says not just "a window" but
-       * which one -- a layer migrating between windows is the thing the
-       * ring exists to catch. */
-      uint32_t plane = 0;
-      /* How the buffer's pixels carry their alpha: 'p' premultiplied, 'c'
-       * coverage, '-' no alpha worth honouring. */
-      char blend = '-';
-      float alpha = 1.F;
-      /* Source against destination, one per axis: 1 where the layer is
-       * shown unresized. */
-      float scale_w = 1.F;
-      float scale_h = 1.F;
-      /* Where on the panel the layer lands. */
-      int32_t x = 0, y = 0, w = 0, h = 0;
-    };
-    std::vector<Row> layers;
   };
 
   TegraAtomicRequest(std::vector<hwc::DcHead::Window> windows,
