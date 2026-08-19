@@ -230,6 +230,26 @@ std::unique_ptr<ScratchBuffer> NvMapAllocator::Allocate(uint32_t width,
   const int buffer_fd = get.fd;
   ioctl(nvmap_fd_, NVMAP_IOC_FREE, static_cast<unsigned long>(handle_fd));
 
+  /* The zone does not come to the caller empty. The kernel hands a
+   * carveout block out as it is -- no zeroing, unlike the page-backed
+   * path -- and a block just born may hold whatever lived there before
+   * it: a previous boot's data, a freed buffer's tail, a slot recycled
+   * from another pool. Shown through a window that expects a picture,
+   * that is noise the first time the slot is ever scanned. Paid once,
+   * when a slot enters the pool for the first time: a page-touch per
+   * slot of the pool's lifetime, not per frame. */
+  {
+    const size_t length = static_cast<size_t>(bytes);
+    void *pixels = mmap(nullptr, length, PROT_READ | PROT_WRITE,
+                        MAP_SHARED, buffer_fd, 0);
+    if (pixels != MAP_FAILED) {
+      memset(pixels, 0, length);
+      munmap(pixels, length);
+    } else {
+      ALOGE("cannot clear the zone's slot: %s", strerror(errno));
+    }
+  }
+
   void *mem_handle = nullptr;
   if (mem_handle_from_fd_(buffer_fd, &mem_handle) != kNvSuccess ||
       mem_handle == nullptr) {
