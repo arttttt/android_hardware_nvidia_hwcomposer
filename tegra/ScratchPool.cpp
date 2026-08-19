@@ -17,6 +17,7 @@
 #include "tegra/ScratchPool.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cutils/properties.h>
 #include <hardware/gralloc.h>
@@ -63,40 +64,63 @@ std::unique_ptr<ScratchPool> ScratchPool::Create(uint32_t width,
    * have the room, so the whole pool is let go and asked of gralloc
    * instead -- one origin per pool, one answer in the dump.
    *
-   * A switch the boot can set ahead of the allocation: with the zone
-   * set to zero, the pool goes straight to gralloc. It is the one
-   * bisect that separates the merge's source of buffers from every
-   * other change in one binary, and it has to survive the reboot,
-   * because the first allocation happens on boot, before any ordinary
-   * property could be set -- hence persist. */
-  if (property_get_bool("persist.vendor.hwc.zone", 1) == 0) {
-    ALOGI("zone forced off; the pool will be gralloc");
-  } else {
-    auto *zone = NvMapAllocator::GetInstance();
-    if (zone != nullptr) {
-      bool whole = true;
-      for (size_t i = 0; i < count; i++) {
-        auto buffer = zone->Allocate(width, height);
-        if (!buffer) {
-          ALOGE("the zone gave %zu of %zu %ux%u; taking the pool to gralloc",
-                i, count, width, height);
-          whole = false;
-          break;
-        }
-        pool->slots_[i].buffer = std::move(*buffer);
+   * A switch the boot can set ahead of the allocation, so the merge's
+   * source of buffers can be chosen without a rebuild, and it has to
+   * survive the reboot because the first allocation happens on boot:
+   * 0 is gralloc, 1 is our own carveout zone, 2 is the vendor library's
+   * own allocator -- the experiment that hands the library a buffer it
+   * owns from birth, to ask whether the corruption is the adoption of
+   * foreign memory by the engine. */
+  const char *src = property_get("persist.vendor.hwc.zone", nullptr);
+  const int source = src != nullptr ? atoi(src) : 1;
+  auto *zone = NvMapAllocator::GetInstance();
+  if (source == 2 && zone != nullptr) {
+    ALOGI("zone source: the vendor library's own allocator");
+    bool whole = true;
+    for (size_t i = 0; i < count; i++) {
+      auto buffer = zone->AllocateVendor(width, height);
+      if (!buffer) {
+        ALOGE("the vendor allocator gave %zu of %zu %ux%u; taking the pool "
+              "to gralloc", i, count, width, height);
+        whole = false;
+        break;
       }
-      if (whole) {
-        pool->origin_ = ScratchBuffer::Origin::kCarveout;
-        pool->stride_ = pool->slots_[0].buffer.pitch() / 4;
-        ALOGI("%zu carveout buffers, %ux%u, pitch %u", count, width, height,
-              pool->slots_[0].buffer.pitch());
-        return pool;
-      }
-
-      /* The refused half must be given back before the pool is rebuilt. */
-      for (auto &slot : pool->slots_)
-        slot.buffer = ScratchBuffer();
+      pool->slots_[i].buffer = std::move(*buffer);
     }
+    if (whole) {
+      pool->origin_ = ScratchBuffer::Origin::kCarveout;
+      pool->stride_ = pool->slots_[0].buffer.pitch() / 4;
+      ALOGI("%zu vendor-allocated buffers, %ux%u, pitch %u", count, width,
+            height, pool->slots_[0].buffer.pitch());
+      return pool;
+    }
+    for (auto &slot : pool->slots_)
+      slot.buffer = ScratchBuffer();
+  } else if (source == 1 && zone != nullptr) {
+    bool whole = true;
+    for (size_t i = 0; i < count; i++) {
+      auto buffer = zone->Allocate(width, height);
+      if (!buffer) {
+        ALOGE("the zone gave %zu of %zu %ux%u; taking the pool to gralloc",
+              i, count, width, height);
+        whole = false;
+        break;
+      }
+      pool->slots_[i].buffer = std::move(*buffer);
+    }
+    if (whole) {
+      pool->origin_ = ScratchBuffer::Origin::kCarveout;
+      pool->stride_ = pool->slots_[0].buffer.pitch() / 4;
+      ALOGI("%zu carveout buffers, %ux%u, pitch %u", count, width, height,
+            pool->slots_[0].buffer.pitch());
+      return pool;
+    }
+
+    /* The refused half must be given back before the pool is rebuilt. */
+    for (auto &slot : pool->slots_)
+      slot.buffer = ScratchBuffer();
+  } else if (source == 0) {
+    ALOGI("zone source: gralloc");
   }
 
   auto &allocator = GraphicBufferAllocator::get();
