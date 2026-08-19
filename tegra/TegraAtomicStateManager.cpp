@@ -1428,7 +1428,22 @@ std::string TegraAtomicStateManager::DumpState() {
        << "  turned layers refused   : " << TegraPlane::TransformRefusals()
        << "\n"
        << "  scaled beyond its reach : " << TegraPlane::ScaleRefusals()
-       << " (limit " << TegraPlane::kEngineScaleReach << "x)\n\n";
+       << " (limit " << TegraPlane::kEngineScaleReach << "x)\n";
+
+    /* What the zone is holding, and how often it would not give.
+     *
+     * The pair is the whole point: bytes alone say nothing -- the zone is
+     * there to be used -- and a refusal is the only sign that it is too
+     * small for the scene. A frame whose turn is refused loses the whole
+     * merge, not just the turned layer, so one refusal is louder than it
+     * looks. Held bytes come from the pools because they own the buffers;
+     * the kernel's own count of the heap is the check against this one. */
+    const size_t show_held = scratch_ != nullptr ? scratch_->held_bytes() : 0;
+    const size_t turn_held =
+        rotate_pool_ != nullptr ? rotate_pool_->held_bytes() : 0;
+    ss << "  zone held               : " << (show_held >> 10) << " KiB shown + "
+       << (turn_held >> 10) << " KiB turning\n"
+       << "  zone refusals           : " << vic_->zone_refusals() << "\n\n";
   }
 
   /* The number the cursor's whole promise is judged by: a pointer moving

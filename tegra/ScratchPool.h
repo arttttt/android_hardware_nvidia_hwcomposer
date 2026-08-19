@@ -134,6 +134,10 @@ class ScratchPool {
    * just replaced. */
   void Presented(const drm_hwcomposer::SharedFd &fence);
 
+  /* What the zone is holding for this pool, for the dump: read beside the
+   * count of refusals, since neither number means anything alone. */
+  size_t held_bytes() const;
+
   uint32_t width() const { return width_; }
   uint32_t height() const { return height_; }
   uint32_t stride() const { return stride_; }

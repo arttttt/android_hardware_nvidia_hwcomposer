@@ -141,6 +141,12 @@ class CursorUnit {
    * hardware demands and the engine's parser does not. */
   struct Slot {
     std::unique_ptr<VendorBuffer> buffer;
+
+    /* The buffer's own dma-buf number, copied out because the unit is told
+     * about the sprite by number rather than by handle. Owned by `buffer`
+     * and valid exactly as long as it is -- a slot that lets go of the
+     * buffer must let go of this in the same breath, which is why the two
+     * are cleared together and never separately. */
     int mem_fd = -1;
     uint32_t side = 0;
   };

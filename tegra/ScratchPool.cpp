@@ -190,6 +190,14 @@ void ScratchPool::Presented(const drm_hwcomposer::SharedFd &fence) {
   anything_showing_ = true;
 }
 
+size_t ScratchPool::held_bytes() const {
+  size_t total = 0;
+  for (const auto &slot : slots_)
+    if (slot.vendor)
+      total += slot.vendor->size;
+  return total;
+}
+
 std::string ScratchPool::DumpSlots() const {
   std::string out;
   char line[256];

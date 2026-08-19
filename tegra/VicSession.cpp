@@ -572,6 +572,7 @@ std::unique_ptr<VendorBuffer> VicSession::AllocateZoneTarget(
   if (!OffersZoneBuffers() || width == 0 || height == 0 ||
       pitch_grain == 0) {
     ALOGE("zone buffer: not available in this session");
+    zone_refusals_++;
     return nullptr;
   }
 
@@ -581,7 +582,8 @@ std::unique_ptr<VendorBuffer> VicSession::AllocateZoneTarget(
     nvmap_fd_ = open("/dev/nvmap", O_RDWR | O_CLOEXEC);
     if (nvmap_fd_ < 0) {
       ALOGE("zone buffer: /dev/nvmap: %s", strerror(errno));
-      return nullptr;
+      zone_refusals_++;
+    return nullptr;
     }
   }
 
@@ -599,6 +601,7 @@ std::unique_ptr<VendorBuffer> VicSession::AllocateZoneTarget(
   if (ioctl(nvmap_fd_, NVMAP_IOC_CREATE, &create) != 0) {
     ALOGE("zone buffer: cannot create a %ux%u handle: %s", width, height,
           strerror(errno));
+    zone_refusals_++;
     return nullptr;
   }
   const int handle_id = static_cast<int>(create.handle);
@@ -618,6 +621,7 @@ std::unique_ptr<VendorBuffer> VicSession::AllocateZoneTarget(
     ALOGE("zone buffer: the zone would not give %ux%u: %s", width, height,
           strerror(errno));
     ioctl(nvmap_fd_, NVMAP_IOC_FREE, handle_id);
+    zone_refusals_++;
     return nullptr;
   }
 
@@ -627,6 +631,7 @@ std::unique_ptr<VendorBuffer> VicSession::AllocateZoneTarget(
     ALOGE("zone buffer: cannot take a dma-buf for %ux%u: %s", width, height,
           strerror(errno));
     ioctl(nvmap_fd_, NVMAP_IOC_FREE, handle_id);
+    zone_refusals_++;
     return nullptr;
   }
   const int buffer_fd = get.fd;
@@ -643,6 +648,7 @@ std::unique_ptr<VendorBuffer> VicSession::AllocateZoneTarget(
   if (pixels == MAP_FAILED) {
     ALOGE("zone buffer: the dma-buf would not map: %s", strerror(errno));
     close(buffer_fd);
+    zone_refusals_++;
     return nullptr;
   }
 
@@ -655,6 +661,7 @@ std::unique_ptr<VendorBuffer> VicSession::AllocateZoneTarget(
     ALOGE("zone buffer: the library would not adopt fd %d", buffer_fd);
     munmap(pixels, size);
     close(buffer_fd);
+    zone_refusals_++;
     return nullptr;
   }
 
