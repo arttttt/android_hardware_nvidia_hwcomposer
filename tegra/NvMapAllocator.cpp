@@ -81,6 +81,13 @@ constexpr size_t kSurfaceWordsUsed = 20;
  * at (NvGralloc.cpp, SurfaceWord::kColorFormat). */
 constexpr size_t kSurfaceWordFormat = 2;
 
+/* The word that carries the surface's size in bytes. The allocator's
+ * own descriptor was found, by the side-by-side comparison, to hold the
+ * buffer's pitch times its height here while ours held a zero -- the one
+ * difference between the two, and arithmetic told the story: 0xc00000
+ * is exactly 1536 * 2048 * 4. */
+constexpr size_t kSurfaceWordSize = 14;
+
 /* The overrides the bring-up lends: a format and a gained field chosen
  * per boot, without a rebuild. Read each time a slot is allocated --
  * the cost is a property lookup against a carveout allocation, which
@@ -434,6 +441,14 @@ std::unique_ptr<ScratchBuffer> NvMapAllocator::Allocate(uint32_t width,
   const uint32_t gained = SurfaceGainedOverride();
   surface_init_rm_pitch_(surface.get(), width, height, gained, format,
                          kColorSpaceLinearRgba, pitch, mem_handle, 0);
+
+  /* The library fills what it knows and leaves the rest at the zero of
+   * its own memset -- including the size word, which the allocator's own
+   * descriptor carries: the side-by-side against a same-sized gralloc
+   * buffer found exactly one difference between the two, a zero where
+   * the allocator wrote the surface's size in bytes, pitch times height.
+   * The engine reads it, so the zero is supplied here. */
+  surface[kSurfaceWordSize] = bytes;
 
   /* The library's answer is read back, once, for the dump: what it
    * actually put in the colour-format word, against what was asked. A
