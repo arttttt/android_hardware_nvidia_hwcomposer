@@ -281,6 +281,29 @@ bool DescribeWindow(const LayerData &layer, uint32_t plane_id, uint32_t depth,
   out->z = depth;
   out->blend = BlendFor(bi.blend_mode);
 
+  /* The layer's own opacity, which a window CAN carry: the controller
+   * multiplies a global factor over the whole window when the flag says
+   * so, on top of whatever the pixels themselves blend. Until this was
+   * sent, a layer fading on a window was drawn fully opaque for the whole
+   * fade -- and a layer that migrated between the merge (which honours
+   * alpha) and a window (which did not) pulsed between the two laws.
+   *
+   * No capability is asked about, because there is none to ask: the driver
+   * honours the flag on every window alike (dc/ext/dev.c reads it into the
+   * window whenever the flag is set, and writes back 255 when it is not).
+   * The mode of blending is untouched on purpose -- for a premultiplied
+   * layer the global factor is a second multiplier over an already-scaled
+   * colour, which is exactly the framework's arithmetic.
+   *
+   * Full opacity asks for nothing: the flag stays off, and the window runs
+   * the plain mode it always ran -- a fading layer pays for the mode only
+   * while it fades. */
+  if (layer.pi.alpha < 1.F) {
+    const float clamped = std::min(std::max(layer.pi.alpha, 0.F), 1.F);
+    out->flags |= TEGRA_DC_EXT_FLIP_FLAG_GLOBAL_ALPHA;
+    out->globalAlpha = static_cast<uint8_t>(lroundf(clamped * 255.F));
+  }
+
   /* A source region left unsaid means the whole buffer, and a destination
    * left unsaid means the whole panel. The controller has no such shorthand,
    * so both are spelled out from what is known. */

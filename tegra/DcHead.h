@@ -93,6 +93,11 @@ public:
         uint32_t blend = 0;
         uint32_t flags = 0;
 
+        /* The layer's own opacity, multiplied over the whole window when the
+         * flags say to use it; 255 when they do not, which is what the flag's
+         * absence already means. */
+        uint8_t globalAlpha = 255;
+
         /* How tall a block is, where the flags say the memory is arranged in
          * blocks rather than rows. Ignored otherwise. */
         uint8_t blockHeightLog2 = 0;

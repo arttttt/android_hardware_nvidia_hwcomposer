@@ -358,6 +358,9 @@ static std::vector<struct tegra_dc_ext_flip_windowattr> describe(
         dst.pixformat = src.pixelFormat;
         dst.blend = src.blend;
         dst.flags = src.flags;
+        /* Read only while the flags carry GLOBAL_ALPHA; the driver writes
+         * back 255 the moment they do not. */
+        dst.global_alpha = src.globalAlpha;
         dst.block_height_log2 = src.blockHeightLog2;
         dst.z = src.z;
 
