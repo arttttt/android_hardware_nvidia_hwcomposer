@@ -24,11 +24,11 @@
 
 #include <cutils/native_handle.h>
 
+#include "tegra/VicSession.h"
+
 namespace android {
 namespace hwc {
 
-class VicSession;
-struct VendorBuffer;
 
 /* The controller's own cursor.
  *

@@ -21,11 +21,11 @@
 #include <memory>
 #include <vector>
 
+#include "tegra/VicSession.h"
+
 namespace android {
 namespace hwc {
 
-class VicSession;
-struct VendorBuffer;
 
 /* Somewhere for a turned copy of a layer to land, before the group reads it.
  *
