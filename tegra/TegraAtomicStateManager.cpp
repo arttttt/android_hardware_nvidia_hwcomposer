@@ -51,7 +51,6 @@
 #include "tegra/FbDevice.h"
 #include "tegra/NvMapAllocator.h"
 #include "tegra/TegraFormat.h"
-#include "tegra/VicProbe.h"
 #include "utils/Logging.h"
 #include "utils/log.h"
 
@@ -526,13 +525,6 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
           merge.depth = DepthForZPos(joining.z_pos);
         }
         merge.layers.push_back(MergeLayerFrom(joining.layer));
-        /* The probe is offered every member that joins the group, so it can
-         * test the engine on the very buffers the merge is built from --
-         * the path that describes these surfaces does not pass through the
-         * buffer-info getter, and a probe wired only there would never see
-         * a merge and answer nothing. */
-        if (joining.layer.bi)
-          hwc::VicProbe::Offer(joining.layer.bi->handle);
         merge.source_ids.push_back(joining.layer.bi
                                        ? joining.layer.bi->unique_id
                                        : 0);

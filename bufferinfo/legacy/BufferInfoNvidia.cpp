@@ -30,7 +30,6 @@
 #include "bufferinfo/GrallocBufferHandle.h"
 #include "bufferinfo/NvGralloc.h"
 #include "utils/Logging.h"
-#include "tegra/VicProbe.h"
 #include "utils/log.h"
 
 /* How this hardware arranges memory, said in the way everything else says it.
@@ -159,13 +158,6 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
     return bi;
   }
   ++shape_misses_;
-
-  /* The last place a layer is still known by the allocator's own handle,
-   * and now genuinely the first sight of a buffer rather than every frame's.
-   *
-   * Everything below reads the description this builds, and the handle is
-   * part of it -- see BufferInfo::handle. */
-  hwc::VicProbe::Offer(handle);
 
   NvGralloc::Surface surface{};
   if (!gralloc->DescribeSurface(handle, &surface))
