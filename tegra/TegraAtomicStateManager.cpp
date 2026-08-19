@@ -49,7 +49,6 @@
 #include "display/Plane.h"
 #include "display/PipelineBinding.h"
 #include "tegra/FbDevice.h"
-#include "tegra/NvMapAllocator.h"
 #include "tegra/TegraFormat.h"
 #include "utils/Logging.h"
 #include "utils/log.h"
@@ -919,7 +918,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       /* The buffer and, separately, when it may be written to. The engine is
        * told the second and waits for it itself; nothing here does. */
       SharedFd target_ready;
-      hwc::ScratchBuffer *target = scratch_->Next(&target_ready);
+      buffer_handle_t target = scratch_->Next(&target_ready);
       if (target == nullptr) {
         ForgetMerge();
         return -EBUSY;
@@ -964,8 +963,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         const uint32_t turned_w = swaps ? crop_h : crop_w;
         const uint32_t turned_h = swaps ? crop_w : crop_h;
 
-        hwc::SurfaceView inter = rotate_pool_->Take(turned_w, turned_h);
-        if (inter.handle == nullptr && inter.carveout_words == nullptr) {
+        buffer_handle_t inter = rotate_pool_->Take(turned_w, turned_h);
+        if (inter == nullptr) {
           /* The pool's refusal and the engine's look identical from the
            * dump; the log tells them apart, and says what was asked of a
            * pool holding what. */
@@ -991,16 +990,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
           merges_.rotate_ns_max = turn_took;
         turned_in_frame_ = true;
 
-        /* The group reads the intermediate instead of the framework's
-         * buffer: a carveout intermediate hands over its ready-made
-         * surface descriptor, a gralloc one its handle, and the handle
-         * field is nulled either way so the engine knows which. */
-        if (inter.carveout_words != nullptr) {
-          l.handle = nullptr;
-          l.carveout_words = inter.carveout_words;
-        } else {
-          l.handle = inter.handle;
-        }
+        l.handle = inter;
         l.source_left = 0.F;
         l.source_top = 0.F;
         l.source_right = static_cast<float>(turned_w);
@@ -1021,7 +1011,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       }
 
       const int64_t before_merge = NowNs();
-      merged = vic_->Compose(target->View(), drawn, merge.width, merge.height,
+      merged = vic_->Compose(target, drawn, merge.width, merge.height,
                              target_ready ? *target_ready : -1);
       if (!merged) {
         /* The engine would not take it. Nothing has been written, so the
@@ -1063,45 +1053,25 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       if (took > merges_.engine_ns_max)
         merges_.engine_ns_max = took;
 
-      int buffer_fd = -1;
-      uint32_t buffer_offset = 0;
-      uint32_t buffer_stride = 0;
-      if (target->origin() == hwc::ScratchBuffer::Origin::kCarveout) {
-        /* Ours: the zone's own rows, described by the fields this
-         * composer chose, not by anything asked of the allocator. */
-        buffer_fd = target->fd();
-        buffer_stride = target->pitch();
-        merges_.zone_windows++;
-        merges_.last_target_address = target->address();
-        merges_.last_window_fd = buffer_fd;
-      } else {
-        auto *gralloc = NvGralloc::GetInstance();
-        merges_.gralloc_windows++;
-        merges_.last_target_address = 0;
-        merges_.last_window_fd = 0;
-        NvGralloc::Surface surface{};
-        buffer_fd =
-            gralloc != nullptr ? gralloc->GetMemFd(target->handle()) : -1;
-        if (buffer_fd < 0 ||
-            !gralloc->DescribeSurface(target->handle(), &surface)) {
-          /* Drawn, but this frame will never reach the panel: the slot goes
-           * back into rotation as the next one to write, and nothing of this
-           * frame is remembered. */
-          scratch_->Rewind();
-          ForgetMerge();
-          ALOGE("cannot describe the buffer the engine just drew");
-          return -EINVAL;
-        }
-        buffer_offset = surface.offset;
-        buffer_stride = surface.pitch;
+      auto *gralloc = NvGralloc::GetInstance();
+      NvGralloc::Surface surface{};
+      const int fd = gralloc != nullptr ? gralloc->GetMemFd(target) : -1;
+      if (fd < 0 || !gralloc->DescribeSurface(target, &surface)) {
+        /* Drawn, but this frame will never reach the panel: the slot goes
+         * back into rotation as the next one to write, and nothing of this
+         * frame is remembered. */
+        scratch_->Rewind();
+        ForgetMerge();
+        ALOGE("cannot describe the buffer the engine just drew");
+        return -EINVAL;
       }
 
       hwc::DcHead::Window &window = windows[merge.slot];
       window = hwc::DcHead::Window{};
       window.index = merge.window;
-      window.bufferFd = buffer_fd;
-      window.offset = buffer_offset;
-      window.stride = buffer_stride;
+      window.bufferFd = fd;
+      window.offset = surface.offset;
+      window.stride = surface.pitch;
 
       /* Ours to know rather than to ask about: this buffer was allocated by
        * this composer, as thirty-two bit colour laid out in rows, which is
@@ -1318,19 +1288,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
      * them leaves it drawing into two.
      */
     if (report_engine_reads_ && merged && !merge.layers.empty()) {
-      /* The buffers named are the framework's own, never ours. This walks
-       * `merge.layers`, the plan as it arrived; the turn path writes its
-       * intermediates into a copy of that list (`drawn` above), so a turned
-       * member's intermediate never lands here and SurfaceFlinger is never
-       * handed a handle it did not hand in. Kept in mind whenever one of the
-       * two lists is reshaped. */
       out_result->engine_fence = merged;
-      /* One fence answers every buffer above. The merged pass is the last
-       * thing the engine runs in this frame, on the one serialised channel a
-       * session owns, so it cannot signal before the turn passes have read
-       * their sources: everything this frame asked the engine to read is
-       * done by the time it comes due. A parallel channel would break that,
-       * and would want the last turn's fence here instead. */
       out_result->engine_read.reserve(merge.layers.size());
       for (const auto &layer : merge.layers)
         if (layer.handle != nullptr)
@@ -1447,44 +1405,9 @@ std::string TegraAtomicStateManager::DumpState() {
          << " (worst " << (m.rotate_ns_max / 1000) << ")\n"
          << "  turns refused           : " << m.rotate_refused << "\n";
     }
-    if (scratch_ != nullptr)
-      ss << "  scratch pool            : "
-         << (scratch_->origin() == hwc::ScratchBuffer::Origin::kCarveout
-                 ? "carveout"
-                 : "gralloc")
-         << " (" << scratch_->width() << "x" << scratch_->height() << ")\n";
-    if (scratch_ != nullptr) {
-      const std::string slots = scratch_->DumpSlotsContent();
-      if (!slots.empty())
-        ss << slots;
-    }
-    ss << "  merged windows          : zone " << merges_.zone_windows
-       << ", gralloc " << merges_.gralloc_windows << "\n"
-       << "  last merge              : target 0x" << std::hex
-       << merges_.last_target_address << std::dec << ", window fd "
-       << merges_.last_window_fd << "\n";
-    if (auto *zone = hwc::NvMapAllocator::GetInstance(); zone != nullptr) {
-      ss << "  zone surface format     : 0x" << std::hex
-         << zone->surface_format() << std::dec;
-      if (zone->format_mismatch())
-        ss << " (MISMATCH, expected 0x" << std::hex << zone->expected_format()
-           << std::dec << ")";
-      ss << "\n";
-      if (zone->mem_address() != 0)
-        ss << "  zone hMem resolves to   : 0x" << std::hex
-           << zone->mem_address() << std::dec << " (nvmap client fd "
-           << zone->nvmap_client() << ", zone 0xf0c00000-0xf4c00000)\n";
-      if (!zone->compare_lines().empty())
-        ss << "  zone surface vs gralloc :\n" << zone->compare_lines();
-    }
     if (rotate_pool_ && rotate_pool_->held_slots() != 0)
       ss << "  intermediates held      : " << rotate_pool_->held_slots()
-         << " (" << (rotate_pool_->held_bytes() / 1024) << " KiB, carveout "
-         << rotate_pool_->carved_slots() << ", gralloc "
-         << rotate_pool_->gralloc_slots() << ")\n";
-    if (rotate_pool_ && rotate_pool_->zone_refusals() != 0)
-      ss << "  zone refusals           : " << rotate_pool_->zone_refusals()
-         << "\n";
+         << " (" << (rotate_pool_->held_bytes() / 1024) << " KiB)\n";
     if (rotate_pool_ && rotate_pool_->trims() != 0)
       ss << "  idle trims              : " << rotate_pool_->trims() << "\n";
     ss << "Engine over its lifetime:\n"

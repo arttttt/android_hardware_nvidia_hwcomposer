@@ -159,9 +159,9 @@ LOCAL_SRC_FILES := \
     tegra/FbDevice.cpp \
     tegra/TegraDisplayPipeline.cpp \
     tegra/TegraVSyncSource.cpp \
-    tegra/NvMapAllocator.cpp \
     tegra/ScratchPool.cpp \
     tegra/TurnPool.cpp \
+    tegra/VicProbe.cpp \
     tegra/VicSession.cpp
 
 include $(BUILD_SHARED_LIBRARY)

@@ -19,18 +19,14 @@
 
 #include <cstdint>
 #include <memory>
-#include <string>
 #include <vector>
 
 #include <cutils/native_handle.h>
 
-#include "tegra/ScratchBuffer.h"
 #include "utils/fd.h"
 
 namespace android {
 namespace hwc {
-
-class VicSession;
 
 /* Somewhere for a merged frame to land.
  *
@@ -58,15 +54,9 @@ class VicSession;
 class ScratchPool {
  public:
   /* `count` buffers of `width` by `height`. Null, having said what failed, if
-   * the allocator would not give them.
-   *
-   * The buffers come from the composer's own carveout zone when there is
-   * one; the whole pool falls back to gralloc if any of them is refused,
-   * so a pool is one origin or the other, never a mix -- one answer in the
-   * dump instead of a dozen. */
+   * the allocator would not give them. */
   static std::unique_ptr<ScratchPool> Create(uint32_t width, uint32_t height,
-                                             size_t count,
-                                             VicSession *vic = nullptr);
+                                             size_t count);
 
   ~ScratchPool();
 
@@ -88,10 +78,8 @@ class ScratchPool {
    * the acquire fence of the composition.
    *
    * `ready` is left empty when the buffer has never been shown. Null return
-   * only if the pool holds nothing at all. The pointer is into the pool's
-   * own slot, which never moves: the pool is sized once, and no slot is
-   * ever added or taken away. */
-  ScratchBuffer *Next(drm_hwcomposer::SharedFd *ready);
+   * only if the pool holds nothing at all. */
+  buffer_handle_t Next(drm_hwcomposer::SharedFd *ready);
 
   /* Takes back the last Next(): the same buffer will be handed out again.
    *
@@ -118,25 +106,11 @@ class ScratchPool {
   uint32_t height() const { return height_; }
   uint32_t stride() const { return stride_; }
 
-  /* Reads the pixels of every slot, for the dump: each slot's base
-   * address and its first row's leading words and centre pixel. Whether
-   * the engine writes a picture or noise into a slot is the one split
-   * that says where a corruption lives -- in the writing or in the
-   * reading -- and all slots are shown because the rotation can serve
-   * any one of them. */
-  std::string DumpSlotsContent() const;
-
-  /* Where the pool's buffers were born -- the dump's one-line answer
-   * for whether the zone is doing its job on this device. */
-  ScratchBuffer::Origin origin() const { return origin_; }
-
  private:
   ScratchPool() = default;
 
-  void FreeSlots();
-
   struct Slot {
-    ScratchBuffer buffer;
+    buffer_handle_t handle = nullptr;
 
     /* When the frame that replaced this buffer appears, which is the moment
      * the display stops reading this one. Empty while it is still the newest
@@ -148,7 +122,6 @@ class ScratchPool {
   uint32_t width_ = 0;
   uint32_t height_ = 0;
   uint32_t stride_ = 0;
-  ScratchBuffer::Origin origin_ = ScratchBuffer::Origin::kGralloc;
 
   /* The slot the last frame was drawn into, which the next frame posted will
    * replace on screen. Past the end until a frame has been posted. */

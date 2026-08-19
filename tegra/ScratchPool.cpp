@@ -16,18 +16,10 @@
 
 #include "tegra/ScratchPool.h"
 
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <cutils/properties.h>
 #include <hardware/gralloc.h>
-#include <sys/mman.h>
 #include <ui/GraphicBufferAllocator.h>
 #include <ui/PixelFormat.h>
-#include <unistd.h>
 
-#include "tegra/NvMapAllocator.h"
-#include "tegra/VicSession.h"
 #include "utils/log.h"
 
 #undef  LOG_TAG
@@ -51,8 +43,7 @@ constexpr uint64_t kUsage = GRALLOC_USAGE_HW_COMPOSER |
 
 std::unique_ptr<ScratchPool> ScratchPool::Create(uint32_t width,
                                                  uint32_t height,
-                                                 size_t count,
-                                                 VicSession *vic) {
+                                                 size_t count) {
   if (width == 0 || height == 0 || count == 0)
     return nullptr;
 
@@ -61,84 +52,19 @@ std::unique_ptr<ScratchPool> ScratchPool::Create(uint32_t width,
   pool->height_ = height;
   pool->slots_.resize(count);
 
-  /* The zone first, the whole pool or nothing: a refusal partway
-   * through is a pool half-carved from a zone that turned out not to
-   * have the room, so the whole pool is let go and asked of gralloc
-   * instead -- one origin per pool, one answer in the dump.
-   *
-   * A switch the boot can set ahead of the allocation, so the merge's
-   * source of buffers can be chosen without a rebuild, and it has to
-   * survive the reboot because the first allocation happens on boot:
-   * 0 is gralloc, 1 is our own carveout zone, 2 is the vendor library's
-   * own allocator -- the experiment that hands the library a buffer it
-   * owns from birth, to ask whether the corruption is the adoption of
-   * foreign memory by the engine. */
-  const int source = property_get_int32("persist.vendor.hwc.zone", 1);
-  auto *zone = NvMapAllocator::GetInstance();
-  if (source == 2 && vic != nullptr) {
-    ALOGI("zone source: the vendor library's own allocator");
-    bool whole = true;
-    for (size_t i = 0; i < count; i++) {
-      auto buffer = vic->AllocateTarget(width, height);
-      if (!buffer) {
-        ALOGE("the vendor allocator gave %zu of %zu %ux%u; taking the pool "
-              "to gralloc", i, count, width, height);
-        whole = false;
-        break;
-      }
-      pool->slots_[i].buffer = std::move(*buffer);
-    }
-    if (whole) {
-      pool->origin_ = ScratchBuffer::Origin::kCarveout;
-      pool->stride_ = pool->slots_[0].buffer.pitch() / 4;
-      ALOGI("%zu vendor-allocated buffers, %ux%u, pitch %u", count, width,
-            height, pool->slots_[0].buffer.pitch());
-      return pool;
-    }
-    for (auto &slot : pool->slots_)
-      slot.buffer = ScratchBuffer();
-  } else if (source == 1 && zone != nullptr) {
-    bool whole = true;
-    for (size_t i = 0; i < count; i++) {
-      auto buffer = zone->Allocate(width, height);
-      if (!buffer) {
-        ALOGE("the zone gave %zu of %zu %ux%u; taking the pool to gralloc",
-              i, count, width, height);
-        whole = false;
-        break;
-      }
-      pool->slots_[i].buffer = std::move(*buffer);
-    }
-    if (whole) {
-      pool->origin_ = ScratchBuffer::Origin::kCarveout;
-      pool->stride_ = pool->slots_[0].buffer.pitch() / 4;
-      ALOGI("%zu carveout buffers, %ux%u, pitch %u", count, width, height,
-            pool->slots_[0].buffer.pitch());
-      return pool;
-    }
-
-    /* The refused half must be given back before the pool is rebuilt. */
-    for (auto &slot : pool->slots_)
-      slot.buffer = ScratchBuffer();
-  } else if (source == 0) {
-    ALOGI("zone source: gralloc");
-  }
-
   auto &allocator = GraphicBufferAllocator::get();
 
   for (size_t i = 0; i < count; i++) {
     uint32_t stride = 0;
-    buffer_handle_t handle = nullptr;
     const status_t err = allocator.allocate(width, height,
                                             PIXEL_FORMAT_RGBA_8888, 1, kUsage,
-                                            &handle, &stride, 0,
-                                            "hwc-scratch");
-    if (err != NO_ERROR || handle == nullptr) {
+                                            &pool->slots_[i].handle, &stride,
+                                            0, "hwc-scratch");
+    if (err != NO_ERROR || pool->slots_[i].handle == nullptr) {
       ALOGE("cannot allocate scratch %zu of %zu at %ux%u: %d", i + 1, count,
             width, height, err);
       return nullptr;
     }
-    pool->slots_[i].buffer = ScratchBuffer::FromGralloc(handle);
 
     /* All of them come out the same shape or the pool is not a pool. */
     if (i == 0)
@@ -154,19 +80,14 @@ std::unique_ptr<ScratchPool> ScratchPool::Create(uint32_t width,
   return pool;
 }
 
-void ScratchPool::FreeSlots() {
+ScratchPool::~ScratchPool() {
   auto &allocator = GraphicBufferAllocator::get();
   for (auto &slot : slots_)
-    if (slot.buffer.origin() == ScratchBuffer::Origin::kGralloc &&
-        slot.buffer.handle() != nullptr)
-      allocator.free(slot.buffer.handle());
+    if (slot.handle != nullptr)
+      allocator.free(slot.handle);
 }
 
-ScratchPool::~ScratchPool() {
-  FreeSlots();
-}
-
-ScratchBuffer *ScratchPool::Next(drm_hwcomposer::SharedFd *ready) {
+buffer_handle_t ScratchPool::Next(drm_hwcomposer::SharedFd *ready) {
   if (slots_.empty())
     return nullptr;
 
@@ -188,7 +109,7 @@ ScratchBuffer *ScratchPool::Next(drm_hwcomposer::SharedFd *ready) {
   if (ready != nullptr)
     *ready = slot.freed_when;
 
-  return &slot.buffer;
+  return slot.handle;
 }
 
 void ScratchPool::Rewind() {
@@ -216,53 +137,6 @@ void ScratchPool::Presented(const drm_hwcomposer::SharedFd &fence) {
   slots_[at_].freed_when = {};
   showing_ = at_;
   anything_showing_ = true;
-}
-
-std::string ScratchPool::DumpSlotsContent() const {
-  std::string out;
-  for (size_t i = 0; i < slots_.size(); ++i) {
-    const ScratchBuffer &buffer = slots_[i].buffer;
-    if (buffer.origin() != ScratchBuffer::Origin::kCarveout) {
-      out += "  slot " + std::to_string(i) + ": gralloc\n";
-      continue;
-    }
-    out += "  slot " + std::to_string(i) + ": base 0x";
-    char base[16];
-    snprintf(base, sizeof(base), "%08x", buffer.address());
-    out += base;
-
-    const int fd = buffer.fd();
-    if (fd < 0)
-      continue;
-    const size_t length =
-        static_cast<size_t>(buffer.pitch()) * buffer.height();
-    void *pixels = mmap(nullptr, length, PROT_READ, MAP_SHARED, fd, 0);
-    if (pixels == MAP_FAILED) {
-      out += " (unreadable)\n";
-      continue;
-    }
-
-    const auto *words = static_cast<const uint32_t *>(pixels);
-    out += " row0:";
-    for (int w = 0; w < 8 && w < static_cast<int>(buffer.pitch() / 4); ++w) {
-      char one[16];
-      snprintf(one, sizeof(one), " %08x", words[w]);
-      out += one;
-    }
-
-    const uint32_t cx = buffer.width() / 2;
-    const uint32_t cy = buffer.height() / 2;
-    const uint32_t *row =
-        static_cast<const uint32_t *>(pixels) +
-        static_cast<size_t>(cy) * (buffer.pitch() / 4);
-    char centre[16];
-    snprintf(centre, sizeof(centre), " centre %08x", row[cx]);
-    out += centre;
-    out += "\n";
-
-    munmap(pixels, length);
-  }
-  return out;
 }
 
 }  // namespace hwc

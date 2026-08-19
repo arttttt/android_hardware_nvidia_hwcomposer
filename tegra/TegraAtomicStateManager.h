@@ -437,18 +437,6 @@ class TegraAtomicStateManager : public AtomicStateManager {
      * showing, because the group had not changed. The engine never woke. */
     uint64_t reused = 0;
 
-    /* How many frames the merged window was bound to a zone buffer against
-     * a gralloc one -- the two answers to "do we ever actually show the
-     * zone". */
-    uint64_t zone_windows = 0;
-    uint64_t gralloc_windows = 0;
-
-    /* Of the last merged frame, the address of the buffer the engine drew
-     * into and the fd bound to the window -- the two numbers that say
-     * whether we show the zone at all. */
-    uint32_t last_target_address = 0;
-    int last_window_fd = 0;
-
     /* Why a frame was drawn rather than shown again, one count per drawn
      * frame. The breakdown is what decides the next step: an identity miss
      * is a content update no cleverness avoids, while a geometry miss is an
