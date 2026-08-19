@@ -26,7 +26,56 @@
 #include "utils/fd.h"
 
 namespace android {
+
+namespace drm_hwcomposer {
+class NvGralloc;
+}  // namespace drm_hwcomposer
+
 namespace hwc {
+
+/* A merge buffer born through the engine session's own resource manager.
+ *
+ * The engine's relationship with its target is the thing under test, so the
+ * buffer is the library's from birth: the memory is allocated by the vendor
+ * allocator in the very context the session was opened with, and the surface
+ * descriptor is built by the library's own call, not assembled by hand. What
+ * this side adds is the dma-buf for the window, a CPU mapping of the whole
+ * buffer -- the slot is painted through it before its first use, and the dump
+ * reads the result back through it -- and the words of the descriptor as the
+ * library filled them.
+ *
+ * Releases itself: the mapping is unmapped and the memory handle handed back
+ * through the same library entry point that a handle of this birth expects,
+ * so nothing here depends on the session outliving the buffer. */
+struct VendorBuffer {
+  VendorBuffer() = default;
+  ~VendorBuffer();
+
+  VendorBuffer(const VendorBuffer &) = delete;
+  VendorBuffer &operator=(const VendorBuffer &) = delete;
+
+  /* Borrowed by the window for the duration of a frame; owned here. */
+  int mem_fd() const { return fd ? *fd : -1; }
+
+  drm_hwcomposer::SharedFd fd;
+
+  /* The library's own handle, given back through `release`. */
+  void *mem_handle = nullptr;
+  void (*release)(void *) = nullptr;
+
+  /* The surface descriptor as the library built it, kSurfaceWords long. */
+  std::vector<uint32_t> surface;
+
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t pitch = 0; /* bytes */
+  uint32_t size = 0;  /* bytes, the descriptor's own size word */
+
+  /* The whole buffer, mapped for the processor: the paint before the first
+   * use and the dump's reads both go through here. */
+  uint32_t *pixels = nullptr;
+  size_t mapped = 0;
+};
 
 /* The image compositor this chip has, and the display controller does not.
  *
@@ -127,6 +176,34 @@ class VicSession {
                                    uint32_t width = 0, uint32_t height = 0,
                                    int target_ready = -1);
 
+  /* The same, into a buffer born of this session's own allocator: the
+   * descriptor the library built for it is handed over as it stands, and
+   * the bounds come from the buffer itself, there being no gralloc handle
+   * to ask. The layers are the framework's buffers either way. */
+  drm_hwcomposer::SharedFd Compose(const VendorBuffer &target,
+                                   const std::vector<Layer> &layers,
+                                   uint32_t width = 0, uint32_t height = 0,
+                                   int target_ready = -1);
+
+  /* Whether a buffer born of this session's own allocator can be offered
+   * at all. The entry points are resolved without obligation when the
+   * session opens, so a library build that lacks them simply means this
+   * answers no. */
+  bool OffersVendorBuffers() const;
+
+  /* A panel-sized buffer allocated by the vendor library in this session's
+   * own context -- the heaps asked are the contiguous carveout first and
+   * the external heap as fallback, the descriptor built by the library's
+   * own pitch-layout call. Null, having said what failed, if the library
+   * would not give one.
+   *
+   * The whole buffer is CPU-mapped before it is handed over: the pool
+   * paints each slot its own colour through that mapping, so a slot the
+   * engine never wrote announces itself on the panel as a solid colour
+   * rather than as noise. */
+  std::unique_ptr<VendorBuffer> AllocateTarget(uint32_t width,
+                                               uint32_t height);
+
   /* Draws one layer into `target` turned by `transform` -- the engine's own
    * transform code, which the caller owes to the stock translation table,
    * not to arithmetic of its own. The write is bounded to `width` by
@@ -157,6 +234,17 @@ class VicSession {
 
   bool Open();
   bool Resolve();
+
+  /* The body both Compose entry points share, once the target's surfaces
+   * and real extent are known -- from the allocator for a gralloc handle,
+   * from the buffer itself for a vendor-born one. */
+  drm_hwcomposer::SharedFd ComposeInto(drm_hwcomposer::NvGralloc *gralloc,
+                                       const void *target_surfaces,
+                                       uint32_t buffer_width,
+                                       uint32_t buffer_height,
+                                       const std::vector<Layer> &layers,
+                                       uint32_t width, uint32_t height,
+                                       int target_ready);
 
   /* Their settings structure, held as a plain run of bytes.
    *
@@ -193,6 +281,26 @@ class VicSession {
    * reused: it was built against the older name, which is gone. */
   int (*rm_open_)(void **) = nullptr;
   void (*rm_close_)(void *) = nullptr;
+
+  /* libnvrm again -- the vendor-born buffer path. The allocator, the dma-buf
+   * it hands its memory out as, the way a handle of that birth is given
+   * back, and the library's own builder of a pitch-layout descriptor. */
+  int (*alloc_attr_)(void *, void *, void **) = nullptr;
+  int (*mem_get_fd_)(void *) = nullptr;
+  void (*mem_handle_free_)(void *) = nullptr;
+  void (*surface_init_rm_pitch_)(void *, uint32_t, uint32_t, uint32_t,
+                                 uint32_t, uint32_t, uint32_t, void *,
+                                 uint32_t) = nullptr;
+
+  /* Thirty-two bit colour as the engine spells it, and the tag gralloc's
+   * own RGB output carries -- the pair proven against a gralloc-produced
+   * descriptor, see docs/nvrm-format-table.txt for why the name and the
+   * code read as different generations. The descriptor's size word sits at
+   * [14], which the pitch-layout builder does not fill. */
+  static constexpr uint32_t kFormatA8B8G8R8 = 0x00532120;
+  static constexpr uint32_t kColorTagRgb = 1;
+  static constexpr size_t kSurfaceWordSize = 14;
+  static constexpr size_t kSurfaceWords = 64;
 
   /* libnvrm_graphics -- turning the engine's own fences into descriptors the
    * rest of the system understands, and back. */

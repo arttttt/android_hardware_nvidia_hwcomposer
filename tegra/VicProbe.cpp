@@ -123,10 +123,13 @@ void Run() {
   if (!pool)
     return;
 
-  /* Never shown, so nothing is waiting on it and the fence is empty. */
-  buffer_handle_t target = pool->Next(nullptr);
-  if (target == nullptr)
+  /* Never shown, so nothing is waiting on it and the fence is empty. The
+   * probe's pool is born without a session of its own, so its slots are
+   * gralloc's whatever the switch says. */
+  const auto *slot = pool->Next(nullptr);
+  if (slot == nullptr || slot->handle == nullptr)
     return;
+  buffer_handle_t target = slot->handle;
 
   /* The lower one fills the buffer; the upper one lands in the middle at half
    * the size, blended. Both together are the question: is anything where it

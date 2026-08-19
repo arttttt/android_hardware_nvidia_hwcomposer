@@ -16,10 +16,20 @@
 
 #include "tegra/ScratchPool.h"
 
+#include <cstdio>
+#include <cstdlib>
+
+#include <algorithm>
+
+#include <cutils/properties.h>
 #include <hardware/gralloc.h>
 #include <ui/GraphicBufferAllocator.h>
+#include <ui/GraphicBufferMapper.h>
 #include <ui/PixelFormat.h>
+#include <ui/Rect.h>
 
+#include "bufferinfo/NvGralloc.h"
+#include "tegra/VicSession.h"
 #include "utils/log.h"
 
 #undef  LOG_TAG
@@ -39,11 +49,38 @@ namespace {
 constexpr uint64_t kUsage = GRALLOC_USAGE_HW_COMPOSER |
                             GRALLOC_USAGE_SW_READ_OFTEN;
 
+/* The colour a vendor-born slot is painted before its first use, as the
+ * thirty-two bit word the buffer is made of, opaque. Which of the two end
+ * colours reads as red and which as blue depends on the reader's swizzle
+ * and does not matter: what matters is that a slot the engine never wrote
+ * stands on the panel whole and solid, and tells itself apart from its
+ * neighbours. Three slots, three colours. */
+constexpr uint32_t kSlotColours[] = {0xff0000ffu, 0xff00ff00u, 0xffff0000u};
+constexpr size_t kSlotColourCount =
+    sizeof(kSlotColours) / sizeof(kSlotColours[0]);
+
+/* The descriptor words a target is judged by. Read by index rather than
+ * through a declared structure for the same reason the allocator's own
+ * reader does (bufferinfo/NvGralloc.cpp): the structure belongs to the
+ * vendor and has no promise of stability, and the indices are the ones
+ * established against the library on this device. */
+enum SurfaceWord {
+  kWordWidth = 0,
+  kWordHeight = 1,
+  kWordFormat = 2,
+  kWordLayout = 4,
+  kWordPitch = 5,
+  kWordKind = 8,
+  kWordBlockHeightLog2 = 9,
+  kWordSize = 14,
+};
+
 }  // namespace
 
 std::unique_ptr<ScratchPool> ScratchPool::Create(uint32_t width,
                                                  uint32_t height,
-                                                 size_t count) {
+                                                 size_t count,
+                                                 VicSession *vic) {
   if (width == 0 || height == 0 || count == 0)
     return nullptr;
 
@@ -51,6 +88,46 @@ std::unique_ptr<ScratchPool> ScratchPool::Create(uint32_t width,
   pool->width_ = width;
   pool->height_ = height;
   pool->slots_.resize(count);
+
+  /* 1 asks the vendor library's own allocator for the slots, through the
+   * engine session's resource manager. The whole pool or nothing: a refusal
+   * partway through is a pool half-born of a library that turned out not to
+   * have the room, so the whole pool is let go and asked of gralloc instead
+   * -- one origin per pool, one answer in the dump. */
+  const int zone = property_get_int32("persist.vendor.hwc.zone", 0);
+  if (zone == 1 && vic != nullptr && vic->OffersVendorBuffers()) {
+    bool whole = true;
+    for (size_t i = 0; i < count; i++) {
+      auto buffer = vic->AllocateTarget(width, height);
+      if (!buffer) {
+        ALOGE("the vendor allocator gave %zu of %zu %ux%u; taking the pool "
+              "to gralloc", i, count, width, height);
+        whole = false;
+        break;
+      }
+
+      /* Painted before its first use, so a slot the engine never wrote
+       * announces itself on the panel as a solid colour. */
+      std::fill_n(buffer->pixels, buffer->mapped / 4,
+                  kSlotColours[i % kSlotColourCount]);
+
+      pool->slots_[i].view.vendor = buffer.get();
+      pool->slots_[i].vendor = std::move(buffer);
+    }
+    if (whole) {
+      pool->vendor_ = true;
+      pool->stride_ = pool->slots_[0].vendor->pitch / 4;
+      ALOGI("%zu vendor-born buffers, %ux%u, pitch %u", count, width, height,
+            pool->slots_[0].vendor->pitch);
+      return pool;
+    }
+    for (auto &slot : pool->slots_) {
+      slot.vendor.reset();
+      slot.view = {};
+    }
+  } else if (zone != 0) {
+    ALOGI("zone %d is not offered here; the pool is gralloc's", zone);
+  }
 
   auto &allocator = GraphicBufferAllocator::get();
 
@@ -65,6 +142,7 @@ std::unique_ptr<ScratchPool> ScratchPool::Create(uint32_t width,
             width, height, err);
       return nullptr;
     }
+    pool->slots_[i].view.handle = pool->slots_[i].handle;
 
     /* All of them come out the same shape or the pool is not a pool. */
     if (i == 0)
@@ -85,9 +163,11 @@ ScratchPool::~ScratchPool() {
   for (auto &slot : slots_)
     if (slot.handle != nullptr)
       allocator.free(slot.handle);
+  /* A vendor-born slot frees itself: the mapping and the library's handle
+   * go with the buffer. */
 }
 
-buffer_handle_t ScratchPool::Next(drm_hwcomposer::SharedFd *ready) {
+const ScratchPool::Slot *ScratchPool::Next(drm_hwcomposer::SharedFd *ready) {
   if (slots_.empty())
     return nullptr;
 
@@ -104,12 +184,12 @@ buffer_handle_t ScratchPool::Next(drm_hwcomposer::SharedFd *ready) {
    * been drawn a little later into a frame that is not drawn at all.
    */
   at_ = (at_ + 1) % slots_.size();
-  Slot &slot = slots_[at_];
+  SlotStorage &slot = slots_[at_];
 
   if (ready != nullptr)
     *ready = slot.freed_when;
 
-  return slot.handle;
+  return &slot.view;
 }
 
 void ScratchPool::Rewind() {
@@ -137,6 +217,91 @@ void ScratchPool::Presented(const drm_hwcomposer::SharedFd &fence) {
   slots_[at_].freed_when = {};
   showing_ = at_;
   anything_showing_ = true;
+}
+
+std::string ScratchPool::DumpSlots() const {
+  std::string out;
+  char line[256];
+
+  for (size_t i = 0; i < slots_.size(); ++i) {
+    const SlotStorage &slot = slots_[i];
+
+    /* The descriptor as whoever allocated the buffer filled it: a
+     * vendor-born slot carries the words the library's own builder wrote,
+     * a gralloc-born one is asked of the allocator -- and both are read at
+     * the same indices, so the two dumps can be set side by side. */
+    const uint32_t *words = nullptr;
+    if (slot.vendor != nullptr) {
+      words = slot.vendor->surface.data();
+    } else if (slot.handle != nullptr) {
+      auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
+      const void *raw = nullptr;
+      size_t count = 0;
+      if (gralloc != nullptr &&
+          gralloc->GetRawSurfaces(slot.handle, &raw, &count) && count == 1)
+        words = static_cast<const uint32_t *>(raw);
+    }
+
+    if (words != nullptr) {
+      snprintf(line, sizeof(line),
+               "  slot %zu: w%u h%u fmt 0x%08x layout %u pitch %u "
+               "kind 0x%02x bh %u size %u\n",
+               i, words[kWordWidth], words[kWordHeight], words[kWordFormat],
+               words[kWordLayout], words[kWordPitch], words[kWordKind],
+               words[kWordBlockHeightLog2], words[kWordSize]);
+    } else {
+      snprintf(line, sizeof(line), "  slot %zu: no descriptor\n", i);
+    }
+    out += line;
+
+    /* The pixels, through the processor's own view of the buffer: the
+     * vendor-born slot's standing mapping, a gralloc-born slot locked for
+     * the moment of the read. */
+    const uint32_t *pixels = nullptr;
+    size_t row_words = 0;
+    buffer_handle_t locked = nullptr;
+    if (slot.vendor != nullptr) {
+      pixels = slot.vendor->pixels;
+      row_words = slot.vendor->pitch / 4;
+    } else if (slot.handle != nullptr) {
+      auto &mapper = GraphicBufferMapper::get();
+      void *base = nullptr;
+      if (mapper.lock(slot.handle, GRALLOC_USAGE_SW_READ_OFTEN,
+                      Rect(static_cast<int32_t>(width_),
+                           static_cast<int32_t>(height_)),
+                      &base) == NO_ERROR &&
+          base != nullptr) {
+        pixels = static_cast<const uint32_t *>(base);
+        row_words = stride_;
+        locked = slot.handle;
+      }
+    }
+
+    if (pixels == nullptr || row_words < 8) {
+      out += "    (unreadable)\n";
+    } else {
+      out += "    row0:";
+      for (size_t w = 0; w < 8; ++w) {
+        snprintf(line, sizeof(line), " %08x", pixels[w]);
+        out += line;
+      }
+
+      const size_t centre =
+          (height_ / 2) * row_words + (width_ / 2);
+      if (centre + 8 <= height_ * row_words) {
+        out += "  centre:";
+        for (size_t w = 0; w < 8; ++w) {
+          snprintf(line, sizeof(line), " %08x", pixels[centre + w]);
+          out += line;
+        }
+      }
+      out += "\n";
+    }
+
+    if (locked != nullptr)
+      GraphicBufferMapper::get().unlock(locked);
+  }
+  return out;
 }
 
 }  // namespace hwc

@@ -918,7 +918,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       /* The buffer and, separately, when it may be written to. The engine is
        * told the second and waits for it itself; nothing here does. */
       SharedFd target_ready;
-      buffer_handle_t target = scratch_->Next(&target_ready);
+      const hwc::ScratchPool::Slot *target = scratch_->Next(&target_ready);
       if (target == nullptr) {
         ForgetMerge();
         return -EBUSY;
@@ -1011,8 +1011,14 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       }
 
       const int64_t before_merge = NowNs();
-      merged = vic_->Compose(target, drawn, merge.width, merge.height,
-                             target_ready ? *target_ready : -1);
+      if (target->vendor != nullptr)
+        merged = vic_->Compose(*target->vendor, drawn, merge.width,
+                               merge.height,
+                               target_ready ? *target_ready : -1);
+      else
+        merged = vic_->Compose(target->handle, drawn, merge.width,
+                               merge.height,
+                               target_ready ? *target_ready : -1);
       if (!merged) {
         /* The engine would not take it. Nothing has been written, so the
          * honest thing is to drop the frame rather than show a window
@@ -1053,25 +1059,46 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       if (took > merges_.engine_ns_max)
         merges_.engine_ns_max = took;
 
-      auto *gralloc = NvGralloc::GetInstance();
-      NvGralloc::Surface surface{};
-      const int fd = gralloc != nullptr ? gralloc->GetMemFd(target) : -1;
-      if (fd < 0 || !gralloc->DescribeSurface(target, &surface)) {
-        /* Drawn, but this frame will never reach the panel: the slot goes
-         * back into rotation as the next one to write, and nothing of this
-         * frame is remembered. */
+      int buffer_fd = -1;
+      uint32_t buffer_offset = 0;
+      uint32_t buffer_stride = 0;
+      if (target->vendor != nullptr) {
+        /* Born of the session's own allocator: there is no gralloc handle
+         * to ask, and nothing to ask of it -- the buffer is described by
+         * what this composer had the library build. */
+        buffer_fd = target->vendor->mem_fd();
+        buffer_stride = target->vendor->pitch;
+      } else {
+        auto *gralloc = NvGralloc::GetInstance();
+        NvGralloc::Surface surface{};
+        buffer_fd =
+            gralloc != nullptr ? gralloc->GetMemFd(target->handle) : -1;
+        if (buffer_fd < 0 ||
+            !gralloc->DescribeSurface(target->handle, &surface)) {
+          /* Drawn, but this frame will never reach the panel: the slot goes
+           * back into rotation as the next one to write, and nothing of this
+           * frame is remembered. */
+          scratch_->Rewind();
+          ForgetMerge();
+          ALOGE("cannot describe the buffer the engine just drew");
+          return -EINVAL;
+        }
+        buffer_offset = surface.offset;
+        buffer_stride = surface.pitch;
+      }
+      if (buffer_fd < 0) {
         scratch_->Rewind();
         ForgetMerge();
-        ALOGE("cannot describe the buffer the engine just drew");
+        ALOGE("the buffer the engine just drew has no fd for the window");
         return -EINVAL;
       }
 
       hwc::DcHead::Window &window = windows[merge.slot];
       window = hwc::DcHead::Window{};
       window.index = merge.window;
-      window.bufferFd = fd;
-      window.offset = surface.offset;
-      window.stride = surface.pitch;
+      window.bufferFd = buffer_fd;
+      window.offset = buffer_offset;
+      window.stride = buffer_stride;
 
       /* Ours to know rather than to ask about: this buffer was allocated by
        * this composer, as thirty-two bit colour laid out in rows, which is
@@ -1410,6 +1437,11 @@ std::string TegraAtomicStateManager::DumpState() {
          << " (" << (rotate_pool_->held_bytes() / 1024) << " KiB)\n";
     if (rotate_pool_ && rotate_pool_->trims() != 0)
       ss << "  idle trims              : " << rotate_pool_->trims() << "\n";
+    if (scratch_ != nullptr)
+      ss << "  scratch pool            : "
+         << (scratch_->vendor() ? "vendor" : "gralloc") << " ("
+         << scratch_->width() << "x" << scratch_->height() << ")\n"
+         << scratch_->DumpSlots();
     ss << "Engine over its lifetime:\n"
        << "  frames accepted         : " << vic_->composed() << "\n"
        << "  frames refused          : " << vic_->refused() << "\n"

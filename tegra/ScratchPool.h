@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <cutils/native_handle.h>
@@ -27,6 +28,9 @@
 
 namespace android {
 namespace hwc {
+
+class VicSession;
+struct VendorBuffer;
 
 /* Somewhere for a merged frame to land.
  *
@@ -50,18 +54,41 @@ namespace hwc {
  * allocator has no switch for this; what it has is a rule that a buffer the
  * processor will read often is laid out in rows, so that is what is asked
  * for, and it is honest -- checking the merge means reading it.
+ *
+ * Where the slots are born is a boot-time switch, persist.vendor.hwc.zone:
+ * 0 is gralloc, the reference arrangement whose picture is clean, and the
+ * default; 1 is the vendor library's own allocator, reached through the
+ * engine session's resource manager, so that the buffer is the library's
+ * from birth. One origin per pool, never a mix -- a refusal partway through
+ * takes the whole pool to gralloc, so the dump holds one answer.
+ *
+ * A vendor-born slot is painted a solid colour of its own before its first
+ * use, through the CPU mapping the session made of it: if the engine never
+ * writes the slot, the panel shows the colour and the question "does it
+ * write at all" is answered by looking, without a single dump.
  */
 class ScratchPool {
  public:
   /* `count` buffers of `width` by `height`. Null, having said what failed, if
-   * the allocator would not give them. */
+   * the allocator would not give them. `vic` is borrowed, and only asked for
+   * buffers when the switch says so. */
   static std::unique_ptr<ScratchPool> Create(uint32_t width, uint32_t height,
-                                             size_t count);
+                                             size_t count,
+                                             VicSession *vic = nullptr);
 
   ~ScratchPool();
 
   ScratchPool(const ScratchPool &) = delete;
   ScratchPool &operator=(const ScratchPool &) = delete;
+
+  /* One slot, as a frame needs it: `handle` names a gralloc-born buffer,
+   * `vendor` a vendor-born one, and exactly one of the two is set. The
+   * pointer is into the pool's own storage, which never moves: the pool is
+   * sized once, and no slot is ever added or taken away. */
+  struct Slot {
+    buffer_handle_t handle = nullptr;
+    const VendorBuffer *vendor = nullptr;
+  };
 
   /* The next buffer to draw into, and the fence saying when it may be drawn
    * into -- which is not the same as saying it is ready now.
@@ -79,7 +106,7 @@ class ScratchPool {
    *
    * `ready` is left empty when the buffer has never been shown. Null return
    * only if the pool holds nothing at all. */
-  buffer_handle_t Next(drm_hwcomposer::SharedFd *ready);
+  const Slot *Next(drm_hwcomposer::SharedFd *ready);
 
   /* Takes back the last Next(): the same buffer will be handed out again.
    *
@@ -106,11 +133,30 @@ class ScratchPool {
   uint32_t height() const { return height_; }
   uint32_t stride() const { return stride_; }
 
+  /* Where the pool's buffers were born -- the dump's one-line answer for
+   * which arrangement is on the panel. */
+  bool vendor() const { return vendor_; }
+
+  /* What the slots hold, for the dump: each slot's descriptor as whoever
+   * allocated it filled it -- the words a target is judged by, read from
+   * the descriptor itself so a vendor-born slot and a gralloc-born one can
+   * be compared field by field -- and the first words of the first row and
+   * of the frame's centre, read through the CPU mapping. Whether the
+   * engine writes a picture, the paint, or noise into a slot is the one
+   * split that says where a corruption lives -- in the writing or in the
+   * reading -- and all slots are shown because the rotation can serve any
+   * of them. */
+  std::string DumpSlots() const;
+
  private:
   ScratchPool() = default;
 
-  struct Slot {
+  struct SlotStorage {
     buffer_handle_t handle = nullptr;
+    std::unique_ptr<VendorBuffer> vendor;
+
+    /* What Next() hands out, filled once at allocation. */
+    Slot view;
 
     /* When the frame that replaced this buffer appears, which is the moment
      * the display stops reading this one. Empty while it is still the newest
@@ -122,6 +168,7 @@ class ScratchPool {
   uint32_t width_ = 0;
   uint32_t height_ = 0;
   uint32_t stride_ = 0;
+  bool vendor_ = false;
 
   /* The slot the last frame was drawn into, which the next frame posted will
    * replace on screen. Past the end until a frame has been posted. */
@@ -129,7 +176,7 @@ class ScratchPool {
   bool anything_showing_ = false;
 
   size_t at_ = 0;
-  std::vector<Slot> slots_;
+  std::vector<SlotStorage> slots_;
 };
 
 }  // namespace hwc

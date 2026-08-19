@@ -17,7 +17,10 @@
 #include "tegra/VicSession.h"
 
 #include <dlfcn.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
+#include <cerrno>
 #include <cstring>
 
 
@@ -187,6 +190,14 @@ bool VicSession::Open() {
   }
 
   config_.resize(kConfigBytes);
+
+  /* The vendor-born buffer path, resolved without obligation: a library
+   * build that lacks these entry points simply means the path is not
+   * offered, which OffersVendorBuffers() answers. */
+  ResolveOne(nvrm_library_, "NvRmMemHandleAllocAttr", &alloc_attr_);
+  ResolveOne(nvrm_library_, "NvRmMemGetFd", &mem_get_fd_);
+  ResolveOne(nvrm_library_, "NvRmMemHandleFree", &mem_handle_free_);
+  ResolveOne(nvrm_library_, "NvRmSurfaceInitRmPitch", &surface_init_rm_pitch_);
   return true;
 }
 
@@ -228,11 +239,6 @@ VicSession::~VicSession() {
 drm_hwcomposer::SharedFd VicSession::Compose(
     buffer_handle_t target, const std::vector<Layer> &layers,
     uint32_t width, uint32_t height, int target_ready) {
-  if (layers.empty() || layers.size() > kMaxLayers) {
-    refused_++;
-    return {};
-  }
-
   auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
   if (gralloc == nullptr) {
     refused_++;
@@ -243,6 +249,42 @@ drm_hwcomposer::SharedFd VicSession::Compose(
   size_t target_count = 0;
   if (!gralloc->GetRawSurfaces(target, &target_surfaces, &target_count) ||
       target_count != 1) {
+    refused_++;
+    return {};
+  }
+
+  drm_hwcomposer::NvGralloc::Surface target_surface{};
+  if (!gralloc->DescribeSurface(target, &target_surface)) {
+    refused_++;
+    return {};
+  }
+
+  return ComposeInto(gralloc, target_surfaces, target_surface.width,
+                     target_surface.height, layers, width, height,
+                     target_ready);
+}
+
+drm_hwcomposer::SharedFd VicSession::Compose(
+    const VendorBuffer &target, const std::vector<Layer> &layers,
+    uint32_t width, uint32_t height, int target_ready) {
+  /* The layers are the framework's buffers whatever the target was born
+   * as, so the allocator is still answerable for them. */
+  auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
+  if (gralloc == nullptr) {
+    refused_++;
+    return {};
+  }
+
+  return ComposeInto(gralloc, target.surface.data(), target.width,
+                     target.height, layers, width, height, target_ready);
+}
+
+drm_hwcomposer::SharedFd VicSession::ComposeInto(
+    drm_hwcomposer::NvGralloc *gralloc, const void *target_surfaces,
+    uint32_t buffer_width, uint32_t buffer_height,
+    const std::vector<Layer> &layers, uint32_t width, uint32_t height,
+    int target_ready) {
+  if (layers.empty() || layers.size() > kMaxLayers) {
     refused_++;
     return {};
   }
@@ -269,18 +311,13 @@ drm_hwcomposer::SharedFd VicSession::Compose(
    * the target never shows what lies beyond it -- and megabytes written
    * past the corner were the dearest part of a small merge.
    *
-   * The buffer's own size still comes from the allocator rather than from
-   * the layers: the bound is clamped to the buffer, not trusted over it. */
-  drm_hwcomposer::NvGralloc::Surface target_surface{};
-  if (!gralloc->DescribeSurface(target, &target_surface)) {
-    refused_++;
-    return {};
-  }
-
-  if (width == 0 || width > target_surface.width)
-    width = target_surface.width;
-  if (height == 0 || height > target_surface.height)
-    height = target_surface.height;
+   * The buffer's own size still comes from whoever allocated it rather
+   * than from the layers: the bound is clamped to the buffer, not trusted
+   * over it. */
+  if (width == 0 || width > buffer_width)
+    width = buffer_width;
+  if (height == 0 || height > buffer_height)
+    height = buffer_height;
 
   const NvRect target_rect = {
       .left = 0,
@@ -289,8 +326,7 @@ drm_hwcomposer::SharedFd VicSession::Compose(
       .bottom = static_cast<int32_t>(height),
   };
 
-  if (configure_target_(session_, config, target_surfaces,
-                        static_cast<uint32_t>(target_count),
+  if (configure_target_(session_, config, target_surfaces, 1,
                         &target_rect) != kNvSuccess) {
     refused_++;
     return {};
@@ -502,6 +538,121 @@ drm_hwcomposer::SharedFd VicSession::ComposeRotated(
 
   composed_++;
   return drm_hwcomposer::MakeSharedFd(fd);
+}
+
+VendorBuffer::~VendorBuffer() {
+  if (pixels != nullptr)
+    munmap(pixels, mapped);
+  if (mem_handle != nullptr && release != nullptr)
+    release(mem_handle);
+}
+
+bool VicSession::OffersVendorBuffers() const {
+  return alloc_attr_ != nullptr && mem_get_fd_ != nullptr &&
+         mem_handle_free_ != nullptr && surface_init_rm_pitch_ != nullptr;
+}
+
+std::unique_ptr<VendorBuffer> VicSession::AllocateTarget(uint32_t width,
+                                                         uint32_t height) {
+  if (rm_device_ == nullptr || !OffersVendorBuffers() || width == 0 ||
+      height == 0) {
+    ALOGE("vendor buffer: not available in this session");
+    return nullptr;
+  }
+
+  /* Rows in the same grain the composer's own allocator uses. */
+  const uint32_t grain = 256;
+  const uint32_t pitch = ((width * 4 + grain - 1) / grain) * grain;
+
+  /* Sized the way the library's own compute call sizes it, because the
+   * descriptor's size word -- which the pitch-layout builder leaves
+   * unfilled, and which is filled in below -- follows that same rule: the
+   * height rounded up to four rows, then the whole rounded up to 128 KiB
+   * (docs/nvrm-format-table.txt). The allocation asks for exactly that,
+   * so the descriptor never claims more than the buffer holds. */
+  const uint64_t raw =
+      static_cast<uint64_t>(pitch) * ((height + 3) & ~3u);
+  const auto size = static_cast<uint32_t>((raw + 131071) / 131072 * 131072);
+
+  /* The contiguous carveout first, the external heap as fallback; on the
+   * current kernel the carveout converts to IOVMM, so the memory lands
+   * page-backed. The shape of the attr structure is the vendor's own --
+   * its fields are read at their offsets by the allocator -- and only the
+   * ones the buffer needs are set. */
+  const uint32_t heaps[] = {3, 1}; /* NvRmHeap_ExternalCarveOut, External */
+
+  struct VendorAttr {
+    const uint32_t *Heaps;
+    uint32_t NumHeaps;
+    uint32_t Alignment;
+    uint32_t Coherency;
+    uint32_t Size;
+    uint16_t Tags;
+    uint8_t ReclaimCache;
+    uint8_t pad;
+    uint32_t Kind;
+    uint32_t CompTags;
+    uint8_t b0;
+    uint8_t b1;
+    uint8_t b2;
+    uint8_t b3;
+    uint32_t c0;
+    uint32_t d0;
+  } attr = {};
+  attr.Heaps = heaps;
+  attr.NumHeaps = 2;
+  attr.Alignment = 4096;
+  attr.Coherency = 2; /* NvOsMemAttribute_WriteCombined */
+  attr.Size = size;
+
+  void *mem_handle = nullptr;
+  if (alloc_attr_(rm_device_, &attr, &mem_handle) != 0 ||
+      mem_handle == nullptr) {
+    ALOGE("vendor buffer: the library would not give %ux%u", width, height);
+    return nullptr;
+  }
+
+  const int buffer_fd = mem_get_fd_(mem_handle);
+  if (buffer_fd < 0) {
+    ALOGE("vendor buffer: no dma-buf from the library's handle");
+    mem_handle_free_(mem_handle);
+    return nullptr;
+  }
+
+  /* Mapped for the processor once and for the buffer's whole life: the
+   * pool paints the slot through this mapping before the first use, and
+   * the dump reads through it. A buffer that cannot be read back cannot
+   * answer the question the paint asks, so a mapping failure refuses the
+   * buffer outright. */
+  void *pixels = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                      buffer_fd, 0);
+  if (pixels == MAP_FAILED) {
+    ALOGE("vendor buffer: the dma-buf would not map: %s", strerror(errno));
+    mem_handle_free_(mem_handle);
+    close(buffer_fd);
+    return nullptr;
+  }
+
+  auto buffer = std::unique_ptr<VendorBuffer>(new VendorBuffer());
+  buffer->fd = drm_hwcomposer::MakeSharedFd(buffer_fd);
+  buffer->mem_handle = mem_handle;
+  buffer->release = mem_handle_free_;
+  buffer->width = width;
+  buffer->height = height;
+  buffer->pitch = pitch;
+  buffer->size = size;
+  buffer->pixels = static_cast<uint32_t *>(pixels);
+  buffer->mapped = size;
+
+  /* The library's own builder, asked for rows -- its fourth argument never
+   * reaches the body, and the size word it leaves zero is filled by hand
+   * with the very size the allocation was asked for. */
+  buffer->surface.assign(kSurfaceWords, 0);
+  surface_init_rm_pitch_(buffer->surface.data(), width, height, 0,
+                         kFormatA8B8G8R8, kColorTagRgb, pitch, mem_handle, 0);
+  buffer->surface[kSurfaceWordSize] = size;
+
+  return buffer;
 }
 
 }  // namespace hwc

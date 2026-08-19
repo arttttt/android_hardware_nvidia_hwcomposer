@@ -128,7 +128,7 @@ TegraDisplayPipeline::TegraDisplayPipeline(TegraConnector &tegraConnector,
         if (!modes.empty()) {
             const auto &mode = modes.front().GetRawMode();
             mScratch = ScratchPool::Create(mode.hdisplay, mode.vdisplay,
-                                           kScratchBuffers);
+                                           kScratchBuffers, mVic.get());
         }
 
         /* An engine with nowhere to write is no more use than no engine, and
