@@ -1447,6 +1447,11 @@ std::string TegraAtomicStateManager::DumpState() {
                  ? "carveout"
                  : "gralloc")
          << " (" << scratch_->width() << "x" << scratch_->height() << ")\n";
+    if (scratch_ != nullptr) {
+      const std::string slot = scratch_->DumpSlotContent();
+      if (!slot.empty())
+        ss << slot << "\n";
+    }
     if (auto *zone = hwc::NvMapAllocator::GetInstance(); zone != nullptr) {
       ss << "  zone surface format     : 0x" << std::hex
          << zone->surface_format() << std::dec;

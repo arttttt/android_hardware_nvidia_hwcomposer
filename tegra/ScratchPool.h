@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <cutils/native_handle.h>
@@ -113,6 +114,13 @@ class ScratchPool {
   uint32_t width() const { return width_; }
   uint32_t height() const { return height_; }
   uint32_t stride() const { return stride_; }
+
+  /* Reads the pixels of the slot the last frame was drawn into, for the
+   * dump: the first row's leading words and the centre pixel. Whether
+   * the engine writes a picture or noise in that slot is the one split
+   * that says where a corruption lives -- in the writing or in the
+   * reading. Empty if the slot cannot be read. */
+  std::string DumpSlotContent() const;
 
   /* Where the pool's buffers were born -- the dump's one-line answer
    * for whether the zone is doing its job on this device. */
