@@ -22,6 +22,7 @@
 #include <cutils/properties.h>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <string>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -81,17 +82,12 @@ constexpr size_t kSurfaceWordsUsed = 20;
 constexpr size_t kSurfaceWordFormat = 2;
 
 /* The overrides the bring-up lends: a format and a gained field chosen
- * per boot, without a rebuild, and a comparison of the descriptor just
- * built against one the allocator's own hand built for a buffer of the
- * same geometry. Read each time a slot is allocated -- the cost is a
- * property lookup against a carveout allocation, which is not a frame. */
-bool CompareWanted() {
-  return property_get_bool("vendor.hwc.surfcmp", 0) != 0;
-}
-
-/* The colour format asked of the library, overridden per boot so the
- * format can be tried without a rebuild. Absent or malformed, the
- * default the header names. */
+ * per boot, without a rebuild. Read each time a slot is allocated --
+ * the cost is a property lookup against a carveout allocation, which
+ * is not a frame. The comparison itself is not gated: it runs once,
+ * at the first slot, and its answer is kept for the dump, which is the
+ * only channel that reaches out of this process on this platform --
+ * a log line written here goes nowhere. */
 uint32_t SurfaceFormatOverride(uint32_t fallback) {
   char value[PROPERTY_VALUE_MAX];
   if (property_get("vendor.hwc.surffmt", value, "") <= 0)
@@ -119,14 +115,14 @@ uint32_t SurfaceGainedOverride() {
 /* The library's own surface words for a same-sized buffer, to lay
  * against ours. The allocator describes its buffers through its own C
  * interface; a buffer of the same geometry is asked for and released
- * here, and never leaves this call. */
-void CompareToAllocatorsOwn(uint32_t width, uint32_t height,
-                            const uint32_t *ours) {
+ * here, and never leaves this call. Returns the side-by-side as text
+ * for the dump -- this platform's logs go nowhere, the dump is the only
+ * channel out. */
+std::string CompareToAllocatorsOwn(uint32_t width, uint32_t height,
+                                   const uint32_t *ours) {
   auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
-  if (gralloc == nullptr) {
-    ALOGE("surfcmp: no gralloc to ask for its own words");
-    return;
-  }
+  if (gralloc == nullptr)
+    return "no gralloc to ask for its own words";
 
   auto &allocator = android::GraphicBufferAllocator::get();
   buffer_handle_t theirs = nullptr;
@@ -135,35 +131,39 @@ void CompareToAllocatorsOwn(uint32_t width, uint32_t height,
   if (allocator.allocate(width, height, android::PIXEL_FORMAT_RGBA_8888, 1,
                          usage, &theirs, &stride, 0, "surfcmp") !=
           android::NO_ERROR ||
-      theirs == nullptr) {
-    ALOGE("surfcmp: cannot ask for a same-sized buffer");
-    return;
-  }
+      theirs == nullptr)
+    return "cannot ask for a same-sized buffer";
 
   const void *raw = nullptr;
   size_t count = 0;
   if (!gralloc->GetRawSurfaces(theirs, &raw, &count) || raw == nullptr ||
       count == 0) {
-    ALOGE("surfcmp: the buffer came without its surface words");
     allocator.free(theirs);
-    return;
+    return "the buffer came without its surface words";
   }
 
   const auto *theirs_words = static_cast<const uint32_t *>(raw);
-  ALOGI("surfcmp: ours vs the allocator's own, %ux%u:", width, height);
+  std::string out = "ours vs the allocator's own, " +
+                    std::to_string(width) + "x" + std::to_string(height) +
+                    ":\n";
   for (size_t i = 0; i < kSurfaceWordsUsed; ++i) {
     const uint32_t ours_word = ours[i];
     const uint32_t theirs_word = theirs_words[i];
+    char line[80];
     if (ours_word == theirs_word) {
-      ALOGI("surfcmp: [%2zu] %08x  %08x", i, ours_word, theirs_word);
+      snprintf(line, sizeof(line), "  [%2zu] %08x  %08x\n", i, ours_word,
+               theirs_word);
+      out += line;
       continue;
     }
     /* Words six and seven are pointers into each buffer's own allocation --
      * the memory handle and the offset within it. Different buffers, so
      * different values; a difference there is the rule, not the signal. */
     if (i == 6 || i == 7) {
-      ALOGI("surfcmp: [%2zu] %08x  %08x   (expected: each buffer's own)",
-            i, ours_word, theirs_word);
+      snprintf(line, sizeof(line),
+               "  [%2zu] %08x  %08x   (expected: each buffer's own)\n", i,
+               ours_word, theirs_word);
+      out += line;
       continue;
     }
     /* The layout word: ours is forced to pitch by the library; the
@@ -171,23 +171,31 @@ void CompareToAllocatorsOwn(uint32_t width, uint32_t height,
      * class of its own, not a defect in ours -- unless we mean to write
      * blocklinear too, which this build has never claimed to. */
     if (i == 4) {
-      ALOGI("surfcmp: [%2zu] %08x  %08x   <- layout (ours pitch vs theirs)",
-            i, ours_word, theirs_word);
+      snprintf(line, sizeof(line),
+               "  [%2zu] %08x  %08x   <- layout (ours pitch vs theirs)\n", i,
+               ours_word, theirs_word);
+      out += line;
       continue;
     }
-    ALOGI("surfcmp: [%2zu] %08x  %08x   <- differs", i, ours_word,
-          theirs_word);
+    snprintf(line, sizeof(line), "  [%2zu] %08x  %08x   <- differs\n", i,
+             ours_word, theirs_word);
+    out += line;
   }
 
   /* Our margin beyond the structure the library fills: it should be
    * zero, and anything else is a library writing past what this build
    * zeroed. */
   for (size_t i = kSurfaceWordsUsed; i < kSurfaceWords; ++i) {
-    if (ours[i] != 0)
-      ALOGI("surfcmp: [%2zu] %08x  (ours beyond the structure)", i, ours[i]);
+    if (ours[i] != 0) {
+      char line[80];
+      snprintf(line, sizeof(line), "  [%2zu] %08x  (ours beyond the structure)\n",
+               i, ours[i]);
+      out += line;
+    }
   }
 
   allocator.free(theirs);
+  return out;
 }
 
 template <typename Fn>
@@ -420,9 +428,9 @@ std::unique_ptr<ScratchBuffer> NvMapAllocator::Allocate(uint32_t width,
   }
 
   static bool compared = false;
-  if (!compared && CompareWanted()) {
+  if (!compared) {
     compared = true;
-    CompareToAllocatorsOwn(width, height, surface.get());
+    compare_lines_ = CompareToAllocatorsOwn(width, height, surface.get());
   }
 
   return std::make_unique<ScratchBuffer>(ScratchBuffer::FromCarveout(

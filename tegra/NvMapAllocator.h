@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 namespace android {
 namespace hwc {
@@ -75,6 +76,11 @@ class NvMapAllocator {
   uint32_t expected_format() const { return kFormatA8B8G8R8; }
   bool format_mismatch() const { return format_mismatch_; }
 
+  /* The side-by-side of our first slot's descriptor against the
+   * allocator's own, laid up once for the dump -- the only channel out
+   * of this process. Empty until the first slot has been allocated. */
+  const std::string &compare_lines() const { return compare_lines_; }
+
   /* Frees a memory handle this allocator made. Called by the scratch
    * buffer's destructor; a no-op for a null handle, which lets buffers
    * be released whether or not the allocator ever resolved. */
@@ -122,6 +128,7 @@ class NvMapAllocator {
   uint64_t refusals_ = 0;
   uint32_t surface_format_ = 0;
   bool format_mismatch_ = false;
+  std::string compare_lines_;
 };
 
 }  // namespace hwc

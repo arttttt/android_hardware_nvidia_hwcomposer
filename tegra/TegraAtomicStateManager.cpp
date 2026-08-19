@@ -1454,6 +1454,8 @@ std::string TegraAtomicStateManager::DumpState() {
         ss << " (MISMATCH, expected 0x" << std::hex << zone->expected_format()
            << std::dec << ")";
       ss << "\n";
+      if (!zone->compare_lines().empty())
+        ss << "  zone surface vs gralloc :\n" << zone->compare_lines();
     }
     if (rotate_pool_ && rotate_pool_->held_slots() != 0)
       ss << "  intermediates held      : " << rotate_pool_->held_slots()
