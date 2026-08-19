@@ -1442,6 +1442,7 @@ std::string TegraAtomicStateManager::DumpState() {
          << (scratch_->vendor() ? "vendor" : "gralloc") << " ("
          << scratch_->width() << "x" << scratch_->height() << ")\n"
          << scratch_->DumpSlots();
+    ss << vic_->last_target_probe();
     ss << "Engine over its lifetime:\n"
        << "  frames accepted         : " << vic_->composed() << "\n"
        << "  frames refused          : " << vic_->refused() << "\n"

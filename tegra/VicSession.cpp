@@ -21,6 +21,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
 
 
@@ -261,7 +262,7 @@ drm_hwcomposer::SharedFd VicSession::Compose(
 
   return ComposeInto(gralloc, target_surfaces, target_surface.width,
                      target_surface.height, layers, width, height,
-                     target_ready);
+                     target_ready, nullptr);
 }
 
 drm_hwcomposer::SharedFd VicSession::Compose(
@@ -276,14 +277,15 @@ drm_hwcomposer::SharedFd VicSession::Compose(
   }
 
   return ComposeInto(gralloc, target.surface.data(), target.width,
-                     target.height, layers, width, height, target_ready);
+                     target.height, layers, width, height, target_ready,
+                     target.surface.data());
 }
 
 drm_hwcomposer::SharedFd VicSession::ComposeInto(
     drm_hwcomposer::NvGralloc *gralloc, const void *target_surfaces,
     uint32_t buffer_width, uint32_t buffer_height,
     const std::vector<Layer> &layers, uint32_t width, uint32_t height,
-    int target_ready) {
+    int target_ready, const uint32_t *probe_words) {
   if (layers.empty() || layers.size() > kMaxLayers) {
     refused_++;
     return {};
@@ -330,6 +332,25 @@ drm_hwcomposer::SharedFd VicSession::ComposeInto(
                         &target_rect) != kNvSuccess) {
     refused_++;
     return {};
+  }
+
+  /* The boundary with the library, probed where it is crossed: the target
+   * is configured, the job not yet submitted. The word the reloc is built
+   * from comes first, so a swapped handle is visible without reading the
+   * rest; the leading words follow, so a descriptor that drifted says how.
+   * Kept for the dump rather than logged -- the log on this platform does
+   * not reach where a dump is read from. */
+  if (probe_words != nullptr) {
+    char probe[192];
+    int at = snprintf(probe, sizeof(probe),
+                      "  target at submit: handle 0x%08x, words",
+                      probe_words[kSurfaceWordMemHandle]);
+    for (size_t w = 0;
+         w < 8 && at > 0 && static_cast<size_t>(at) < sizeof(probe); ++w)
+      at += snprintf(probe + at, sizeof(probe) - static_cast<size_t>(at),
+                     " %08x", probe_words[w]);
+    last_target_probe_ = probe;
+    last_target_probe_ += "\n";
   }
 
   ExecParameters exec = {};

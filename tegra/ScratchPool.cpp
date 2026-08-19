@@ -18,8 +18,9 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
-#include <algorithm>
+#include <vector>
 
 #include <cutils/properties.h>
 #include <hardware/gralloc.h>
@@ -59,6 +60,14 @@ constexpr uint32_t kSlotColours[] = {0xff0000ffu, 0xff00ff00u, 0xffff0000u};
 constexpr size_t kSlotColourCount =
     sizeof(kSlotColours) / sizeof(kSlotColours[0]);
 
+/* The stripe step, in pixels: wide enough to read on the panel, narrow
+ * enough that a wrong row pitch skews the stripes visibly and a wrong
+ * layout scatters them. */
+constexpr uint32_t kStripeStep = 64;
+
+/* The colour word a stripe alternates with. */
+constexpr uint32_t kStripeDark = 0xff000000u;
+
 /* The descriptor words a target is judged by. Read by index rather than
  * through a declared structure for the same reason the allocator's own
  * reader does (bufferinfo/NvGralloc.cpp): the structure belongs to the
@@ -73,7 +82,28 @@ enum SurfaceWord {
   kWordKind = 8,
   kWordBlockHeightLog2 = 9,
   kWordSize = 14,
+  /* The memory handle the engine's reloc is built from. */
+  kWordMemHandle = 6,
 };
+
+/* Vertical stripes over the slot's own colour, painted before the slot's
+ * first use. A slot the engine never wrote shows whole stripes; a slot
+ * written with a wrong row pitch shows them skewed, a wrong layout shows
+ * them scattered -- the shape of the mistake is readable straight off the
+ * panel, not just the fact of it. */
+void PaintSlot(VendorBuffer *buffer, size_t index) {
+  const uint32_t colour = kSlotColours[index % kSlotColourCount];
+  const size_t row_words = buffer->pitch / 4;
+
+  std::vector<uint32_t> row(row_words);
+  for (size_t x = 0; x < row_words; ++x)
+    row[x] = (x / kStripeStep) % 2 == 0 ? colour : kStripeDark;
+
+  auto *pixels = reinterpret_cast<uint8_t *>(buffer->pixels);
+  for (uint32_t y = 0; y < buffer->height; ++y)
+    memcpy(pixels + static_cast<size_t>(y) * buffer->pitch, row.data(),
+           buffer->pitch);
+}
 
 }  // namespace
 
@@ -106,10 +136,10 @@ std::unique_ptr<ScratchPool> ScratchPool::Create(uint32_t width,
         break;
       }
 
-      /* Painted before its first use, so a slot the engine never wrote
-       * announces itself on the panel as a solid colour. */
-      std::fill_n(buffer->pixels, buffer->mapped / 4,
-                  kSlotColours[i % kSlotColourCount]);
+      /* Painted before its first use: a slot the engine never wrote shows
+       * its stripes on the panel, a slot written wrong shows them skewed
+       * or scattered. */
+      PaintSlot(buffer.get(), i);
 
       pool->slots_[i].view.vendor = buffer.get();
       pool->slots_[i].vendor = std::move(buffer);
@@ -229,28 +259,41 @@ std::string ScratchPool::DumpSlots() const {
     /* The descriptor as whoever allocated the buffer filled it: a
      * vendor-born slot carries the words the library's own builder wrote,
      * a gralloc-born one is asked of the allocator -- and both are read at
-     * the same indices, so the two dumps can be set side by side. */
+     * the same indices, so the two dumps can be set side by side. Beside
+     * the descriptor, the slot's dma-buf number and the memory handle it
+     * was born with: the kernel's pin log is matched against these, and a
+     * slot whose number never appears there while merges run was never
+     * handed to the engine. */
+    auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
     const uint32_t *words = nullptr;
+    int slot_fd = -1;
+    void *born_handle = nullptr;
     if (slot.vendor != nullptr) {
       words = slot.vendor->surface.data();
+      slot_fd = slot.vendor->mem_fd();
+      born_handle = slot.vendor->mem_handle;
     } else if (slot.handle != nullptr) {
-      auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
       const void *raw = nullptr;
       size_t count = 0;
-      if (gralloc != nullptr &&
-          gralloc->GetRawSurfaces(slot.handle, &raw, &count) && count == 1)
-        words = static_cast<const uint32_t *>(raw);
+      if (gralloc != nullptr) {
+        slot_fd = gralloc->GetMemFd(slot.handle);
+        if (gralloc->GetRawSurfaces(slot.handle, &raw, &count) && count == 1)
+          words = static_cast<const uint32_t *>(raw);
+      }
     }
 
     if (words != nullptr) {
       snprintf(line, sizeof(line),
-               "  slot %zu: w%u h%u fmt 0x%08x layout %u pitch %u "
-               "kind 0x%02x bh %u size %u\n",
-               i, words[kWordWidth], words[kWordHeight], words[kWordFormat],
-               words[kWordLayout], words[kWordPitch], words[kWordKind],
-               words[kWordBlockHeightLog2], words[kWordSize]);
+               "  slot %zu: fd %d born %p; desc w%u h%u fmt 0x%08x "
+               "layout %u pitch %u kind 0x%02x bh %u size %u handle 0x%08x\n",
+               i, slot_fd, born_handle, words[kWordWidth],
+               words[kWordHeight], words[kWordFormat], words[kWordLayout],
+               words[kWordPitch], words[kWordKind],
+               words[kWordBlockHeightLog2], words[kWordSize],
+               words[kWordMemHandle]);
     } else {
-      snprintf(line, sizeof(line), "  slot %zu: no descriptor\n", i);
+      snprintf(line, sizeof(line), "  slot %zu: fd %d born %p; "
+               "no descriptor\n", i, slot_fd, born_handle);
     }
     out += line;
 

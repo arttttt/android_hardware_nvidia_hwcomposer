@@ -62,10 +62,12 @@ struct VendorBuffer;
  * from birth. One origin per pool, never a mix -- a refusal partway through
  * takes the whole pool to gralloc, so the dump holds one answer.
  *
- * A vendor-born slot is painted a solid colour of its own before its first
- * use, through the CPU mapping the session made of it: if the engine never
- * writes the slot, the panel shows the colour and the question "does it
- * write at all" is answered by looking, without a single dump.
+ * A vendor-born slot is painted before its first use, through the CPU
+ * mapping the session made of it: vertical stripes over a colour of the
+ * slot's own. A slot the engine never wrote stands on the panel whole and
+ * striped, and the question "does it write at all" is answered by looking,
+ * without a single dump; a slot written with a wrong pitch or layout shows
+ * the stripes skewed or scattered, which says how it wrote.
  */
 class ScratchPool {
  public:

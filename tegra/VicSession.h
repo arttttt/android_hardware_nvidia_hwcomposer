@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <cutils/native_handle.h>
@@ -191,6 +192,15 @@ class VicSession {
    * answers no. */
   bool OffersVendorBuffers() const;
 
+  /* The target descriptor as it stood the last time a frame was handed to
+   * the engine with a vendor-born target: the memory handle in the word
+   * the reloc is built from, and the descriptor's leading words. Read at
+   * the boundary with the library -- after the target is configured,
+   * before the job is submitted -- so the dump can say whether the handle
+   * the buffer was born with is the handle the engine was told about.
+   * Empty while no vendor-born target was ever composed. */
+  const std::string &last_target_probe() const { return last_target_probe_; }
+
   /* A panel-sized buffer allocated by the vendor library in this session's
    * own context -- the heaps asked are the contiguous carveout first and
    * the external heap as fallback, the descriptor built by the library's
@@ -237,14 +247,17 @@ class VicSession {
 
   /* The body both Compose entry points share, once the target's surfaces
    * and real extent are known -- from the allocator for a gralloc handle,
-   * from the buffer itself for a vendor-born one. */
+   * from the buffer itself for a vendor-born one. `probe_words` is the
+   * vendor-born target's descriptor, or null for a gralloc one: when set,
+   * the words the job is submitted with are remembered for the dump. */
   drm_hwcomposer::SharedFd ComposeInto(drm_hwcomposer::NvGralloc *gralloc,
                                        const void *target_surfaces,
                                        uint32_t buffer_width,
                                        uint32_t buffer_height,
                                        const std::vector<Layer> &layers,
                                        uint32_t width, uint32_t height,
-                                       int target_ready);
+                                       int target_ready,
+                                       const uint32_t *probe_words);
 
   /* Their settings structure, held as a plain run of bytes.
    *
@@ -273,6 +286,9 @@ class VicSession {
   uint64_t composed_ = 0;
   uint64_t refused_ = 0;
 
+  /* See last_target_probe(). */
+  std::string last_target_probe_;
+
   /* libnvrm.
    *
    * The opener is the one without a device number. The interface has both,
@@ -296,9 +312,11 @@ class VicSession {
    * own RGB output carries -- the pair proven against a gralloc-produced
    * descriptor, see docs/nvrm-format-table.txt for why the name and the
    * code read as different generations. The descriptor's size word sits at
-   * [14], which the pitch-layout builder does not fill. */
+   * [14], which the pitch-layout builder does not fill, and the memory
+   * handle the engine's reloc is built from sits at [6]. */
   static constexpr uint32_t kFormatA8B8G8R8 = 0x00532120;
   static constexpr uint32_t kColorTagRgb = 1;
+  static constexpr size_t kSurfaceWordMemHandle = 6;
   static constexpr size_t kSurfaceWordSize = 14;
   static constexpr size_t kSurfaceWords = 64;
 
