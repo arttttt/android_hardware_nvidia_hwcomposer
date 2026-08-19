@@ -238,7 +238,13 @@ std::unique_ptr<ScratchBuffer> NvMapAllocator::Allocate(uint32_t width,
    * from another pool. Shown through a window that expects a picture,
    * that is noise the first time the slot is ever scanned. Paid once,
    * when a slot enters the pool for the first time: a page-touch per
-   * slot of the pool's lifetime, not per frame. */
+   * slot of the pool's lifetime, not per frame.
+   *
+   * The hygiene is a courtesy, not an invariant: a slot that failed to
+   * clear is still handed over, because a blank is not worth a refused
+   * frame. But a dirty slot surfacing as picture noise is exactly the
+   * symptom this clears, so the line below is a signal to be read, not
+   * a warning to be skipped. */
   {
     const size_t length = static_cast<size_t>(bytes);
     void *pixels = mmap(nullptr, length, PROT_READ | PROT_WRITE,
@@ -247,7 +253,8 @@ std::unique_ptr<ScratchBuffer> NvMapAllocator::Allocate(uint32_t width,
       memset(pixels, 0, length);
       munmap(pixels, length);
     } else {
-      ALOGE("cannot clear the zone's slot: %s", strerror(errno));
+      ALOGE("a zone slot came out dirty and could not be cleared: %s",
+            strerror(errno));
     }
   }
 
