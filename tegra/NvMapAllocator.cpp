@@ -106,8 +106,13 @@ uint32_t SurfaceFormatOverride(uint32_t fallback) {
   return static_cast<uint32_t>(parsed);
 }
 
-/* The gained field that travels between the height and the format,
- * overridden the same way. Absent or malformed, zero. */
+/* Word three, the field the engine's own parser reads as its format
+ * code -- the engine's decoder does not walk the same words as libnvrm,
+ * and the side-by-side laid the difference bare. Overridden per boot
+ * the same way as the format, so a candidate value can be tried a
+ * restart at a time. Absent or malformed, zero. The property keeps its
+ * old name for the sake of the runs already taken; it is the engine's
+ * format word it steers. */
 uint32_t SurfaceGainedOverride() {
   char value[PROPERTY_VALUE_MAX];
   if (property_get("vendor.hwc.surfgained", value, "") <= 0)
@@ -180,6 +185,18 @@ std::string CompareToAllocatorsOwn(uint32_t width, uint32_t height,
     if (ours_word == theirs_word) {
       snprintf(line, sizeof(line), "  [%2zu] %08x  %08x\n", i, ours_word,
                theirs_word);
+      out += line;
+      continue;
+    }
+    /* Words the engine's own parser walks -- three as its format code,
+     * fifteen, sixteen and nineteen as its plane and hardware fields.
+     * A difference there is the engine's vocabulary, read directly, and
+     * the value to try comes from the allocator's side of this very
+     * line. */
+    if (i == 3 || i == 15 || i == 16 || i == 19) {
+      snprintf(line, sizeof(line),
+               "  [%2zu] %08x  %08x   <- engine field, use theirs\n", i,
+               ours_word, theirs_word);
       out += line;
       continue;
     }
@@ -428,19 +445,21 @@ std::unique_ptr<ScratchBuffer> NvMapAllocator::Allocate(uint32_t width,
 
   auto surface = std::make_unique<uint32_t[]>(kSurfaceWords);
   /* Nine arguments, not the seven the last published headers spell.
-   * Between the height and the format this build takes a slot it then
-   * drops, and the colour space travels after the format -- so the
-   * pitch and the memory handle both sit one place further along than
-   * the headers say. Read out of the binary, after the fact: called
-   * with seven, the library writes the row length into the format word
-   * -- the first boot's dump saw exactly that, six thousand one hundred
-   * forty-four standing where a colour should be -- and reads the
-   * memory handle out of stack that was never passed, and the engine
-   * refuses every frame built on such a surface. */
+   * Between the height and the format this build takes a slot the
+   * engine's parser reads as its format code, and the colour space
+   * travels after the format -- so the pitch and the memory handle
+   * both sit one place further along than the headers say. Read out of
+   * the binary, after the fact: called with seven, the library writes
+   * the row length into the format word -- the first boot's dump saw
+   * exactly that, six thousand one hundred forty-four standing where a
+   * colour should be -- and reads the memory handle out of stack that
+   * was never passed, and the engine refuses every frame built on such
+   * a surface. */
   const uint32_t format = SurfaceFormatOverride(kFormatA8B8G8R8);
-  const uint32_t gained = SurfaceGainedOverride();
-  surface_init_rm_pitch_(surface.get(), width, height, gained, format,
-                         kColorSpaceLinearRgba, pitch, mem_handle, 0);
+  const uint32_t engine_format = SurfaceGainedOverride();
+  surface_init_rm_pitch_(surface.get(), width, height, engine_format,
+                         format, kColorSpaceLinearRgba, pitch, mem_handle,
+                         0);
 
   /* The library fills what it knows and leaves the rest at the zero of
    * its own memset -- including the size word, which the allocator's own
