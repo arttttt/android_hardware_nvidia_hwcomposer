@@ -18,12 +18,14 @@
 #define TEGRA_TURN_POOL_H
 
 #include <cstdint>
+#include <memory>
 #include <vector>
-
-#include <cutils/native_handle.h>
 
 namespace android {
 namespace hwc {
+
+class VicSession;
+struct VendorBuffer;
 
 /* Somewhere for a turned copy of a layer to land, before the group reads it.
  *
@@ -52,8 +54,14 @@ namespace hwc {
 class TurnPool {
  public:
   /* `cap` slots at most, each no larger than `max_width` by `max_height`
-   * (asking past that is refused, not clamped). */
-  TurnPool(uint32_t max_width, uint32_t max_height, size_t cap);
+   * (asking past that is refused, not clamped). Slots are cut from the
+   * composer's own zone through `vic`, which is borrowed and must outlive
+   * the pool -- the same origin the merged frames land in, because a
+   * second origin is a second set of rules, and the era when turned
+   * copies came from the allocator while merges came from the zone is
+   * what cost this composer a month of looking in the wrong place. */
+  TurnPool(uint32_t max_width, uint32_t max_height, size_t cap,
+           VicSession *vic);
   ~TurnPool();
 
   TurnPool(const TurnPool &) = delete;
@@ -61,14 +69,17 @@ class TurnPool {
 
   /* A buffer at least `width` by `height`, for this frame only.
    *
-   * Reuses an idle slot that fits, or allocates one cut to the asked size
-   * (rounded up so the next popup-sized turn lands in the same slot).
-   * Returns null when the cap is spent or the allocator refuses -- the
-   * caller's turn fails the way every engine refusal fails.
+   * Reuses an idle slot that fits, or cuts one to the asked size (rounded
+   * up so the next popup-sized turn lands in the same slot). Returns null
+   * when the cap is spent or the zone refuses -- the caller's turn fails
+   * the way every engine refusal fails.
+   *
+   * Borrowed: the buffer belongs to the pool, and the frame that took it
+   * must not outlive the pool's own life.
    *
    * No fence comes back on purpose: the only reader is the group pass of
    * the same frame, ordered behind the write by the engine's own channel. */
-  buffer_handle_t Take(uint32_t width, uint32_t height);
+  const VendorBuffer *Take(uint32_t width, uint32_t height);
 
   /* The frame is over: what was taken may be taken again next frame, and
    * `turned_any` says whether the frame turned anything at all. A few
@@ -90,7 +101,7 @@ class TurnPool {
 
  private:
   struct Slot {
-    buffer_handle_t handle = nullptr;
+    std::unique_ptr<VendorBuffer> buffer;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t bytes = 0;
@@ -98,6 +109,7 @@ class TurnPool {
   };
 
   uint64_t trims_ = 0;
+  VicSession *vic_ = nullptr;
   uint32_t max_width_ = 0;
   uint32_t max_height_ = 0;
   size_t cap_ = 0;

@@ -55,43 +55,43 @@ struct VendorBuffer;
  * processor will read often is laid out in rows, so that is what is asked
  * for, and it is honest -- checking the merge means reading it.
  *
- * Where the slots are born is a boot-time switch, persist.vendor.hwc.zone:
- * 0 is gralloc, the reference arrangement whose picture is clean, and the
- * default; 1 is the vendor library's own allocator, reached through the
- * engine session's resource manager, so that the buffer is the library's
- * from birth; 2 is the composer's own carveout zone, cut straight from
- * nvmap and adopted by the library's own import through the session's
- * instance of it. One origin per pool, never a mix -- a refusal partway
- * through takes the whole pool to gralloc, so the dump holds one answer.
+ * The slots come from the composer's own carveout zone, and from nowhere
+ * else. There was a season of switches here -- gralloc, the library's own
+ * allocator, the zone -- kept side by side so the three could be compared
+ * on the panel; the comparison is over, and what it cost was a month spent
+ * looking for a fault in the merged target that in fact lived in a second
+ * pool nobody was watching. One origin means one set of rules to get
+ * right, and a pool that cannot be cut from the zone is no pool at all:
+ * Create says so, and the display simply goes without an engine.
  *
- * A slot born of either custom source is painted before its first use,
- * through the CPU mapping the session made of it: vertical stripes over a
- * colour of the slot's own. A slot the engine never wrote stands on the
- * panel whole and striped, and the question "does it write at all" is
- * answered by looking, without a single dump; a slot written with a wrong
- * pitch or layout shows the stripes skewed or scattered, which says how
- * it wrote.
+ * Each slot is painted before its first use, through the CPU mapping the
+ * session made of it: vertical stripes over a colour of the slot's own. A
+ * slot the engine never wrote stands on the panel whole and striped, and
+ * the question "does it write at all" is answered by looking, without a
+ * single dump; a slot written with a wrong pitch or layout shows the
+ * stripes skewed or scattered, which says how it wrote.
  */
 class ScratchPool {
  public:
-  /* `count` buffers of `width` by `height`. Null, having said what failed, if
-   * the allocator would not give them. `vic` is borrowed, and only asked for
-   * buffers when the switch says so. */
+  /* `count` buffers of `width` by `height`, cut from the zone through
+   * `vic`. Null, having said what failed, if the zone would not give the
+   * whole set -- half a pool is not a pool, and the caller drops the
+   * engine rather than compose into memory of some other kind.
+   *
+   * `vic` is borrowed and must outlive the pool: the slots are its
+   * buffers, and their handles are its client's. */
   static std::unique_ptr<ScratchPool> Create(uint32_t width, uint32_t height,
-                                             size_t count,
-                                             VicSession *vic = nullptr);
+                                             size_t count, VicSession *vic);
 
   ~ScratchPool();
 
   ScratchPool(const ScratchPool &) = delete;
   ScratchPool &operator=(const ScratchPool &) = delete;
 
-  /* One slot, as a frame needs it: `handle` names a gralloc-born buffer,
-   * `vendor` a vendor-born one, and exactly one of the two is set. The
-   * pointer is into the pool's own storage, which never moves: the pool is
-   * sized once, and no slot is ever added or taken away. */
+  /* One slot, as a frame needs it. The pointer is into the pool's own
+   * storage, which never moves: the pool is sized once, and no slot is
+   * ever added or taken away. */
   struct Slot {
-    buffer_handle_t handle = nullptr;
     const VendorBuffer *vendor = nullptr;
   };
 
@@ -138,23 +138,15 @@ class ScratchPool {
   uint32_t height() const { return height_; }
   uint32_t stride() const { return stride_; }
 
-  /* Where the pool's buffers were born -- the dump's one-line answer for
-   * which arrangement is on the panel: "gralloc", "vendor" for the
-   * library's own allocator, "zone" for the composer's carveout. */
-  const char *source_name() const {
-    return vendor_ ? (zone_ == 2 ? "zone" : "vendor") : "gralloc";
-  }
+  /* Where the pool's buffers were born. One answer now, and kept in the
+   * dump because a line that always says the same thing is what proves it
+   * still says it. */
+  const char *source_name() const { return "zone"; }
 
-  /* True for either custom source -- the caller that branches on it wants
-   * to know whether slots carry descriptors of their own, not which of
-   * the two bore them. */
-  bool vendor() const { return vendor_; }
-
-  /* What the slots hold, for the dump: each slot's descriptor as whoever
-   * allocated it filled it -- the words a target is judged by, read from
-   * the descriptor itself so a vendor-born slot and a gralloc-born one can
-   * be compared field by field -- and the first words of the first row and
-   * of the frame's centre, read through the CPU mapping. Whether the
+  /* What the slots hold, for the dump: each slot's descriptor as the
+   * library built it -- the words a target is judged by, read from the
+   * descriptor itself -- and the first words of the first row and of the
+   * frame's centre, read through the CPU mapping. Whether the
    * engine writes a picture, the paint, or noise into a slot is the one
    * split that says where a corruption lives -- in the writing or in the
    * reading -- and all slots are shown because the rotation can serve any
@@ -165,7 +157,6 @@ class ScratchPool {
   ScratchPool() = default;
 
   struct SlotStorage {
-    buffer_handle_t handle = nullptr;
     std::unique_ptr<VendorBuffer> vendor;
 
     /* What Next() hands out, filled once at allocation. */
@@ -181,8 +172,6 @@ class ScratchPool {
   uint32_t width_ = 0;
   uint32_t height_ = 0;
   uint32_t stride_ = 0;
-  bool vendor_ = false;
-  int zone_ = 0;
 
   /* The slot the last frame was drawn into, which the next frame posted will
    * replace on screen. Past the end until a frame has been posted. */

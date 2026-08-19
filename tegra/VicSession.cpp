@@ -200,18 +200,15 @@ bool VicSession::Open() {
 
   config_.resize(kConfigBytes);
 
-  /* The vendor-born buffer path, resolved without obligation: a library
-   * build that lacks these entry points simply means the path is not
-   * offered, which OffersVendorBuffers() answers. */
-  ResolveOne(nvrm_library_, "NvRmMemHandleAllocAttr", &alloc_attr_);
+  /* The zone path, resolved without obligation: a library build that lacks
+   * these entry points simply means the path is not offered, which
+   * OffersZoneBuffers() answers. The import is the one that matters --
+   * memory cut from the zone becomes the library's own handle through it,
+   * born in the client the engine calls its own. */
+  ResolveOne(nvrm_library_, "NvRmMemHandleFromFd", &mem_handle_from_fd_);
   ResolveOne(nvrm_library_, "NvRmMemGetFd", &mem_get_fd_);
   ResolveOne(nvrm_library_, "NvRmMemHandleFree", &mem_handle_free_);
   ResolveOne(nvrm_library_, "NvRmSurfaceInitRmPitch", &surface_init_rm_pitch_);
-
-  /* The zone path's half of the same: the library's own import, through
-   * this very instance of the library, so an adopted dma-buf is a handle
-   * of the client the engine calls its own. */
-  ResolveOne(nvrm_library_, "NvRmMemHandleFromFd", &mem_handle_from_fd_);
   return true;
 }
 
@@ -253,38 +250,11 @@ VicSession::~VicSession() {
 }
 
 drm_hwcomposer::SharedFd VicSession::Compose(
-    buffer_handle_t target, const std::vector<Layer> &layers,
-    uint32_t width, uint32_t height, int target_ready) {
-  auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
-  if (gralloc == nullptr) {
-    refused_++;
-    return {};
-  }
-
-  const void *target_surfaces = nullptr;
-  size_t target_count = 0;
-  if (!gralloc->GetRawSurfaces(target, &target_surfaces, &target_count) ||
-      target_count != 1) {
-    refused_++;
-    return {};
-  }
-
-  drm_hwcomposer::NvGralloc::Surface target_surface{};
-  if (!gralloc->DescribeSurface(target, &target_surface)) {
-    refused_++;
-    return {};
-  }
-
-  return ComposeInto(gralloc, target_surfaces, target_surface.width,
-                     target_surface.height, layers, width, height,
-                     target_ready, nullptr);
-}
-
-drm_hwcomposer::SharedFd VicSession::Compose(
     const VendorBuffer &target, const std::vector<Layer> &layers,
     uint32_t width, uint32_t height, int target_ready) {
-  /* The layers are the framework's buffers whatever the target was born
-   * as, so the allocator is still answerable for them. */
+  /* The layers are still mostly the framework's buffers, and the allocator
+   * is answerable for those; a turned copy among them carries its own
+   * description and needs no one. */
   auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
   if (gralloc == nullptr) {
     refused_++;
@@ -386,10 +356,18 @@ drm_hwcomposer::SharedFd VicSession::ComposeInto(
   for (size_t i = 0; i < layers.size(); i++) {
     const Layer &layer = layers[i];
 
+    /* A layer the framework handed us is described by the allocator that
+     * made it; a turned copy is described by the words the library built
+     * when this composer cut the buffer from its zone. The engine reads
+     * both the same way -- what differs is only who wrote the description,
+     * and a buffer of ours must never be described by anything but the
+     * library's own builder. */
     const void *surfaces = nullptr;
-    size_t count = 0;
-    if (!gralloc->GetRawSurfaces(layer.handle, &surfaces, &count) ||
-        count != 1) {
+    size_t count = 1;
+    if (layer.vendor != nullptr) {
+      surfaces = layer.vendor->surface.data();
+    } else if (!gralloc->GetRawSurfaces(layer.handle, &surfaces, &count) ||
+               count != 1) {
       refused_++;
       return {};
     }
@@ -463,7 +441,7 @@ drm_hwcomposer::SharedFd VicSession::ComposeInto(
 }
 
 drm_hwcomposer::SharedFd VicSession::ComposeRotated(
-    buffer_handle_t target, const Layer &layer, uint32_t transform,
+    const VendorBuffer &target, const Layer &layer, uint32_t transform,
     uint32_t width, uint32_t height, int target_ready) {
   auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
   if (gralloc == nullptr || width == 0 || height == 0) {
@@ -471,17 +449,13 @@ drm_hwcomposer::SharedFd VicSession::ComposeRotated(
     return {};
   }
 
-  const void *target_surfaces = nullptr;
-  size_t target_count = 0;
-  if (!gralloc->GetRawSurfaces(target, &target_surfaces, &target_count) ||
-      target_count != 1) {
-    refused_++;
-    return {};
-  }
-
-  drm_hwcomposer::NvGralloc::Surface target_surface{};
-  if (!gralloc->DescribeSurface(target, &target_surface) ||
-      width > target_surface.width || height > target_surface.height) {
+  /* The intermediate is one of ours, cut from the zone: its descriptor is
+   * the library's own and its extent is known without asking anyone. What
+   * is checked is only that the turned crop fits inside it -- the pool
+   * rounds slots up, so a slot is usually larger than the ask. */
+  const void *target_surfaces = target.surface.data();
+  const size_t target_count = 1;
+  if (width > target.width || height > target.height) {
     refused_++;
     return {};
   }
@@ -507,10 +481,15 @@ drm_hwcomposer::SharedFd VicSession::ComposeRotated(
     return {};
   }
 
+  /* The layer being turned is the framework's own, described by its
+   * allocator -- but a turned copy of a turned copy would be one of ours,
+   * so the same rule as the group pass applies. */
   const void *surfaces = nullptr;
-  size_t count = 0;
-  if (!gralloc->GetRawSurfaces(layer.handle, &surfaces, &count) ||
-      count != 1) {
+  size_t count = 1;
+  if (layer.vendor != nullptr) {
+    surfaces = layer.vendor->surface.data();
+  } else if (!gralloc->GetRawSurfaces(layer.handle, &surfaces, &count) ||
+             count != 1) {
     refused_++;
     return {};
   }
@@ -581,114 +560,6 @@ VendorBuffer::~VendorBuffer() {
     munmap(pixels, mapped);
   if (mem_handle != nullptr && release != nullptr)
     release(mem_handle);
-}
-
-bool VicSession::OffersVendorBuffers() const {
-  return alloc_attr_ != nullptr && mem_get_fd_ != nullptr &&
-         mem_handle_free_ != nullptr && surface_init_rm_pitch_ != nullptr;
-}
-
-std::unique_ptr<VendorBuffer> VicSession::AllocateTarget(uint32_t width,
-                                                         uint32_t height) {
-  if (rm_device_ == nullptr || !OffersVendorBuffers() || width == 0 ||
-      height == 0) {
-    ALOGE("vendor buffer: not available in this session");
-    return nullptr;
-  }
-
-  /* Rows in the same grain the composer's own allocator uses. */
-  const uint32_t grain = 256;
-  const uint32_t pitch = ((width * 4 + grain - 1) / grain) * grain;
-
-  /* Sized the way the library's own compute call sizes it, because the
-   * descriptor's size word -- which the pitch-layout builder leaves
-   * unfilled, and which is filled in below -- follows that same rule: the
-   * height rounded up to four rows, then the whole rounded up to 128 KiB
-   * (docs/nvrm-format-table.txt). The allocation asks for exactly that,
-   * so the descriptor never claims more than the buffer holds. */
-  const uint64_t raw =
-      static_cast<uint64_t>(pitch) * ((height + 3) & ~3u);
-  const auto size = static_cast<uint32_t>((raw + 131071) / 131072 * 131072);
-
-  /* The contiguous carveout first, the external heap as fallback; on the
-   * current kernel the carveout converts to IOVMM, so the memory lands
-   * page-backed. The shape of the attr structure is the vendor's own --
-   * its fields are read at their offsets by the allocator -- and only the
-   * ones the buffer needs are set. */
-  const uint32_t heaps[] = {3, 1}; /* NvRmHeap_ExternalCarveOut, External */
-
-  struct VendorAttr {
-    const uint32_t *Heaps;
-    uint32_t NumHeaps;
-    uint32_t Alignment;
-    uint32_t Coherency;
-    uint32_t Size;
-    uint16_t Tags;
-    uint8_t ReclaimCache;
-    uint8_t pad;
-    uint32_t Kind;
-    uint32_t CompTags;
-    uint8_t b0;
-    uint8_t b1;
-    uint8_t b2;
-    uint8_t b3;
-    uint32_t c0;
-    uint32_t d0;
-  } attr = {};
-  attr.Heaps = heaps;
-  attr.NumHeaps = 2;
-  attr.Alignment = 4096;
-  attr.Coherency = 2; /* NvOsMemAttribute_WriteCombined */
-  attr.Size = size;
-
-  void *mem_handle = nullptr;
-  if (alloc_attr_(rm_device_, &attr, &mem_handle) != 0 ||
-      mem_handle == nullptr) {
-    ALOGE("vendor buffer: the library would not give %ux%u", width, height);
-    return nullptr;
-  }
-
-  const int buffer_fd = mem_get_fd_(mem_handle);
-  if (buffer_fd < 0) {
-    ALOGE("vendor buffer: no dma-buf from the library's handle");
-    mem_handle_free_(mem_handle);
-    return nullptr;
-  }
-
-  /* Mapped for the processor once and for the buffer's whole life: the
-   * pool paints the slot through this mapping before the first use, and
-   * the dump reads through it. A buffer that cannot be read back cannot
-   * answer the question the paint asks, so a mapping failure refuses the
-   * buffer outright. */
-  void *pixels = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED,
-                      buffer_fd, 0);
-  if (pixels == MAP_FAILED) {
-    ALOGE("vendor buffer: the dma-buf would not map: %s", strerror(errno));
-    mem_handle_free_(mem_handle);
-    close(buffer_fd);
-    return nullptr;
-  }
-
-  auto buffer = std::unique_ptr<VendorBuffer>(new VendorBuffer());
-  buffer->fd = drm_hwcomposer::MakeSharedFd(buffer_fd);
-  buffer->mem_handle = mem_handle;
-  buffer->release = mem_handle_free_;
-  buffer->width = width;
-  buffer->height = height;
-  buffer->pitch = pitch;
-  buffer->size = size;
-  buffer->pixels = static_cast<uint32_t *>(pixels);
-  buffer->mapped = size;
-
-  /* The library's own builder, asked for rows -- its fourth argument never
-   * reaches the body, and the size word it leaves zero is filled by hand
-   * with the very size the allocation was asked for. */
-  buffer->surface.assign(kSurfaceWords, 0);
-  surface_init_rm_pitch_(buffer->surface.data(), width, height, 0,
-                         kFormatA8B8G8R8, kColorTagRgb, pitch, mem_handle, 0);
-  buffer->surface[kSurfaceWordSize] = size;
-
-  return buffer;
 }
 
 bool VicSession::OffersZoneBuffers() const {

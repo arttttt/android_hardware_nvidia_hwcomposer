@@ -16,10 +16,9 @@
 
 #include "tegra/TurnPool.h"
 
-#include <hardware/gralloc.h>
-#include <ui/GraphicBufferAllocator.h>
-#include <ui/PixelFormat.h>
+#include <utility>
 
+#include "tegra/VicSession.h"
 #include "utils/log.h"
 
 #undef  LOG_TAG
@@ -29,13 +28,6 @@ namespace android {
 namespace hwc {
 
 namespace {
-
-/* Rows, for the same reason the show pool asks for rows -- see the note
- * there. The engine reads and writes either arrangement; rows are what this
- * allocator gives a buffer the processor claims to read, and what keeps the
- * edge beyond a crop a neighbouring row instead of a tile's leavings. */
-constexpr uint64_t kUsage = GRALLOC_USAGE_HW_COMPOSER |
-                            GRALLOC_USAGE_SW_READ_OFTEN;
 
 /* Slots are cut to the asked size rounded up to this, so that the turned
  * popup of one frame fits the slot of the last one without a fresh
@@ -54,18 +46,17 @@ uint32_t RoundUp(uint32_t v, uint32_t max) {
 
 }  // namespace
 
-TurnPool::TurnPool(uint32_t max_width, uint32_t max_height, size_t cap)
-    : max_width_(max_width), max_height_(max_height), cap_(cap) {}
+TurnPool::TurnPool(uint32_t max_width, uint32_t max_height, size_t cap,
+                   VicSession *vic)
+    : vic_(vic), max_width_(max_width), max_height_(max_height), cap_(cap) {}
 
 TurnPool::~TurnPool() {
-  auto &allocator = GraphicBufferAllocator::get();
-  for (auto &slot : slots_)
-    if (slot.handle != nullptr)
-      allocator.free(slot.handle);
+  /* Each slot frees itself with its buffer: the mapping, the library's
+   * handle and the zone's memory go together. */
 }
 
-buffer_handle_t TurnPool::Take(uint32_t width, uint32_t height) {
-  if (width == 0 || height == 0 || width > max_width_ ||
+const VendorBuffer *TurnPool::Take(uint32_t width, uint32_t height) {
+  if (vic_ == nullptr || width == 0 || height == 0 || width > max_width_ ||
       height > max_height_)
     return nullptr;
 
@@ -80,7 +71,7 @@ buffer_handle_t TurnPool::Take(uint32_t width, uint32_t height) {
   }
   if (best != nullptr) {
     best->taken = true;
-    return best->handle;
+    return best->buffer.get();
   }
 
   if (slots_.size() >= cap_) {
@@ -102,8 +93,6 @@ buffer_handle_t TurnPool::Take(uint32_t width, uint32_t height) {
     if (evict == slots_.size())
       return nullptr;
 
-    auto &allocator = GraphicBufferAllocator::get();
-    allocator.free(slots_[evict].handle);
     slots_.erase(slots_.begin() + static_cast<long>(evict));
   }
 
@@ -111,24 +100,25 @@ buffer_handle_t TurnPool::Take(uint32_t width, uint32_t height) {
   slot.width = RoundUp(width, max_width_);
   slot.height = RoundUp(height, max_height_);
 
-  uint32_t stride = 0;
-  auto &allocator = GraphicBufferAllocator::get();
-  const status_t err = allocator.allocate(slot.width, slot.height,
-                                          PIXEL_FORMAT_RGBA_8888, 1, kUsage,
-                                          &slot.handle, &stride, 0,
-                                          "hwc-turn");
-  if (err != NO_ERROR || slot.handle == nullptr) {
-    ALOGE("cannot allocate a %ux%u intermediate: %d", slot.width,
-          slot.height, err);
+  /* Cut from the zone, exactly as the show pool's slots are: same heap,
+   * same caching policy, same builder of the descriptor the engine reads
+   * it by. An intermediate is written by one pass and read by the next,
+   * so it is a target and a source in the same frame -- all the more
+   * reason for it to be described by the one hand that describes both. */
+  slot.buffer = vic_->AllocateZoneTarget(slot.width, slot.height);
+  if (!slot.buffer) {
+    ALOGE("the zone would not give a %ux%u intermediate", slot.width,
+          slot.height);
     return nullptr;
   }
 
-  slot.bytes = stride * slot.height * 4;
+  slot.bytes = slot.buffer->size;
   slot.taken = true;
-  slots_.push_back(slot);
-  ALOGI("intermediate %zu of %zu, %ux%u", slots_.size(), cap_, slot.width,
-        slot.height);
-  return slot.handle;
+  const VendorBuffer *taken = slot.buffer.get();
+  slots_.push_back(std::move(slot));
+  ALOGI("intermediate %zu of %zu, %ux%u", slots_.size(), cap_,
+        slots_.back().width, slots_.back().height);
+  return taken;
 }
 
 void TurnPool::FrameEnd(bool turned_any) {
@@ -146,10 +136,6 @@ void TurnPool::FrameEnd(bool turned_any) {
     /* Nothing has turned for hundreds of frames, so nothing will read these
      * again: the only reader an intermediate ever has is the group pass of
      * its own frame, and the channel finished those long ago. */
-    auto &allocator = GraphicBufferAllocator::get();
-    for (auto &slot : slots_)
-      if (slot.handle != nullptr)
-        allocator.free(slot.handle);
     slots_.clear();
     idle_frames_ = 0;
     trims_++;

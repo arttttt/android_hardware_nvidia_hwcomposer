@@ -22,14 +22,6 @@
 
 #include <vector>
 
-#include <cutils/properties.h>
-#include <hardware/gralloc.h>
-#include <ui/GraphicBufferAllocator.h>
-#include <ui/GraphicBufferMapper.h>
-#include <ui/PixelFormat.h>
-#include <ui/Rect.h>
-
-#include "bufferinfo/NvGralloc.h"
 #include "tegra/VicSession.h"
 #include "utils/log.h"
 
@@ -40,15 +32,6 @@ namespace android {
 namespace hwc {
 
 namespace {
-
-/* Read often by the processor, and shown by the controller.
- *
- * The first of those is the only way to ask this allocator for rows rather
- * than blocks -- it has no flag for the arrangement itself, only the rule
- * that a buffer the processor reads often is laid out in rows. See the note
- * on the class for why rows are what the merge wants. */
-constexpr uint64_t kUsage = GRALLOC_USAGE_HW_COMPOSER |
-                            GRALLOC_USAGE_SW_READ_OFTEN;
 
 /* The colour a vendor-born slot is painted before its first use, as the
  * thirty-two bit word the buffer is made of, opaque. Which of the two end
@@ -114,95 +97,45 @@ std::unique_ptr<ScratchPool> ScratchPool::Create(uint32_t width,
   if (width == 0 || height == 0 || count == 0)
     return nullptr;
 
+  if (vic == nullptr || !vic->OffersZoneBuffers()) {
+    ALOGE("no zone to cut %zu %ux%u slots from", count, width, height);
+    return nullptr;
+  }
+
   auto pool = std::unique_ptr<ScratchPool>(new ScratchPool());
   pool->width_ = width;
   pool->height_ = height;
   pool->slots_.resize(count);
 
-  /* 1 asks the vendor library's own allocator for the slots, 2 asks the
-   * composer's own carveout zone -- both through the engine session's
-   * resource manager, so either way the buffer is the library's own client
-   * from birth. The whole pool or nothing: a refusal partway through is a
-   * pool half-born of a source that turned out not to have the room, so the
-   * whole pool is let go and asked of gralloc instead -- one origin per
-   * pool, one answer in the dump. */
-  const int zone = property_get_int32("persist.vendor.hwc.zone", 0);
-  const bool custom =
-      vic != nullptr && ((zone == 1 && vic->OffersVendorBuffers()) ||
-                         (zone == 2 && vic->OffersZoneBuffers()));
-  if (custom) {
-    bool whole = true;
-    for (size_t i = 0; i < count; i++) {
-      auto buffer = zone == 2 ? vic->AllocateZoneTarget(width, height)
-                              : vic->AllocateTarget(width, height);
-      if (!buffer) {
-        ALOGE("zone %d gave %zu of %zu %ux%u; taking the pool to gralloc",
-              zone, i, count, width, height);
-        whole = false;
-        break;
-      }
-
-      /* Painted before its first use: a slot the engine never wrote shows
-       * its stripes on the panel, a slot written wrong shows them skewed
-       * or scattered. */
-      PaintSlot(buffer.get(), i);
-
-      pool->slots_[i].view.vendor = buffer.get();
-      pool->slots_[i].vendor = std::move(buffer);
-    }
-    if (whole) {
-      pool->vendor_ = true;
-      pool->zone_ = zone;
-      pool->stride_ = pool->slots_[0].vendor->pitch / 4;
-      ALOGI("%zu %s buffers, %ux%u, pitch %u", count,
-            zone == 2 ? "zone-born" : "vendor-born", width, height,
-            pool->slots_[0].vendor->pitch);
-      return pool;
-    }
-    for (auto &slot : pool->slots_) {
-      slot.vendor.reset();
-      slot.view = {};
-    }
-  } else if (zone != 0) {
-    ALOGI("zone %d is not offered here; the pool is gralloc's", zone);
-  }
-
-  auto &allocator = GraphicBufferAllocator::get();
-
+  /* The whole pool or nothing. A pool half-cut from the zone would have to
+   * find its remaining slots somewhere else, and somewhere else is exactly
+   * what this composer no longer has: the caller reads the refusal as "no
+   * engine on this display" and composes with windows alone. */
   for (size_t i = 0; i < count; i++) {
-    uint32_t stride = 0;
-    const status_t err = allocator.allocate(width, height,
-                                            PIXEL_FORMAT_RGBA_8888, 1, kUsage,
-                                            &pool->slots_[i].handle, &stride,
-                                            0, "hwc-scratch");
-    if (err != NO_ERROR || pool->slots_[i].handle == nullptr) {
-      ALOGE("cannot allocate scratch %zu of %zu at %ux%u: %d", i + 1, count,
-            width, height, err);
+    auto buffer = vic->AllocateZoneTarget(width, height);
+    if (!buffer) {
+      ALOGE("the zone gave %zu of %zu %ux%u slots", i, count, width, height);
       return nullptr;
     }
-    pool->slots_[i].view.handle = pool->slots_[i].handle;
 
-    /* All of them come out the same shape or the pool is not a pool. */
-    if (i == 0)
-      pool->stride_ = stride;
-    else if (stride != pool->stride_) {
-      ALOGE("scratch %zu has stride %u against %u", i, stride, pool->stride_);
-      return nullptr;
-    }
+    /* Painted before its first use: a slot the engine never wrote shows
+     * its stripes on the panel, a slot written wrong shows them skewed
+     * or scattered. */
+    PaintSlot(buffer.get(), i);
+
+    pool->slots_[i].view.vendor = buffer.get();
+    pool->slots_[i].vendor = std::move(buffer);
   }
 
-  ALOGI("%zu scratch buffers, %ux%u, stride %u", count, width, height,
-        pool->stride_);
+  pool->stride_ = pool->slots_[0].vendor->pitch / 4;
+  ALOGI("%zu zone slots, %ux%u, pitch %u", count, width, height,
+        pool->slots_[0].vendor->pitch);
   return pool;
 }
 
 ScratchPool::~ScratchPool() {
-  auto &allocator = GraphicBufferAllocator::get();
-  for (auto &slot : slots_)
-    if (slot.handle != nullptr)
-      allocator.free(slot.handle);
-  /* A vendor-born slot frees itself: the mapping and the library's handle
-   * go with the buffer. */
+  /* Every slot frees itself: the mapping, the library's handle and the
+   * zone's memory all go with the buffer. */
 }
 
 const ScratchPool::Slot *ScratchPool::Next(drm_hwcomposer::SharedFd *ready) {
@@ -264,31 +197,16 @@ std::string ScratchPool::DumpSlots() const {
   for (size_t i = 0; i < slots_.size(); ++i) {
     const SlotStorage &slot = slots_[i];
 
-    /* The descriptor as whoever allocated the buffer filled it: a
-     * vendor-born slot carries the words the library's own builder wrote,
-     * a gralloc-born one is asked of the allocator -- and both are read at
-     * the same indices, so the two dumps can be set side by side. Beside
-     * the descriptor, the slot's dma-buf number and the memory handle it
-     * was born with: the kernel's pin log is matched against these, and a
-     * slot whose number never appears there while merges run was never
-     * handed to the engine. */
-    auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
-    const uint32_t *words = nullptr;
-    int slot_fd = -1;
-    void *born_handle = nullptr;
-    if (slot.vendor != nullptr) {
-      words = slot.vendor->surface.data();
-      slot_fd = slot.vendor->mem_fd();
-      born_handle = slot.vendor->mem_handle;
-    } else if (slot.handle != nullptr) {
-      const void *raw = nullptr;
-      size_t count = 0;
-      if (gralloc != nullptr) {
-        slot_fd = gralloc->GetMemFd(slot.handle);
-        if (gralloc->GetRawSurfaces(slot.handle, &raw, &count) && count == 1)
-          words = static_cast<const uint32_t *>(raw);
-      }
-    }
+    /* The descriptor as the library's own builder filled it -- the words a
+     * target is judged by. Beside it, the slot's dma-buf number and the
+     * memory handle the import gave back: the kernel's pin log is matched
+     * against these, and a slot whose number never appears there while
+     * merges run was never handed to the engine. */
+    const uint32_t *words =
+        slot.vendor != nullptr ? slot.vendor->surface.data() : nullptr;
+    const int slot_fd = slot.vendor != nullptr ? slot.vendor->mem_fd() : -1;
+    void *born_handle =
+        slot.vendor != nullptr ? slot.vendor->mem_handle : nullptr;
 
     if (words != nullptr) {
       snprintf(line, sizeof(line),
@@ -315,27 +233,11 @@ std::string ScratchPool::DumpSlots() const {
     }
 
     /* The pixels, through the processor's own view of the buffer: the
-     * vendor-born slot's standing mapping, a gralloc-born slot locked for
-     * the moment of the read. */
-    const uint32_t *pixels = nullptr;
-    size_t row_words = 0;
-    buffer_handle_t locked = nullptr;
-    if (slot.vendor != nullptr) {
-      pixels = slot.vendor->pixels;
-      row_words = slot.vendor->pitch / 4;
-    } else if (slot.handle != nullptr) {
-      auto &mapper = GraphicBufferMapper::get();
-      void *base = nullptr;
-      if (mapper.lock(slot.handle, GRALLOC_USAGE_SW_READ_OFTEN,
-                      Rect(static_cast<int32_t>(width_),
-                           static_cast<int32_t>(height_)),
-                      &base) == NO_ERROR &&
-          base != nullptr) {
-        pixels = static_cast<const uint32_t *>(base);
-        row_words = stride_;
-        locked = slot.handle;
-      }
-    }
+     * standing mapping the session made when the slot was cut. */
+    const uint32_t *pixels = slot.vendor != nullptr ? slot.vendor->pixels
+                                                    : nullptr;
+    const size_t row_words = slot.vendor != nullptr ? slot.vendor->pitch / 4
+                                                    : 0;
 
     if (pixels == nullptr || row_words < 8) {
       out += "    (unreadable)\n";
@@ -357,9 +259,6 @@ std::string ScratchPool::DumpSlots() const {
       }
       out += "\n";
     }
-
-    if (locked != nullptr)
-      GraphicBufferMapper::get().unlock(locked);
   }
   return out;
 }

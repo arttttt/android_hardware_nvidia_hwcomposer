@@ -951,7 +951,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
           const uint32_t reach =
               std::max(scratch_->width(), scratch_->height());
           rotate_pool_ = std::make_unique<hwc::TurnPool>(reach, reach,
-                                                         kMaxRotatedMembers);
+                                                         kMaxRotatedMembers,
+                                                         vic_);
         }
 
         hwc::VicSession::Layer &l = drawn[i];
@@ -963,7 +964,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         const uint32_t turned_w = swaps ? crop_h : crop_w;
         const uint32_t turned_h = swaps ? crop_w : crop_h;
 
-        buffer_handle_t inter = rotate_pool_->Take(turned_w, turned_h);
+        const hwc::VendorBuffer *inter =
+            rotate_pool_->Take(turned_w, turned_h);
         if (inter == nullptr) {
           /* The pool's refusal and the engine's look identical from the
            * dump; the log tells them apart, and says what was asked of a
@@ -976,7 +978,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         }
 
         const int64_t before_turn = NowNs();
-        SharedFd done = vic_->ComposeRotated(inter, l, VicTransformFor(bits),
+        SharedFd done = vic_->ComposeRotated(*inter, l, VicTransformFor(bits),
                                              turned_w, turned_h);
         const int64_t turn_took = NowNs() - before_turn;
         if (!done) {
@@ -990,7 +992,11 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
           merges_.rotate_ns_max = turn_took;
         turned_in_frame_ = true;
 
-        l.handle = inter;
+        /* The turned copy is one of ours, so the engine reads it by the
+         * descriptor the library built when the zone cut it -- there is no
+         * allocator handle to name it by. */
+        l.handle = nullptr;
+        l.vendor = inter;
         l.source_left = 0.F;
         l.source_top = 0.F;
         l.source_right = static_cast<float>(turned_w);
@@ -1011,14 +1017,9 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       }
 
       const int64_t before_merge = NowNs();
-      if (target->vendor != nullptr)
-        merged = vic_->Compose(*target->vendor, drawn, merge.width,
-                               merge.height,
-                               target_ready ? *target_ready : -1);
-      else
-        merged = vic_->Compose(target->handle, drawn, merge.width,
-                               merge.height,
-                               target_ready ? *target_ready : -1);
+      merged = vic_->Compose(*target->vendor, drawn, merge.width,
+                             merge.height,
+                             target_ready ? *target_ready : -1);
       if (!merged) {
         /* The engine would not take it. Nothing has been written, so the
          * honest thing is to drop the frame rather than show a window
@@ -1059,33 +1060,12 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       if (took > merges_.engine_ns_max)
         merges_.engine_ns_max = took;
 
-      int buffer_fd = -1;
-      uint32_t buffer_offset = 0;
-      uint32_t buffer_stride = 0;
-      if (target->vendor != nullptr) {
-        /* Born of the session's own allocator: there is no gralloc handle
-         * to ask, and nothing to ask of it -- the buffer is described by
-         * what this composer had the library build. */
-        buffer_fd = target->vendor->mem_fd();
-        buffer_stride = target->vendor->pitch;
-      } else {
-        auto *gralloc = NvGralloc::GetInstance();
-        NvGralloc::Surface surface{};
-        buffer_fd =
-            gralloc != nullptr ? gralloc->GetMemFd(target->handle) : -1;
-        if (buffer_fd < 0 ||
-            !gralloc->DescribeSurface(target->handle, &surface)) {
-          /* Drawn, but this frame will never reach the panel: the slot goes
-           * back into rotation as the next one to write, and nothing of this
-           * frame is remembered. */
-          scratch_->Rewind();
-          ForgetMerge();
-          ALOGE("cannot describe the buffer the engine just drew");
-          return -EINVAL;
-        }
-        buffer_offset = surface.offset;
-        buffer_stride = surface.pitch;
-      }
+      /* Cut from the zone by this composer: there is no allocator to ask,
+       * and nothing to ask it -- the buffer is described by what the
+       * library built when it was born, and it begins where it begins. */
+      const int buffer_fd = target->vendor->mem_fd();
+      const uint32_t buffer_offset = 0;
+      const uint32_t buffer_stride = target->vendor->pitch;
       if (buffer_fd < 0) {
         scratch_->Rewind();
         ForgetMerge();

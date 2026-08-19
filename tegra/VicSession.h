@@ -154,6 +154,14 @@ class VicSession {
     /* Borrowed. The engine is told to wait on it before reading, and does not
      * take ownership -- the caller closes it as it would have anyway. */
     int acquire_fence;
+
+    /* Set when the source is a buffer this composer allocated itself -- a
+     * turned copy, cut from the zone. Then `handle` is null and the words
+     * the engine reads the source by are the ones the library built when
+     * the buffer was born, rather than the allocator's.
+     *
+     * Borrowed: the pool that lent the buffer outlives the frame. */
+    const VendorBuffer *vendor = nullptr;
   };
 
   /* Draws `layers` into `target`, bottom of the list first.
@@ -180,26 +188,19 @@ class VicSession {
   /* `width` and `height` bound the region actually drawn, measured from
    * the buffer's origin; nought means the whole buffer. The caller that
    * shows only a corner of the target has no reason to pay for the rest of
-   * it being written. */
-  drm_hwcomposer::SharedFd Compose(buffer_handle_t target,
-                                   const std::vector<Layer> &layers,
-                                   uint32_t width = 0, uint32_t height = 0,
-                                   int target_ready = -1);
-
-  /* The same, into a buffer born of this session's own allocator: the
-   * descriptor the library built for it is handed over as it stands, and
-   * the bounds come from the buffer itself, there being no gralloc handle
-   * to ask. The layers are the framework's buffers either way. */
+   * it being written.
+   *
+   * The target is always a buffer of ours, cut from the zone: its
+   * descriptor is the library's own and its bounds are known without
+   * asking anyone. There is no entry point for composing into a buffer
+   * the allocator made, and that is deliberate -- a second origin is a
+   * second set of rules, and the last time this class had two, the one
+   * nobody was watching wrote the fault we spent a month chasing in the
+   * other. */
   drm_hwcomposer::SharedFd Compose(const VendorBuffer &target,
                                    const std::vector<Layer> &layers,
                                    uint32_t width = 0, uint32_t height = 0,
                                    int target_ready = -1);
-
-  /* Whether a buffer born of this session's own allocator can be offered
-   * at all. The entry points are resolved without obligation when the
-   * session opens, so a library build that lacks them simply means this
-   * answers no. */
-  bool OffersVendorBuffers() const;
 
   /* The target descriptor as it stood the last time a frame was handed to
    * the engine with a vendor-born target: the memory handle in the word
@@ -210,30 +211,25 @@ class VicSession {
    * Empty while no vendor-born target was ever composed. */
   const std::string &last_target_probe() const { return last_target_probe_; }
 
-  /* A panel-sized buffer allocated by the vendor library in this session's
-   * own context -- the heaps asked are the contiguous carveout first and
-   * the external heap as fallback, the descriptor built by the library's
-   * own pitch-layout call. Null, having said what failed, if the library
-   * would not give one.
-   *
-   * The whole buffer is CPU-mapped before it is handed over: the pool
-   * paints each slot its own colour through that mapping, so a slot the
-   * engine never wrote announces itself on the panel as a solid colour
-   * rather than as noise. */
-  std::unique_ptr<VendorBuffer> AllocateTarget(uint32_t width,
-                                               uint32_t height);
-
   /* Whether the composer's own carveout zone can be offered: the library's
    * import entry point and its descriptor builder resolved. The zone
    * itself is only knocked on when an allocation is actually asked for. */
   bool OffersZoneBuffers() const;
 
-  /* A panel-sized buffer cut from the composer's own carveout zone: the
-   * memory is allocated straight from nvmap under the zone's heap bit,
-   * exported as a dma-buf, and handed to the library's own import call --
-   * through this session's instance of the library, so the handle is born
-   * in the client the engine calls its own. The descriptor is built by
-   * the library exactly as for AllocateTarget.
+  /* A buffer cut from the composer's own carveout zone: the memory is
+   * allocated straight from nvmap under the zone's heap bit, exported as
+   * a dma-buf, and handed to the library's own import call -- through this
+   * session's instance of the library, so the handle is born in the client
+   * the engine calls its own. The descriptor is the library's own, built
+   * by its pitch-layout call.
+   *
+   * Every buffer this composer allocates for itself comes from here: the
+   * slots a merged frame lands in, and the intermediates a turned layer is
+   * copied into. Nothing of ours is asked of gralloc any more -- one
+   * origin means one set of rules to get right, and the era when turned
+   * copies came from one place and merges from another is exactly how a
+   * month went into looking for a fault in the target that lived in the
+   * sources.
    *
    * The allocation is write-combined and the paint mapping follows it:
    * the zone's previous incarnation zeroed its slots through a cacheable
@@ -259,7 +255,7 @@ class VicSession {
    * returned fence says when the turned copy may be read. `target_ready`
    * is usually not needed at all -- the channel serialises our passes, so
    * a pass submitted after the group that read this buffer runs after it. */
-  drm_hwcomposer::SharedFd ComposeRotated(buffer_handle_t target,
+  drm_hwcomposer::SharedFd ComposeRotated(const VendorBuffer &target,
                                           const Layer &layer,
                                           uint32_t transform,
                                           uint32_t width, uint32_t height,
@@ -329,21 +325,25 @@ class VicSession {
   int (*rm_open_)(void **) = nullptr;
   void (*rm_close_)(void *) = nullptr;
 
-  /* libnvrm again -- the vendor-born buffer path. The allocator, the dma-buf
-   * it hands its memory out as, the way a handle of that birth is given
-   * back, and the library's own builder of a pitch-layout descriptor. */
-  int (*alloc_attr_)(void *, void *, void **) = nullptr;
+  /* libnvrm again -- the zone path. The import that adopts a dma-buf as a
+   * memory handle of this client, the dma-buf a handle is given back as,
+   * the way such a handle is released, and the library's own builder of a
+   * pitch-layout descriptor.
+   *
+   * The import takes two arguments and no device: the library keeps one
+   * allocator device of its own, opened when it loads, and the handle it
+   * returns belongs to that client -- the same one its submission pins
+   * through. Declared with the arity the binary actually reads, not the
+   * one the headers of this tree describe: the headers belong to another
+   * generation of the library, and a third argument here would send a
+   * pointer where a descriptor is expected and take a descriptor for the
+   * address to write the answer to. */
+  int (*mem_handle_from_fd_)(int, void **) = nullptr;
   int (*mem_get_fd_)(void *) = nullptr;
   void (*mem_handle_free_)(void *) = nullptr;
   void (*surface_init_rm_pitch_)(void *, uint32_t, uint32_t, uint32_t,
                                  uint32_t, uint32_t, uint32_t, void *,
                                  uint32_t) = nullptr;
-
-  /* The zone path: the library's own import, which adopts a dma-buf as a
-   * memory handle of this client, and the zone's device, opened on the
-   * first ask rather than at boot -- a session whose pool is gralloc's
-   * never needs it. */
-  int (*mem_handle_from_fd_)(int, void **) = nullptr;
   int nvmap_fd_ = -1;
 
   /* Thirty-two bit colour as the engine spells it, and the tag gralloc's
