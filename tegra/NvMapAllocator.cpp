@@ -17,12 +17,19 @@
 #include "tegra/NvMapAllocator.h"
 
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
+#include <cutils/properties.h>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <hardware/gralloc.h>
+#include <ui/GraphicBufferAllocator.h>
+#include <ui/PixelFormat.h>
+
+#include "bufferinfo/NvGralloc.h"
 #include "tegra/ScratchBuffer.h"
 #include "tegra/nvmap.h"
 #include "utils/log.h"
@@ -61,10 +68,109 @@ constexpr uint32_t kComposerTag = 0x4343;
  * not truncated. */
 constexpr size_t kSurfaceWords = 64;
 
+/* How many of those words this device's library actually fills: the
+ * memset in the blob zeroes eighty bytes, so the twenty words past that
+ * hold the structure, and the comparison below reads exactly that far --
+ * enough to cover every field the decoder has named, and never into a
+ * neighbouring structure. */
+constexpr size_t kSurfaceWordsUsed = 20;
+
 /* The colour-format word within that descriptor, read as a run of
  * thirty-two bit words -- the same index the gralloc wrapper reads it
  * at (NvGralloc.cpp, SurfaceWord::kColorFormat). */
 constexpr size_t kSurfaceWordFormat = 2;
+
+/* The overrides the bring-up lends: a format and a gained field chosen
+ * per boot, without a rebuild, and a comparison of the descriptor just
+ * built against one the allocator's own hand built for a buffer of the
+ * same geometry. Read each time a slot is allocated -- the cost is a
+ * property lookup against a carveout allocation, which is not a frame. */
+bool CompareWanted() {
+  return property_get_bool("vendor.hwc.surfcmp", 0) != 0;
+}
+
+/* The colour format asked of the library, overridden per boot so the
+ * format can be tried without a rebuild. Absent or malformed, the
+ * default the header names. */
+uint32_t SurfaceFormatOverride(uint32_t fallback) {
+  char value[PROPERTY_VALUE_MAX];
+  if (property_get("vendor.hwc.surffmt", value, "") <= 0)
+    return fallback;
+  char *end = nullptr;
+  const unsigned long parsed = strtoul(value, &end, 16);
+  if (end == value || *end != '\0' || parsed > 0xffffffffUL)
+    return fallback;
+  return static_cast<uint32_t>(parsed);
+}
+
+/* The gained field that travels between the height and the format,
+ * overridden the same way. Absent or malformed, zero. */
+uint32_t SurfaceGainedOverride() {
+  char value[PROPERTY_VALUE_MAX];
+  if (property_get("vendor.hwc.surfgained", value, "") <= 0)
+    return 0;
+  char *end = nullptr;
+  const unsigned long parsed = strtoul(value, &end, 0);
+  if (end == value || *end != '\0' || parsed > 0xffffffffUL)
+    return 0;
+  return static_cast<uint32_t>(parsed);
+}
+
+/* The library's own surface words for a same-sized buffer, to lay
+ * against ours. The allocator describes its buffers through its own C
+ * interface; a buffer of the same geometry is asked for and released
+ * here, and never leaves this call. */
+void CompareToAllocatorsOwn(uint32_t width, uint32_t height,
+                            const uint32_t *ours) {
+  auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
+  if (gralloc == nullptr) {
+    ALOGE("surfcmp: no gralloc to ask for its own words");
+    return;
+  }
+
+  auto &allocator = android::GraphicBufferAllocator::get();
+  buffer_handle_t theirs = nullptr;
+  uint32_t stride = 0;
+  const uint64_t usage = GRALLOC_USAGE_HW_COMPOSER | GRALLOC_USAGE_SW_READ_OFTEN;
+  if (allocator.allocate(width, height, android::PIXEL_FORMAT_RGBA_8888, 1,
+                         usage, &theirs, &stride, 0, "surfcmp") !=
+          android::NO_ERROR ||
+      theirs == nullptr) {
+    ALOGE("surfcmp: cannot ask for a same-sized buffer");
+    return;
+  }
+
+  const void *raw = nullptr;
+  size_t count = 0;
+  if (!gralloc->GetRawSurfaces(theirs, &raw, &count) || raw == nullptr ||
+      count == 0) {
+    ALOGE("surfcmp: the buffer came without its surface words");
+    allocator.free(theirs);
+    return;
+  }
+
+  const auto *theirs_words = static_cast<const uint32_t *>(raw);
+  ALOGI("surfcmp: ours vs the allocator's own, %ux%u:", width, height);
+  for (size_t i = 0; i < kSurfaceWordsUsed; ++i) {
+    const uint32_t ours_word = ours[i];
+    const uint32_t theirs_word = theirs_words[i];
+    if (ours_word == theirs_word)
+      ALOGI("surfcmp: [%2zu] %08x  %08x", i, ours_word, theirs_word);
+    else
+      ALOGI("surfcmp: [%2zu] %08x  %08x   <- differs", i, ours_word,
+            theirs_word);
+  }
+
+  /* Our margin beyond the structure the library fills: it should be
+   * zero, and anything else is a library writing past what this build
+   * zeroed. */
+  for (size_t i = kSurfaceWordsUsed; i < kSurfaceWords; ++i) {
+    if (ours[i] != 0)
+      ALOGI("surfcmp: [%2zu] %08x  (ours beyond the structure)", i, ours[i]);
+  }
+
+  allocator.free(theirs);
+}
 
 template <typename Fn>
 bool ResolveOne(void *library, const char *name, Fn *slot) {
@@ -278,7 +384,9 @@ std::unique_ptr<ScratchBuffer> NvMapAllocator::Allocate(uint32_t width,
    * forty-four standing where a colour should be -- and reads the
    * memory handle out of stack that was never passed, and the engine
    * refuses every frame built on such a surface. */
-  surface_init_rm_pitch_(surface.get(), width, height, 0, kFormatA8B8G8R8,
+  const uint32_t format = SurfaceFormatOverride(kFormatA8B8G8R8);
+  const uint32_t gained = SurfaceGainedOverride();
+  surface_init_rm_pitch_(surface.get(), width, height, gained, format,
                          kColorSpaceLinearRgba, pitch, mem_handle, 0);
 
   /* The library's answer is read back, once, for the dump: what it
@@ -287,10 +395,16 @@ std::unique_ptr<ScratchBuffer> NvMapAllocator::Allocate(uint32_t width,
    * with the wrong bytes per pixel, and this is the earliest place
    * that difference is visible. */
   surface_format_ = surface[kSurfaceWordFormat];
-  if (surface_format_ != kFormatA8B8G8R8 && !format_mismatch_) {
+  if (surface_format_ != format && !format_mismatch_) {
     format_mismatch_ = true;
     ALOGE("the library wrote surface format 0x%08x, asked for 0x%08x",
-          surface_format_, kFormatA8B8G8R8);
+          surface_format_, format);
+  }
+
+  static bool compared = false;
+  if (!compared && CompareWanted()) {
+    compared = true;
+    CompareToAllocatorsOwn(width, height, surface.get());
   }
 
   return std::make_unique<ScratchBuffer>(ScratchBuffer::FromCarveout(
