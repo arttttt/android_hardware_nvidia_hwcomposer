@@ -187,6 +187,12 @@ bool VicSession::Open() {
   }
 
   config_.resize(kConfigBytes);
+
+  /* The allocator for the experiment, resolved without obligation: absent,
+   * the vendor-born path is simply not offered. */
+  ResolveOne(nvrm_library_, "NvRmMemHandleAllocAttr", &alloc_attr_);
+  ResolveOne(nvrm_library_, "NvRmMemGetFd", &mem_get_fd_);
+  ResolveOne(nvrm_library_, "NvRmSurfaceInitRmPitch", &surface_init_rm_pitch_);
   return true;
 }
 
@@ -535,6 +541,74 @@ drm_hwcomposer::SharedFd VicSession::ComposeRotated(
 
   composed_++;
   return drm_hwcomposer::MakeSharedFd(fd);
+}
+
+std::unique_ptr<ScratchBuffer> VicSession::AllocateTarget(uint32_t width,
+                                                          uint32_t height) {
+  if (rm_device_ == nullptr || alloc_attr_ == nullptr ||
+      mem_get_fd_ == nullptr || surface_init_rm_pitch_ == nullptr ||
+      width == 0 || height == 0) {
+    ALOGE("vendor target: not available in this session");
+    return nullptr;
+  }
+
+  /* Rows in the same grain the composer's own allocator uses. */
+  const uint32_t grain = 256;
+  const uint32_t pitch = ((width * 4 + grain - 1) / grain) * grain;
+  const uint32_t bytes = pitch * height;
+
+  /* The contiguous carveout first, the external heap as fallback; on the
+   * current kernel the carveout converts to IOVMM, so the memory lands
+   * page-backed. The shape of the attr structure is the vendor's own --
+   * fields are read at their offsets by the allocator -- and only the
+   * ones the experiment needs are set. */
+  const uint32_t heaps[] = {3, 1}; /* NvRmHeap_ExternalCarveOut, External */
+
+  struct VendorAttr {
+    const uint32_t *Heaps;
+    uint32_t NumHeaps;
+    uint32_t Alignment;
+    uint32_t Coherency;
+    uint32_t Size;
+    uint16_t Tags;
+    uint8_t ReclaimCache;
+    uint8_t pad;
+    uint32_t Kind;
+    uint32_t CompTags;
+    uint8_t b0;
+    uint8_t b1;
+    uint8_t b2;
+    uint8_t b3;
+    uint32_t c0;
+    uint32_t d0;
+  } attr = {};
+  attr.Heaps = heaps;
+  attr.NumHeaps = 2;
+  attr.Alignment = 4096;
+  attr.Coherency = 2; /* NvOsMemAttribute_WriteCombined */
+  attr.Size = bytes;
+
+  void *mem_handle = nullptr;
+  if (alloc_attr_(rm_device_, &attr, &mem_handle) != 0 ||
+      mem_handle == nullptr) {
+    ALOGE("vendor target: the library would not give %ux%u", width, height);
+    return nullptr;
+  }
+
+  const int buffer_fd = mem_get_fd_(mem_handle);
+  if (buffer_fd < 0) {
+    ALOGE("vendor target: no dma-buf from the library's handle");
+    return nullptr;
+  }
+
+  auto surface = std::make_unique<uint32_t[]>(kSurfaceWords);
+  surface_init_rm_pitch_(surface.get(), width, height, 0, kFormatA8B8G8R8,
+                         kColorSpaceLinearRgba, pitch, mem_handle, 0);
+  surface[kSurfaceWordSize] = bytes;
+
+  return std::make_unique<ScratchBuffer>(ScratchBuffer::FromCarveout(
+      drm_hwcomposer::MakeSharedFd(buffer_fd), mem_handle,
+      std::move(surface), width, height, pitch, 0));
 }
 
 }  // namespace hwc

@@ -63,15 +63,6 @@ class NvMapAllocator {
    * the dump. */
   std::unique_ptr<ScratchBuffer> Allocate(uint32_t width, uint32_t height);
 
-  /* A buffer of the same geometry, born through the vendor library's own
-   * allocator (NvRmMemHandleAllocAttr) rather than through nvmap -- the
-   * architectural experiment that answers whether the merge's corruption
-   * is the adoption of foreign memory by the engine. The library owns
-   * the handle from birth, so no adoption is asked of it. Null on any
-   * failure, having said what failed. */
-  std::unique_ptr<ScratchBuffer> AllocateVendor(uint32_t width,
-                                                uint32_t height);
-
   /* How many times the zone has refused -- the dump's heartbeat for
    * whether the fallback ever actually runs. */
   uint64_t refusals() const { return refusals_; }
@@ -141,9 +132,6 @@ class NvMapAllocator {
                                  uint32_t, uint32_t, uint32_t, void *,
                                  uint32_t) = nullptr;
   uint32_t (*mem_pin_)(void *) = nullptr;
-  int (*rm_open_)(void **) = nullptr;
-  int (*alloc_attr_)(void *, void *, void **) = nullptr;
-  int (*mem_get_fd_)(void *) = nullptr;
 
   uint64_t refusals_ = 0;
   uint32_t surface_format_ = 0;

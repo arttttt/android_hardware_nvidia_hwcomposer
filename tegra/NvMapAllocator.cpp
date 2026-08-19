@@ -340,13 +340,6 @@ NvMapAllocator::NvMapAllocator() {
    * the address line of the dump stays zero and says so. */
   ResolveOne(nvrm_library_, "NvRmMemPin", &mem_pin_);
 
-  /* The vendor allocator, for the experiment that hands the library a
-   * buffer it owns from birth. Optional: absent, the vendor path is
-   * simply not offered. */
-  ResolveOne(nvrm_library_, "NvRmOpenNew", &rm_open_);
-  ResolveOne(nvrm_library_, "NvRmMemHandleAllocAttr", &alloc_attr_);
-  ResolveOne(nvrm_library_, "NvRmMemGetFd", &mem_get_fd_);
-
   usable_ = true;
   ALOGI("composer carveout zone opened");
 }
@@ -509,86 +502,6 @@ std::unique_ptr<ScratchBuffer> NvMapAllocator::Allocate(uint32_t width,
   return std::make_unique<ScratchBuffer>(ScratchBuffer::FromCarveout(
       drm_hwcomposer::MakeSharedFd(buffer_fd), mem_handle,
       std::move(surface), width, height, pitch, mem_address_));
-}
-
-std::unique_ptr<ScratchBuffer> NvMapAllocator::AllocateVendor(uint32_t width,
-                                                              uint32_t height) {
-  if (!usable_ || rm_open_ == nullptr || alloc_attr_ == nullptr ||
-      mem_get_fd_ == nullptr || width == 0 || height == 0) {
-    ALOGE("vendor allocation unavailable");
-    return nullptr;
-  }
-
-  const uint32_t pitch = RoundUp(width * 4);
-  const uint32_t bytes = pitch * height;
-
-  /* An RM context of our own -- the vendor allocator is reached through
-   * one, and it is separate from the engine's session by design, so the
-   * buffer the library hands back is genuinely the library's. */
-  void *device = nullptr;
-  if (rm_open_(&device) != 0 || device == nullptr) {
-    ALOGE("vendor: cannot open an RM context");
-    return nullptr;
-  }
-
-  /* The heaps the buffer may live in, in order: the contiguous carveout
-   * first, the external heap as the fallback the kernel converts to. On
-   * the current kernel the carveout is converted to IOVMM, so the memory
-   * is page-backed rather than contiguous -- acceptable for the
-   * experiment, whose question is adoption, not contiguity. */
-  constexpr int kHeapCarveOut = 3;
-  constexpr int kHeapExternal = 1;
-  const NvU32 heaps[] = {kHeapCarveOut, kHeapExternal};
-
-  struct VendorAttr {
-    const uint32_t *Heaps;
-    uint32_t NumHeaps;
-    uint32_t Alignment;
-    uint32_t Coherency;
-    uint32_t Size;
-    uint16_t Tags;
-    uint8_t ReclaimCache;
-    uint8_t pad;
-    uint32_t Kind;
-    uint32_t CompTags;
-    uint8_t b0;
-    uint8_t b1;
-    uint8_t b2;
-    uint8_t b3;
-    uint32_t c0;
-    uint32_t d0;
-  } attr = {};
-  attr.Heaps = heaps;
-  attr.NumHeaps = 2;
-  attr.Alignment = 4096;
-  attr.Coherency = 2; /* NvOsMemAttribute_WriteCombined */
-  attr.Size = bytes;
-  attr.Tags = 0;
-  attr.ReclaimCache = 0;
-
-  void *mem_handle = nullptr;
-  if (alloc_attr_(device, &attr, &mem_handle) != 0 || mem_handle == nullptr) {
-    ALOGE("vendor: the library would not give %ux%u", width, height);
-    return nullptr;
-  }
-
-  const int buffer_fd = mem_get_fd_(mem_handle);
-  if (buffer_fd < 0) {
-    ALOGE("vendor: no dma-buf from the library's handle");
-    mem_handle_free_(mem_handle);
-    return nullptr;
-  }
-
-  auto surface = std::make_unique<uint32_t[]>(kSurfaceWords);
-  const uint32_t format = SurfaceFormatOverride(kFormatA8B8G8R8);
-  const uint32_t engine_format = SurfaceGainedOverride();
-  surface_init_rm_pitch_(surface.get(), width, height, engine_format, format,
-                         kColorSpaceLinearRgba, pitch, mem_handle, 0);
-  surface[kSurfaceWordSize] = bytes;
-
-  return std::make_unique<ScratchBuffer>(ScratchBuffer::FromCarveout(
-      drm_hwcomposer::MakeSharedFd(buffer_fd), mem_handle,
-      std::move(surface), width, height, pitch, 0));
 }
 
 }  // namespace hwc

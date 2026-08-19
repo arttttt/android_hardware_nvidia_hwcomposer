@@ -30,6 +30,8 @@
 namespace android {
 namespace hwc {
 
+class VicSession;
+
 /* Somewhere for a merged frame to land.
  *
  * What the engine writes has to live somewhere that is neither a layer's
@@ -63,7 +65,8 @@ class ScratchPool {
    * so a pool is one origin or the other, never a mix -- one answer in the
    * dump instead of a dozen. */
   static std::unique_ptr<ScratchPool> Create(uint32_t width, uint32_t height,
-                                             size_t count);
+                                             size_t count,
+                                             VicSession *vic = nullptr);
 
   ~ScratchPool();
 

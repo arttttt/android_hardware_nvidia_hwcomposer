@@ -27,6 +27,7 @@
 #include <unistd.h>
 
 #include "tegra/NvMapAllocator.h"
+#include "tegra/VicSession.h"
 #include "utils/log.h"
 
 #undef  LOG_TAG
@@ -50,7 +51,8 @@ constexpr uint64_t kUsage = GRALLOC_USAGE_HW_COMPOSER |
 
 std::unique_ptr<ScratchPool> ScratchPool::Create(uint32_t width,
                                                  uint32_t height,
-                                                 size_t count) {
+                                                 size_t count,
+                                                 VicSession *vic) {
   if (width == 0 || height == 0 || count == 0)
     return nullptr;
 
@@ -71,14 +73,13 @@ std::unique_ptr<ScratchPool> ScratchPool::Create(uint32_t width,
    * own allocator -- the experiment that hands the library a buffer it
    * owns from birth, to ask whether the corruption is the adoption of
    * foreign memory by the engine. */
-  const char *src = property_get("persist.vendor.hwc.zone", nullptr);
-  const int source = src != nullptr ? atoi(src) : 1;
+  const int source = property_get_int32("persist.vendor.hwc.zone", 1);
   auto *zone = NvMapAllocator::GetInstance();
-  if (source == 2 && zone != nullptr) {
+  if (source == 2 && vic != nullptr) {
     ALOGI("zone source: the vendor library's own allocator");
     bool whole = true;
     for (size_t i = 0; i < count; i++) {
-      auto buffer = zone->AllocateVendor(width, height);
+      auto buffer = vic->AllocateTarget(width, height);
       if (!buffer) {
         ALOGE("the vendor allocator gave %zu of %zu %ux%u; taking the pool "
               "to gralloc", i, count, width, height);

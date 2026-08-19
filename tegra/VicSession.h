@@ -160,6 +160,16 @@ class VicSession {
   uint64_t composed() const { return composed_; }
   uint64_t refused() const { return refused_; }
 
+  /* A merge buffer born through this session's own resource manager, not
+   * through the composer's nvmap. The experiment that asks whether the
+   * corruption is the engine's adoption of foreign memory: a handle the
+   * library allocates in the context it calls its own is adopted by
+   * definition. The heaps asked of it -- contiguous carveout first, the
+   * external heap as fallback -- land page-backed on the current kernel;
+   * that is fine, the question is adoption, not contiguity. */
+  std::unique_ptr<ScratchBuffer> AllocateTarget(uint32_t width,
+                                                uint32_t height);
+
  private:
   VicSession() = default;
 
@@ -201,6 +211,21 @@ class VicSession {
    * reused: it was built against the older name, which is gone. */
   int (*rm_open_)(void **) = nullptr;
   void (*rm_close_)(void *) = nullptr;
+
+  /* The vendor allocator and descriptor builder, for AllocateTarget. */
+  int (*alloc_attr_)(void *, void *, void **) = nullptr;
+  int (*mem_get_fd_)(void *) = nullptr;
+  void (*surface_init_rm_pitch_)(void *, uint32_t, uint32_t, uint32_t,
+                                 uint32_t, uint32_t, uint32_t, void *,
+                                 uint32_t) = nullptr;
+
+  /* Thirty-two bit colour as the engine spells it, and the size word's
+   * place -- the same constants the composer's own allocator uses, so a
+   * buffer born here and one born there describe themselves alike. */
+  static constexpr uint32_t kFormatA8B8G8R8 = 0x00532120;
+  static constexpr uint32_t kColorSpaceLinearRgba = 1;
+  static constexpr size_t kSurfaceWordSize = 14;
+  static constexpr size_t kSurfaceWords = 64;
 
   /* libnvrm_graphics -- turning the engine's own fences into descriptors the
    * rest of the system understands, and back. */
