@@ -154,11 +154,29 @@ void CompareToAllocatorsOwn(uint32_t width, uint32_t height,
   for (size_t i = 0; i < kSurfaceWordsUsed; ++i) {
     const uint32_t ours_word = ours[i];
     const uint32_t theirs_word = theirs_words[i];
-    if (ours_word == theirs_word)
+    if (ours_word == theirs_word) {
       ALOGI("surfcmp: [%2zu] %08x  %08x", i, ours_word, theirs_word);
-    else
-      ALOGI("surfcmp: [%2zu] %08x  %08x   <- differs", i, ours_word,
-            theirs_word);
+      continue;
+    }
+    /* Words six and seven are pointers into each buffer's own allocation --
+     * the memory handle and the offset within it. Different buffers, so
+     * different values; a difference there is the rule, not the signal. */
+    if (i == 6 || i == 7) {
+      ALOGI("surfcmp: [%2zu] %08x  %08x   (expected: each buffer's own)",
+            i, ours_word, theirs_word);
+      continue;
+    }
+    /* The layout word: ours is forced to pitch by the library; the
+     * allocator's own buffer may be blocklinear. A difference there is a
+     * class of its own, not a defect in ours -- unless we mean to write
+     * blocklinear too, which this build has never claimed to. */
+    if (i == 4) {
+      ALOGI("surfcmp: [%2zu] %08x  %08x   <- layout (ours pitch vs theirs)",
+            i, ours_word, theirs_word);
+      continue;
+    }
+    ALOGI("surfcmp: [%2zu] %08x  %08x   <- differs", i, ours_word,
+          theirs_word);
   }
 
   /* Our margin beyond the structure the library fills: it should be
