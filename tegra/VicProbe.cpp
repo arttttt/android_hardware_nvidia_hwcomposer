@@ -149,13 +149,17 @@ void Run() {
   }
 
   auto pool = ScratchPool::Create(first.width, first.height, 1);
-  if (!pool)
+  if (!pool) {
+    ALOGE("the probe has no pool to merge into");
     return;
+  }
 
   /* Never shown, so nothing is waiting on it and the fence is empty. */
   ScratchBuffer *target = pool->Next(nullptr);
-  if (target == nullptr)
+  if (target == nullptr) {
+    ALOGE("the probe was given no slot");
     return;
+  }
 
   /* The lower one fills the buffer; the upper one lands in the middle at half
    * the size, blended. Both together are the question: is anything where it
@@ -243,6 +247,8 @@ void VicProbe::Offer(buffer_handle_t handle) {
     return;
 
   handles.push_back(handle);
+  ALOGI("the probe took a %ux%u layer, %zu of the two it needs",
+        surface.width, surface.height, handles.size());
   if (handles.size() < 2)
     return;
 
