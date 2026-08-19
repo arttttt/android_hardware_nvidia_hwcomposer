@@ -16,6 +16,7 @@
 
 #include "tegra/ScratchPool.h"
 
+#include <cutils/properties.h>
 #include <hardware/gralloc.h>
 #include <ui/GraphicBufferAllocator.h>
 #include <ui/PixelFormat.h>
@@ -56,31 +57,42 @@ std::unique_ptr<ScratchPool> ScratchPool::Create(uint32_t width,
   /* The zone first, the whole pool or nothing: a refusal partway
    * through is a pool half-carved from a zone that turned out not to
    * have the room, so the whole pool is let go and asked of gralloc
-   * instead -- one origin per pool, one answer in the dump. */
-  auto *zone = NvMapAllocator::GetInstance();
-  if (zone != nullptr) {
-    bool whole = true;
-    for (size_t i = 0; i < count; i++) {
-      auto buffer = zone->Allocate(width, height);
-      if (!buffer) {
-        ALOGE("the zone gave %zu of %zu %ux%u; taking the pool to gralloc",
-              i, count, width, height);
-        whole = false;
-        break;
+   * instead -- one origin per pool, one answer in the dump.
+   *
+   * A switch the boot can set ahead of the allocation: with the zone
+   * set to zero, the pool goes straight to gralloc. It is the one
+   * bisect that separates the merge's source of buffers from every
+   * other change in one binary, and it has to survive the reboot,
+   * because the first allocation happens on boot, before any ordinary
+   * property could be set -- hence persist. */
+  if (property_get_bool("persist.vendor.hwc.zone", 1) == 0) {
+    ALOGI("zone forced off; the pool will be gralloc");
+  } else {
+    auto *zone = NvMapAllocator::GetInstance();
+    if (zone != nullptr) {
+      bool whole = true;
+      for (size_t i = 0; i < count; i++) {
+        auto buffer = zone->Allocate(width, height);
+        if (!buffer) {
+          ALOGE("the zone gave %zu of %zu %ux%u; taking the pool to gralloc",
+                i, count, width, height);
+          whole = false;
+          break;
+        }
+        pool->slots_[i].buffer = std::move(*buffer);
       }
-      pool->slots_[i].buffer = std::move(*buffer);
-    }
-    if (whole) {
-      pool->origin_ = ScratchBuffer::Origin::kCarveout;
-      pool->stride_ = pool->slots_[0].buffer.pitch() / 4;
-      ALOGI("%zu carveout buffers, %ux%u, pitch %u", count, width, height,
-            pool->slots_[0].buffer.pitch());
-      return pool;
-    }
+      if (whole) {
+        pool->origin_ = ScratchBuffer::Origin::kCarveout;
+        pool->stride_ = pool->slots_[0].buffer.pitch() / 4;
+        ALOGI("%zu carveout buffers, %ux%u, pitch %u", count, width, height,
+              pool->slots_[0].buffer.pitch());
+        return pool;
+      }
 
-    /* The refused half must be given back before the pool is rebuilt. */
-    for (auto &slot : pool->slots_)
-      slot.buffer = ScratchBuffer();
+      /* The refused half must be given back before the pool is rebuilt. */
+      for (auto &slot : pool->slots_)
+        slot.buffer = ScratchBuffer();
+    }
   }
 
   auto &allocator = GraphicBufferAllocator::get();
