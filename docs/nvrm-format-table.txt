@@ -255,3 +255,64 @@
 250 0x11038 000000db  0 Generic_16Bx2
 251 0x11048 000000fe  0 Invalid
 # end 0x11058 (252 records); 0x11058+ adjacent enums: scanmode/layout/kind {Pitch,Tiled,Blocklinear; C32_2CRA=0,Generic_16Bx2=0xdb,Invalid=0xfe}
+
+================================================================================
+ENCODING OF THE FORMAT CODE  (decompiled from the device's libnvrm)
+================================================================================
+The code is a u32; read it as little-endian bytes b0..b3.
+Example 0x00532120: b0=0x20, b1=0x21, b2=0x53, b3=0x00.
+
+b0  bits per pixel for packed formats, bits of the main plane for planar ones.
+    Proven: NvRmSurfaceComputePitch computes pitch = ((b0 * width + 7) >> 3),
+    so b0 is the multiplier the library itself uses. 0x20=32bpp, 0x10=16,
+    0x08=8, 0x40=64; Y8 gives 8, a ten-bit Bayer with six padding bits 16.
+b1  packing class (correlated across the table; the library does not branch on
+    it in the functions read): 0x21 for the 32-bit packings, 0x14/0x15/0x16/
+    0x18 for the 16-bit ones, 0x08/0x09 for the YUY2 family, and the planar
+    and Bayer classes carry their own.
+b2  family and channel swizzle, and the library does read it: the setup path
+    gates the 32-bit family on b2 == 0x20 before it hands out the compressed
+    kind. 0xd1 is A8B8G8R8, which in memory runs R,G,B,A -- Android's
+    RGBA_8888; 0x53 is R8G8B8A8, which in memory runs A,B,G,R.
+b3  generation or variant qualifier; 0x00 for the base entries.
+There is no separate "has alpha" bit: the X- and A- forms differ in b2.
+A format's identity is the PAIR (code, tag), never the code alone.
+
+================================================================================
+THE SURFACE DESCRIPTOR  (twenty words, eighty bytes)
+================================================================================
+ [0] width          [1] height        [2] format        [3] colourspace
+ [4] layout         [5] pitch         [6] memory handle [7] offset
+ [8] kind           [9] log2 block height              [10] interlace
+[11] second field offset            [14] size          [15] mipmap
+[16][17] the compressed formats' CPU-side views
+layout: 0 invalid, 1 pitch, 2 tiled, 3 block-linear.
+NvRmSurfaceInitRmPitch takes nine arguments, forces layout to pitch, and
+IGNORES its fourth argument -- proven: it never reaches the body. It does not
+fill the size word either; the allocator's own path fills it by calling
+NvRmSurfaceComputeSize, which is why a hand-built descriptor comes out short.
+
+================================================================================
+PITCH, SIZE, ALIGNMENT
+================================================================================
+pitch:  pitch layout       align256((b0*width + 7) >> 3)
+        tiled              row aligned to 64, promoted to a power of two
+        block-linear       align64((b0*width + 7) >> 3)
+size:   height rounded first -- pitch to 4, tiled to 16, block-linear to
+        (8 << log2_blockheight); interlaced surfaces take half the height --
+        then size = pitch * height, plus the second field and the compression
+        members, and the whole rounded up to 128 KiB.
+buffer alignment: pitch 1 KiB, tiled 256 B, block-linear 8 KiB for a canonical
+        kind and 128 KiB otherwise.
+
+================================================================================
+KIND CODES  (corrects the tail of the table above, where the blob's own names
+sit one row off)
+================================================================================
+0x00 invalid, 0xdb C32_2CRA, 0xfe Generic_16Bx2.
+The chip's default layout is block-linear with kind 0xfe; the setup path
+upgrades it to 0xdb for a 32-bit format whose colour tag is one of the usual
+six, and lowers log2_blockheight until the block covers the height. Kinds
+canonicalise as {0xdb,0xfe} -> 0xfe, 0 -> 0, anything else -> 0xff, and a
+non-canonical kind is what forces the 128 KiB alignment. The compressed kind
+also brings the CPU-view offsets in words 16 and 17.
