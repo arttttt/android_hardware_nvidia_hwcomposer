@@ -305,6 +305,15 @@ std::string ScratchPool::DumpSlots() const {
     }
     out += line;
 
+    /* The import's self-check, where there was an import: the dma-buf the
+     * library handed back for the handle it had just adopted. A valid
+     * number that differs from the slot's own fd is the boundary proven. */
+    if (slot.vendor != nullptr && slot.vendor->import_roundtrip_fd != -2) {
+      snprintf(line, sizeof(line), "    import round trip: fd %d\n",
+               slot.vendor->import_roundtrip_fd);
+      out += line;
+    }
+
     /* The pixels, through the processor's own view of the buffer: the
      * vendor-born slot's standing mapping, a gralloc-born slot locked for
      * the moment of the read. */

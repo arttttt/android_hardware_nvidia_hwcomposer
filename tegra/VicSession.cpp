@@ -692,8 +692,8 @@ std::unique_ptr<VendorBuffer> VicSession::AllocateTarget(uint32_t width,
 }
 
 bool VicSession::OffersZoneBuffers() const {
-  return mem_handle_from_fd_ != nullptr && mem_handle_free_ != nullptr &&
-         surface_init_rm_pitch_ != nullptr;
+  return mem_handle_from_fd_ != nullptr && mem_get_fd_ != nullptr &&
+         mem_handle_free_ != nullptr && surface_init_rm_pitch_ != nullptr;
 }
 
 std::unique_ptr<VendorBuffer> VicSession::AllocateZoneTarget(
@@ -786,6 +786,22 @@ std::unique_ptr<VendorBuffer> VicSession::AllocateZoneTarget(
     return nullptr;
   }
 
+  /* The import's boundary crossed both ways, once, for the dump: the
+   * library is asked for a dma-buf of the handle it just returned, and a
+   * valid answer that differs from the fd we exported proves the call's
+   * arguments landed where the library expects them -- the one thing the
+   * blob's reading could not promise. The round trip's own fd is closed
+   * again: the buffer is held by ours, and the number is what the dump
+   * wants, not the descriptor. A failed round trip is said aloud but not
+   * fatal -- the handle may still be sound, and the dump will carry the
+   * -1 that says the check itself refused. */
+  int roundtrip_fd = mem_get_fd_(mem_handle);
+  if (roundtrip_fd >= 0)
+    close(roundtrip_fd);
+  else
+    ALOGE("zone buffer: the import would not round-trip: %d",
+          roundtrip_fd);
+
   auto buffer = std::unique_ptr<VendorBuffer>(new VendorBuffer());
   buffer->fd = drm_hwcomposer::MakeSharedFd(buffer_fd);
   buffer->mem_handle = mem_handle;
@@ -796,6 +812,7 @@ std::unique_ptr<VendorBuffer> VicSession::AllocateZoneTarget(
   buffer->size = size;
   buffer->pixels = static_cast<uint32_t *>(pixels);
   buffer->mapped = size;
+  buffer->import_roundtrip_fd = roundtrip_fd;
 
   /* The library's own builder, exactly as for the library-born path. */
   buffer->surface.assign(kSurfaceWords, 0);

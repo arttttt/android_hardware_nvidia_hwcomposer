@@ -59,6 +59,14 @@ struct VendorBuffer {
   /* Borrowed by the window for the duration of a frame; owned here. */
   int mem_fd() const { return fd ? *fd : -1; }
 
+  /* The dma-buf the library handed back for the imported handle, asked
+   * right after the import as the boundary's self-check: a successful
+   * round trip whose number differs from the dma-buf we exported proves
+   * the import's arguments landed where the library expects them. -2 on
+   * paths that import nothing, -1 where the round trip failed. The fd
+   * itself is closed at once -- the buffer is held by our own. */
+  int import_roundtrip_fd = -2;
+
   drm_hwcomposer::SharedFd fd;
 
   /* The library's own handle, given back through `release`. */
