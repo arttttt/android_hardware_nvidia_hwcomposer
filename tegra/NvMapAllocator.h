@@ -36,6 +36,14 @@ class ScratchBuffer;
  * that structure has already been caught outgrowing its last published
  * header, so the library is the only one that knows its shape.
  *
+ * The address a zone buffer carries is a physical one, made legible by
+ * the linear mapping the kernel hangs over the whole zone in the
+ * address spaces of the host1x domain -- the engine's and the
+ * display's. Outside that domain the number is not an address at all,
+ * so these dma-bufs are for this composer's own consumers only and are
+ * never exported further; the pools that hand them out live and die
+ * inside it.
+ *
  * Resolved once, lazily, like the gralloc wrapper beside it, and with
  * the same permanence: if the zone or any of the three library calls it
  * needs cannot be had at first ask, every later ask fails the same way
