@@ -1459,6 +1459,10 @@ std::string TegraAtomicStateManager::DumpState() {
         ss << " (MISMATCH, expected 0x" << std::hex << zone->expected_format()
            << std::dec << ")";
       ss << "\n";
+      if (zone->mem_address() != 0)
+        ss << "  zone hMem resolves to   : 0x" << std::hex
+           << zone->mem_address() << std::dec << " (nvmap client fd "
+           << zone->nvmap_client() << ", zone 0xf0c00000-0xf4c00000)\n";
       if (!zone->compare_lines().empty())
         ss << "  zone surface vs gralloc :\n" << zone->compare_lines();
     }

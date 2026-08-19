@@ -334,6 +334,11 @@ NvMapAllocator::NvMapAllocator() {
                   &surface_init_rm_pitch_))
     return;
 
+  /* The resolver that turns a memory handle into the physical address the
+   * engine will read and write. Present in the library's exports; absent,
+   * the address line of the dump stays zero and says so. */
+  ResolveOne(nvrm_library_, "NvRmMemPin", &mem_pin_);
+
   usable_ = true;
   ALOGI("composer carveout zone opened");
 }
@@ -442,6 +447,12 @@ std::unique_ptr<ScratchBuffer> NvMapAllocator::Allocate(uint32_t width,
     refusals_++;
     return nullptr;
   }
+
+  /* The address the vendor resolver names for this handle, read once for
+   * the dump. The engine writes through this number; if it is not the
+   * slot the zone handed out, that is where the corruption lives. */
+  if (mem_pin_ != nullptr)
+    mem_address_ = mem_pin_(mem_handle);
 
   auto surface = std::make_unique<uint32_t[]>(kSurfaceWords);
   /* Nine arguments, not the seven the last published headers spell.

@@ -81,6 +81,13 @@ class NvMapAllocator {
    * of this process. Empty until the first slot has been allocated. */
   const std::string &compare_lines() const { return compare_lines_; }
 
+  /* The physical address the vendor library's own resolver gives for the
+   * first slot's memory handle, against the client it was created with.
+   * If the address the engine will write through is not the slot the
+   * zone handed out, that split is the corruption. */
+  uint32_t mem_address() const { return mem_address_; }
+  int nvmap_client() const { return nvmap_fd_; }
+
   /* Frees a memory handle this allocator made. Called by the scratch
    * buffer's destructor; a no-op for a null handle, which lets buffers
    * be released whether or not the allocator ever resolved. */
@@ -124,10 +131,12 @@ class NvMapAllocator {
   void (*surface_init_rm_pitch_)(void *, uint32_t, uint32_t, uint32_t,
                                  uint32_t, uint32_t, uint32_t, void *,
                                  uint32_t) = nullptr;
+  uint32_t (*mem_pin_)(void *) = nullptr;
 
   uint64_t refusals_ = 0;
   uint32_t surface_format_ = 0;
   bool format_mismatch_ = false;
+  uint32_t mem_address_ = 0;
   std::string compare_lines_;
 };
 
