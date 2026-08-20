@@ -261,13 +261,22 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
    * that check would be unreachable -- left out. */
   const bool turned =
       pi.transform.hflip || pi.transform.vflip || pi.transform.rotate90;
-  const bool scaled = pi.source_crop.f_rect && pi.display_frame.i_rect &&
-                      (pi.source_crop.f_rect->Width() !=
-                           static_cast<float>(
-                               pi.display_frame.i_rect->Width()) ||
-                       pi.source_crop.f_rect->Height() !=
-                           static_cast<float>(
-                               pi.display_frame.i_rect->Height()));
+  /* The display frame arrives already turned, so under a quarter turn the
+   * axes are crossed: a layer that did not resize has its source width
+   * against the screen height and height against width. Comparing the
+   * same-named axes would read an honest turn as a resize. Mirrors swap
+   * no axis, so those keep the straight comparison. */
+  bool scaled = false;
+  if (pi.source_crop.f_rect && pi.display_frame.i_rect) {
+    const float src_w = pi.source_crop.f_rect->Width();
+    const float src_h = pi.source_crop.f_rect->Height();
+    const float dst_w =
+        static_cast<float>(pi.display_frame.i_rect->Width());
+    const float dst_h =
+        static_cast<float>(pi.display_frame.i_rect->Height());
+    scaled = pi.transform.rotate90 ? (src_w != dst_h || src_h != dst_w)
+                                   : (src_w != dst_w || src_h != dst_h);
+  }
   if (turned && scaled) {
     ALOGV("plane %u: a turned layer cannot also resize", index_);
     return false;
