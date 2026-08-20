@@ -206,38 +206,31 @@ std::string ScratchPool::DumpSlots() const {
 
     /* The descriptor as the library's own builder filled it -- the words a
      * target is judged by. Beside it, the slot's dma-buf number and the
-     * memory handle the import gave back: the kernel's pin log is matched
+     * handle word of the descriptor: the kernel's pin log is matched
      * against these, and a slot whose number never appears there while
-     * merges run was never handed to the engine. */
+     * merges run was never handed to the engine.
+     *
+     * The two must now agree -- the handle word is the descriptor's own
+     * number, resolved through the file table -- so the first sign of a
+     * break is a slot whose fd and handle word differ. */
     const uint32_t *words =
         slot.vendor != nullptr ? slot.vendor->surface.data() : nullptr;
     const int slot_fd = slot.vendor != nullptr ? slot.vendor->mem_fd() : -1;
-    void *born_handle =
-        slot.vendor != nullptr ? slot.vendor->mem_handle : nullptr;
 
     if (words != nullptr) {
       snprintf(line, sizeof(line),
-               "  slot %zu: fd %d born %p; desc w%u h%u fmt 0x%08x "
+               "  slot %zu: fd %d; desc w%u h%u fmt 0x%08x "
                "layout %u pitch %u kind 0x%02x bh %u size %u handle 0x%08x\n",
-               i, slot_fd, born_handle, words[kWordWidth],
+               i, slot_fd, words[kWordWidth],
                words[kWordHeight], words[kWordFormat], words[kWordLayout],
                words[kWordPitch], words[kWordKind],
                words[kWordBlockHeightLog2], words[kWordSize],
                words[kWordMemHandle]);
     } else {
-      snprintf(line, sizeof(line), "  slot %zu: fd %d born %p; "
-               "no descriptor\n", i, slot_fd, born_handle);
+      snprintf(line, sizeof(line), "  slot %zu: fd %d; "
+               "no descriptor\n", i, slot_fd);
     }
     out += line;
-
-    /* The import's self-check, where there was an import: the dma-buf the
-     * library handed back for the handle it had just adopted. A valid
-     * number that differs from the slot's own fd is the boundary proven. */
-    if (slot.vendor != nullptr && slot.vendor->import_roundtrip_fd != -2) {
-      snprintf(line, sizeof(line), "    import round trip: fd %d\n",
-               slot.vendor->import_roundtrip_fd);
-      out += line;
-    }
 
     /* The pixels, through the processor's own view of the buffer: the
      * standing mapping the session made when the slot was cut. */

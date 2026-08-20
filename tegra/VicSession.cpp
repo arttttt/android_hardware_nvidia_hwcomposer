@@ -205,13 +205,9 @@ bool VicSession::Open() {
   config_.resize(kConfigBytes);
 
   /* The zone path, resolved without obligation: a library build that lacks
-   * these entry points simply means the path is not offered, which
-   * OffersZoneBuffers() answers. The import is the one that matters --
-   * memory cut from the zone becomes the library's own handle through it,
-   * born in the client the engine calls its own. */
-  ResolveOne(nvrm_library_, "NvRmMemHandleFromFd", &mem_handle_from_fd_);
-  ResolveOne(nvrm_library_, "NvRmMemGetFd", &mem_get_fd_);
-  ResolveOne(nvrm_library_, "NvRmMemHandleFree", &mem_handle_free_);
+   * this entry point simply means the path is not offered, which
+   * OffersZoneBuffers() answers. What is left is the descriptor builder --
+   * the import that used to make the handle the library's own is gone. */
   ResolveOne(nvrm_library_, "NvRmSurfaceInitRmPitch", &surface_init_rm_pitch_);
   return true;
 }
@@ -572,13 +568,10 @@ drm_hwcomposer::SharedFd VicSession::ComposeRotated(
 VendorBuffer::~VendorBuffer() {
   if (pixels != nullptr)
     munmap(pixels, mapped);
-  if (mem_handle != nullptr && release != nullptr)
-    release(mem_handle);
 }
 
 bool VicSession::OffersZoneBuffers() const {
-  return mem_handle_from_fd_ != nullptr && mem_get_fd_ != nullptr &&
-         mem_handle_free_ != nullptr && surface_init_rm_pitch_ != nullptr;
+  return surface_init_rm_pitch_ != nullptr;
 }
 
 std::unique_ptr<VendorBuffer> VicSession::AllocateZoneTarget(
@@ -666,51 +659,26 @@ std::unique_ptr<VendorBuffer> VicSession::AllocateZoneTarget(
     return nullptr;
   }
 
-  /* Adopted by the library's own import, through this session's instance
-   * of it: the handle the descriptor names is born in the client the
-   * engine calls its own, not in a stranger's. */
-  void *mem_handle = nullptr;
-  if (mem_handle_from_fd_(buffer_fd, &mem_handle) != kNvSuccess ||
-      mem_handle == nullptr) {
-    ALOGE("zone buffer: the library would not adopt fd %d", buffer_fd);
-    munmap(pixels, size);
-    close(buffer_fd);
-    zone_refusals_++;
-    return nullptr;
-  }
-
-  /* The import's boundary crossed both ways, once, for the dump: the
-   * library is asked for a dma-buf of the handle it just returned, and a
-   * valid answer that differs from the fd we exported proves the call's
-   * arguments landed where the library expects them -- the one thing the
-   * blob's reading could not promise. The round trip's own fd is closed
-   * again: the buffer is held by ours, and the number is what the dump
-   * wants, not the descriptor. A failed round trip is said aloud but not
-   * fatal -- the handle may still be sound, and the dump will carry the
-   * -1 that says the check itself refused. */
-  int roundtrip_fd = mem_get_fd_(mem_handle);
-  if (roundtrip_fd >= 0)
-    close(roundtrip_fd);
-  else
-    ALOGE("zone buffer: the import would not round-trip: %d",
-          roundtrip_fd);
-
   auto buffer = std::unique_ptr<VendorBuffer>(new VendorBuffer());
   buffer->fd = drm_hwcomposer::MakeSharedFd(buffer_fd);
-  buffer->mem_handle = mem_handle;
-  buffer->release = mem_handle_free_;
   buffer->width = width;
   buffer->height = height;
   buffer->pitch = pitch;
   buffer->size = size;
   buffer->pixels = static_cast<uint32_t *>(pixels);
   buffer->mapped = size;
-  buffer->import_roundtrip_fd = roundtrip_fd;
 
-  /* The library's own builder, exactly as for the library-born path. */
+  /* The descriptor builder wants a memory handle in this word, and a memory
+   * handle of this generation is the descriptor's own number: the kernel
+   * resolves it through the process's file table, so our own descriptor
+   * serves as well as one the library handed out, and creates no second
+   * reference of its own. */
   buffer->surface.assign(kSurfaceWords, 0);
   surface_init_rm_pitch_(buffer->surface.data(), width, height, 0,
-                         kFormatBlobRgba, kColorTagRgb, pitch, mem_handle, 0);
+                         kFormatBlobRgba, kColorTagRgb, pitch,
+                         reinterpret_cast<void *>(
+                             static_cast<uintptr_t>(buffer_fd)),
+                         0);
   buffer->surface[kSurfaceWordSize] = size;
 
   return buffer;

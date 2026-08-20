@@ -34,21 +34,22 @@ class NvGralloc;
 
 namespace hwc {
 
-/* A merge buffer whose handle is the library's own client's, from birth.
+/* A merge buffer that is ours from birth to death.
  *
- * The engine's relationship with its target is the thing under test, so the
- * buffer is the library's either way: allocated by the vendor allocator in
- * the very context the session was opened with, or cut from the composer's
- * own carveout zone and adopted by the library's import through that same
- * instance. The surface descriptor is built by the library's own call, not
- * assembled by hand. What this side adds is the dma-buf for the window, a
- * CPU mapping of the whole buffer -- the slot is painted through it before
- * its first use, and the dump reads the result back through it -- and the
- * words of the descriptor as the library filled them.
+ * Cut from the composer's own carveout zone through nvmap: the memory is
+ * the composer's, the dma-buf is the composer's, and the library is given
+ * no ownership at all. The surface descriptor is still built by the
+ * library's own call rather than assembled by hand, but the handle word it
+ * is told about is our own descriptor -- the kernel resolves it through the
+ * process's file table, so whose nvmap client it is does not matter. What
+ * this side adds is the dma-buf for the window, a CPU mapping of the whole
+ * buffer -- the slot is painted through it before its first use, and the
+ * dump reads the result back through it -- and the words of the descriptor
+ * as the library filled them.
  *
- * Releases itself: the mapping is unmapped and the memory handle handed back
- * through the same library entry point that a handle of this birth expects,
- * so nothing here depends on the session outliving the buffer. */
+ * Releases itself: the mapping is unmapped and the descriptor closed, and
+ * nothing more -- the fd is the only thing holding the zone's block by the
+ * time the buffer dies. */
 struct VendorBuffer {
   VendorBuffer() = default;
   ~VendorBuffer();
@@ -59,19 +60,7 @@ struct VendorBuffer {
   /* Borrowed by the window for the duration of a frame; owned here. */
   int mem_fd() const { return fd ? *fd : -1; }
 
-  /* The dma-buf the library handed back for the imported handle, asked
-   * right after the import as the boundary's self-check: a successful
-   * round trip whose number differs from the dma-buf we exported proves
-   * the import's arguments landed where the library expects them. -2 on
-   * paths that import nothing, -1 where the round trip failed. The fd
-   * itself is closed at once -- the buffer is held by our own. */
-  int import_roundtrip_fd = -2;
-
   drm_hwcomposer::SharedFd fd;
-
-  /* The library's own handle, given back through `release`. */
-  void *mem_handle = nullptr;
-  void (*release)(void *) = nullptr;
 
   /* The surface descriptor as the library built it, kSurfaceWords long. */
   std::vector<uint32_t> surface;
@@ -342,22 +331,12 @@ class VicSession {
   int (*rm_open_)(void **) = nullptr;
   void (*rm_close_)(void *) = nullptr;
 
-  /* libnvrm again -- the zone path. The import that adopts a dma-buf as a
-   * memory handle of this client, the dma-buf a handle is given back as,
-   * the way such a handle is released, and the library's own builder of a
-   * pitch-layout descriptor.
-   *
-   * The import takes two arguments and no device: the library keeps one
-   * allocator device of its own, opened when it loads, and the handle it
-   * returns belongs to that client -- the same one its submission pins
-   * through. Declared with the arity the binary actually reads, not the
-   * one the headers of this tree describe: the headers belong to another
-   * generation of the library, and a third argument here would send a
-   * pointer where a descriptor is expected and take a descriptor for the
-   * address to write the answer to. */
-  int (*mem_handle_from_fd_)(int, void **) = nullptr;
-  int (*mem_get_fd_)(void *) = nullptr;
-  void (*mem_handle_free_)(void *) = nullptr;
+  /* libnvrm again -- the zone path. The library's own builder of a
+   * pitch-layout descriptor, the one surviving piece of what the zone used
+   * to lean on: the import that adopted a dma-buf as a handle of this
+   * client is gone, because the handle word the descriptor carries is now
+   * our own descriptor and the kernel resolves it through the process's
+   * file table. */
   void (*surface_init_rm_pitch_)(void *, uint32_t, uint32_t, uint32_t,
                                  uint32_t, uint32_t, uint32_t, void *,
                                  uint32_t) = nullptr;
