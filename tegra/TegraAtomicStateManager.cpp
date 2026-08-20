@@ -93,17 +93,20 @@ uint8_t TransformBits(const LayerTransform &t) {
 /* The engine's code for each framework transform.
  *
  * The engine has no named transforms at all: a code is three independent
- * bits of axis, the low bit mirroring one axis, the next mirroring the
- * other, and the third swapping the axes (a transpose). All eight
- * combinations are legal and handled alike -- there is no dictionary, so
- * nothing here is a special case that could go stale.
+ * bits of axis, the low bit mirroring its axis, the next bit its own
+ * axis, and the third swapping the axes (a transpose). The rows below are
+ * named for the bits, not for the axes in any geometric order: the
+ * disassembly does not say whether a mirror is applied before the
+ * transpose or after, so no row that carries both can be named by which
+ * axis it mirrors in space. All eight combinations are legal and handled
+ * alike -- there is no dictionary, so nothing here is a special case that
+ * could go stale.
  *
  * Only sources are ever transformed; the target is never turned. The
  * table translates the framework's transform into these axis bits, and it
- * is taken from the stock composer's translation and confirmed against a
- * disassembly of the library's body rather than trusted on practice
- * alone -- the same reason the two traps the stock table once carried are
- * not re-derived here.
+ * is taken from the stock composer's translation and confirmed
+ * structurally against a disassembly of the library's body rather than
+ * trusted on practice alone.
  *
  * Passing the framework's own bits straight through is believed
  * equivalent, because the axes commute -- but it has not been verified.
@@ -114,7 +117,7 @@ uint32_t VicTransformFor(uint8_t bits) {
       1, /* FLIP_H            -- 001: mirror the first axis */
       2, /* FLIP_V            -- 010: mirror the second axis */
       3, /* ROT_180           -- 011: both mirrors */
-      6, /* ROT_90            -- 110: transpose + mirror */
+      6, /* ROT_90            -- 110: transpose + second-axis mirror */
       7, /* FH|ROT_90         -- 111: transpose + both mirrors */
       5, /* ROT_270           -- 101: transpose + first-axis mirror */
       4, /* FV|ROT_90         -- 100: plain transpose */
