@@ -235,6 +235,44 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
     return false;
   }
 
+  /* A quarter turn reads the surface column-first, which demands a
+   * block-encoded surface. The kernel does not check this on the show
+   * path -- only the window's capabilities are checked there, and no
+   * layout check lives in it -- so a pitch-linear layer asked to turn
+   * would reach the flip and fall there. Refused here, where refusal
+   * still steers the layer down the ladder. Our own turned intermediate
+   * is pitch-linear by construction and must never reach a window for
+   * this reason. */
+  if (pi.transform.rotate90 &&
+      (flags & TEGRA_DC_EXT_FLIP_FLAG_BLOCKLINEAR) == 0) {
+    ALOGV("plane %u: a quarter turn needs a block-encoded surface", index_);
+    return false;
+  }
+
+  /* And only unscaled layers may be turned on a window. The kernel's
+   * scale check compares buffer width to on-screen width, and under a
+   * turn those are different axes -- a legitimate turn of a wide buffer
+   * would trip that rule and be refused. So a layer that both turns and
+   * resizes is refused here instead, where the ladder still has somewhere
+   * to send it. Temporary; lifted on field data.
+   *
+   * The stock composer also capped the source's height at 2560 in the
+   * same path; our panel is 1536x2048, so a source is already shorter and
+   * that check would be unreachable -- left out. */
+  const bool turned =
+      pi.transform.hflip || pi.transform.vflip || pi.transform.rotate90;
+  const bool scaled = pi.source_crop.f_rect && pi.display_frame.i_rect &&
+                      (pi.source_crop.f_rect->Width() !=
+                           static_cast<float>(
+                               pi.display_frame.i_rect->Width()) ||
+                       pi.source_crop.f_rect->Height() !=
+                           static_cast<float>(
+                               pi.display_frame.i_rect->Height()));
+  if (turned && scaled) {
+    ALOGV("plane %u: a turned layer cannot also resize", index_);
+    return false;
+  }
+
   /* The panel's own limits, which the controller states per window and
    * enforces on the flip. Checking them here turns a refused frame into a
    * layer the framework draws instead. */

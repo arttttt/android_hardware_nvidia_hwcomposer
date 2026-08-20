@@ -125,6 +125,51 @@ uint32_t VicTransformFor(uint8_t bits) {
   return kTable[bits & 7];
 }
 
+/* The framework's transform, as the controller's window flags.
+ *
+ * Mirrors go straight through -- INVERT_H for the horizontal mirror,
+ * INVERT_V for the vertical -- and a quarter turn sets columnar reading
+ * (SCAN_COLUMN) and toggles the vertical mirror with an exclusive OR
+ * rather than adding it. That toggle is why rows 6 and 7 look "missing":
+ * there the mirror is cancelled, not set.
+ *
+ * This table does NOT match the engine's VicTransformFor, and cannot:
+ * the controller and the engine apply their mirrors in different spaces,
+ * before and after the transpose, so the rows for rotate 90 and 270
+ * differ. Six of the eight rows agree; these two do not. The two tables
+ * must not be unified. */
+uint32_t WindowTransformFor(uint8_t bits) {
+  static constexpr uint32_t kTable[8] = {
+      0,                                       /* identity   -- 000 */
+      TEGRA_DC_EXT_FLIP_FLAG_INVERT_H,         /* FLIP_H     -- 001 */
+      TEGRA_DC_EXT_FLIP_FLAG_INVERT_V,         /* FLIP_V     -- 010 */
+      TEGRA_DC_EXT_FLIP_FLAG_INVERT_H |
+          TEGRA_DC_EXT_FLIP_FLAG_INVERT_V,     /* ROT_180    -- 011 */
+      TEGRA_DC_EXT_FLIP_FLAG_SCAN_COLUMN |
+          TEGRA_DC_EXT_FLIP_FLAG_INVERT_V,     /* ROT_90     -- 100 */
+      TEGRA_DC_EXT_FLIP_FLAG_INVERT_H |
+          TEGRA_DC_EXT_FLIP_FLAG_SCAN_COLUMN |
+          TEGRA_DC_EXT_FLIP_FLAG_INVERT_V,     /* FH|ROT_90  -- 101 */
+      TEGRA_DC_EXT_FLIP_FLAG_SCAN_COLUMN,      /* FV|ROT_90  -- 110 */
+      TEGRA_DC_EXT_FLIP_FLAG_SCAN_COLUMN |
+          TEGRA_DC_EXT_FLIP_FLAG_INVERT_H,     /* ROT_270    -- 111 */
+  };
+  return kTable[bits & 7];
+}
+
+/* Which transform value to force onto an ordinary window's flags, or -1
+ * to leave each layer's own alone.
+ *
+ * The window mapping above was taken from the shipped stock composer and
+ * has not been confirmed by our own run. The door substitutes one of the
+ * eight values on a still picture, so all eight can be driven and an
+ * expected map read off the panel. Read once. */
+int ForcedWindowTransform() {
+  static const int forced =
+      property_get_int32("vendor.hwc.test.wintransform", -1);
+  return forced;
+}
+
 /* When a fence came due, or nothing if it has not yet.
  *
  * Read rather than waited on: the question is whether it was due by a given
@@ -306,6 +351,20 @@ bool DescribeWindow(const LayerData &layer, uint32_t plane_id, uint32_t depth,
     out->flags |= TEGRA_DC_EXT_FLIP_FLAG_GLOBAL_ALPHA;
     out->globalAlpha = static_cast<uint8_t>(lroundf(clamped * 255.F));
   }
+
+  /* The layer's own turn, as the controller's window flags: the plane
+   * judged the window able to carry it, so a turned layer keeps its turn
+   * here rather than being drawn flat. Only the flags change -- the
+   * geometry below is untouched, because the kernel swaps the axes itself
+   * inside its unwrap: the source stays the crop of the buffer and the
+   * on-screen rectangle stays the panel rectangle. The test door
+   * substitutes a fixed value for the layer's own when asked, so the
+   * mapping above can be exercised on a picture that does not move. */
+  uint8_t transform = TransformBits(layer.pi.transform);
+  const int forced = ForcedWindowTransform();
+  if (forced >= 0 && forced <= 7)
+    transform = static_cast<uint8_t>(forced);
+  out->flags |= WindowTransformFor(transform);
 
   /* A source region left unsaid means the whole buffer, and a destination
    * left unsaid means the whole panel. The controller has no such shorthand,
