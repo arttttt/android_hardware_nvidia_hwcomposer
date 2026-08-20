@@ -114,7 +114,6 @@ class NvGralloc {
   int (*get_memfd_)(buffer_handle_t) = nullptr;
   int (*get_format_)(buffer_handle_t) = nullptr;
   void (*get_surfaces_)(buffer_handle_t, const void **, size_t *) = nullptr;
-  int (*get_compressed_)(buffer_handle_t) = nullptr;
   int (*decompress_)(buffer_handle_t, int, int *) = nullptr;
 };
 

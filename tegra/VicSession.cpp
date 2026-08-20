@@ -86,6 +86,10 @@ struct NvRmFence {
  * Nothing merged here is one of those -- everything the interface draws is a
  * single surface of colour -- so only the first is ever filled, and a buffer
  * that says otherwise is refused rather than half-read.
+ *
+ * The stride of the input array is not confirmed by the library's body:
+ * only the zeroth element of each row is used today, because multi-plane
+ * sources are refused. YUV support will need this checked.
  */
 constexpr size_t kSurfacesPerLayer = 8;
 
@@ -427,6 +431,11 @@ drm_hwcomposer::SharedFd VicSession::ComposeInto(
   }
 
   int32_t fd = -1;
+  /* The library's dispatcher carries only the first three arguments of this
+   * call across to the implementation; the fourth reaches it by way of the
+   * stack, not by contract. It works, and is verified by the kernel's
+   * fences -- but a changed library generation makes this the first place
+   * to look. */
   if (fence_to_fd_("hwc-vic", &done, 1, &fd) != kNvSuccess || fd < 0) {
     /* The merge itself was accepted and is running; only the way of telling
      * anyone when it finishes was lost. Nothing can be done with a result
@@ -545,6 +554,11 @@ drm_hwcomposer::SharedFd VicSession::ComposeRotated(
   }
 
   int32_t fd = -1;
+  /* The library's dispatcher carries only the first three arguments of this
+   * call across to the implementation; the fourth reaches it by way of the
+   * stack, not by contract. It works, and is verified by the kernel's
+   * fences -- but a changed library generation makes this the first place
+   * to look. */
   if (fence_to_fd_("hwc-vic", &done, 1, &fd) != kNvSuccess || fd < 0) {
     ALOGE("the turned copy has no fence; dropping it");
     refused_++;
@@ -696,7 +710,7 @@ std::unique_ptr<VendorBuffer> VicSession::AllocateZoneTarget(
   /* The library's own builder, exactly as for the library-born path. */
   buffer->surface.assign(kSurfaceWords, 0);
   surface_init_rm_pitch_(buffer->surface.data(), width, height, 0,
-                         kFormatA8B8G8R8, kColorTagRgb, pitch, mem_handle, 0);
+                         kFormatBlobRgba, kColorTagRgb, pitch, mem_handle, 0);
   buffer->surface[kSurfaceWordSize] = size;
 
   return buffer;

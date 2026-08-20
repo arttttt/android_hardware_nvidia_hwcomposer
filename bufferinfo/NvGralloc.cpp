@@ -97,7 +97,6 @@ bool NvGralloc::Resolve(void *library) {
          ResolveOne(library, "nvgr_get_memfd", &get_memfd_) &&
          ResolveOne(library, "nvgr_get_format", &get_format_) &&
          ResolveOne(library, "nvgr_get_surfaces", &get_surfaces_) &&
-         ResolveOne(library, "nvgr_get_compressed", &get_compressed_) &&
          ResolveOne(library, "nvgr_decompress", &decompress_);
 }
 

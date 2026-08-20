@@ -140,7 +140,6 @@ class ScratchPool {
 
   uint32_t width() const { return width_; }
   uint32_t height() const { return height_; }
-  uint32_t stride() const { return stride_; }
 
   /* Where the pool's buffers were born. One answer now, and kept in the
    * dump because a line that always says the same thing is what proves it
@@ -175,7 +174,6 @@ class ScratchPool {
 
   uint32_t width_ = 0;
   uint32_t height_ = 0;
-  uint32_t stride_ = 0;
 
   /* The slot the last frame was drawn into, which the next frame posted will
    * replace on screen. Past the end until a frame has been posted. */

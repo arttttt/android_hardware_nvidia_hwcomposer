@@ -127,7 +127,6 @@ std::unique_ptr<ScratchPool> ScratchPool::Create(uint32_t width,
     pool->slots_[i].vendor = std::move(buffer);
   }
 
-  pool->stride_ = pool->slots_[0].vendor->pitch / 4;
   ALOGI("%zu zone slots, %ux%u, pitch %u", count, width, height,
         pool->slots_[0].vendor->pitch);
   return pool;

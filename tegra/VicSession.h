@@ -369,7 +369,12 @@ class VicSession {
    * code read as different generations. The descriptor's size word sits at
    * [14], which the pitch-layout builder does not fill, and the memory
    * handle the engine's reloc is built from sits at [6]. */
-  static constexpr uint32_t kFormatA8B8G8R8 = 0x00532120;
+  /* The name lies. In the library's format table
+   * (docs/nvrm-format-table.txt) this code reads as R8G8B8A8, and A8B8G8R8
+   * is 0x00d12120. The value stands because it is the code gralloc sends
+   * and the window expects -- but the name would one day tempt someone to
+   * "correct" the constant and turn the channels around. */
+  static constexpr uint32_t kFormatBlobRgba = 0x00532120;
   static constexpr uint32_t kColorTagRgb = 1;
   static constexpr size_t kSurfaceWordMemHandle = 6;
   static constexpr size_t kSurfaceWordSize = 14;

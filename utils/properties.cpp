@@ -132,24 +132,10 @@ auto Properties::PersistentHdrEnabled() -> bool {
   return (property_get_bool("vendor.hwc.drm.persistent_hdr", 0) != 0);
 }
 
-/**
- * @brief Determine if the "Present Not Reliable" property is enabled.
- *
- * @return boolean
- */
-auto Properties::IsPresentFenceNotReliable() -> bool {
-  return (property_get_bool("ro.vendor.hwc.drm.present_fence_not_reliable",
-                            0) != 0);
-}
-
 auto Properties::InternalDisplayNames() -> std::string {
   char buf[PROPERTY_VALUE_MAX] = {};
   property_get("vendor.hwc.drm.internal_display_names", buf, "");
   return {buf};
-}
-
-auto Properties::UseOverlayPlanes() -> bool {
-  return (property_get_bool("ro.vendor.hwc.use_overlay_planes", 1) != 0);
 }
 
 auto Properties::ScaleWithGpu() -> bool {
@@ -160,16 +146,8 @@ auto Properties::EnableVirtualDisplay() -> bool {
   return (property_get_bool("vendor.hwc.drm.enable_virtual_display", 0) != 0);
 }
 
-auto Properties::EnableExternalDisplays() -> bool {
-  return (property_get_bool("vendor.hwc.drm.enable_external_displays", 1) != 0);
-}
-
 auto Properties::EnableHdcpOnHotplug() -> bool {
   return (property_get_bool("vendor.hwc.drm.enable_hdcp_on_hotplug", 1) != 0);
-}
-
-auto Properties::SkipInternalDisplayReset() -> bool {
-  return (property_get_bool("vendor.hwc.drm.skip_internal_display_reset", 0) != 0);
 }
 
 auto Properties::GetCtmHandling() -> CtmHandling {
@@ -188,12 +166,6 @@ auto Properties::GetCtmHandling() -> CtmHandling {
            proptext);
   // Default value.
   return CtmHandling::kDrmOrGpu;
-}
-
-auto Properties::BugfixCursorCtmOffset() -> bool {
-  constexpr int kDefault = 1;
-  return (property_get_bool("vendor.hwc.drm.bugfix_cursor_ctm_offset",
-                            kDefault) != 0);
 }
 
 auto Properties::CmuColorPipeline() -> bool {
@@ -222,24 +194,10 @@ auto Properties::GetBackendOverride() -> std::string {
   return {backend_override};
 }
 
-auto Properties::GetDevicePath() -> std::string {
-  char path_pattern[PROPERTY_VALUE_MAX];
-  // Could be a valid path or it can have at the end of it the wildcard %
-  // which means that it will try open all devices until an error is met.
-  property_get("vendor.hwc.drm.device", path_pattern, "");
-  return {path_pattern};
-}
-
 auto Properties::ExternalHdrEnabled() -> bool {
   constexpr int kDefault = 1;
   return (property_get_bool("vendor.hwc.drm.external_hdr_enabled", kDefault) !=
           0);
-}
-
-auto Properties::SkipPlaneDamageClips() -> bool {
-  constexpr int kDefault = 0;
-  return (property_get_bool("vendor.hwc.drm.skip_plane_damage_clips",
-                            kDefault) != 0);
 }
 
 }  // namespace android::drm_hwcomposer

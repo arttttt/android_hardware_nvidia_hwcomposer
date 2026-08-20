@@ -27,15 +27,11 @@ enum class CtmHandling {
 
 class Properties {
  public:
-  static auto IsPresentFenceNotReliable() -> bool;
   static auto InternalDisplayNames() -> std::string;
-  static auto UseOverlayPlanes() -> bool;
   static auto ScaleWithGpu() -> bool;
   static auto EnableVirtualDisplay() -> bool;
-  static auto EnableExternalDisplays() -> bool;
   static auto EnableHdcpOnHotplug() -> bool;
   static auto GetCtmHandling() -> CtmHandling;
-  static auto BugfixCursorCtmOffset() -> bool;
 
   /* Whether the display controller's colour pipeline consumes the client's
    * transform. One switch read by all three parties -- the capability
@@ -47,13 +43,10 @@ class Properties {
    * sRGB rather than showing the panel as it is. */
   static auto CalibratedColorMode() -> bool;
   static auto GetBackendOverride() -> std::string;
-  static auto GetDevicePath() -> std::string;
   static auto UseColorPipeline() -> bool;
-  static auto SkipInternalDisplayReset() -> bool;
   static auto ForceColorMode() -> int;
   static auto PersistentHdrEnabled() -> bool;
   static auto ExternalHdrEnabled() -> bool;
-  static auto SkipPlaneDamageClips() -> bool;
 };
 
 }  // namespace android::drm_hwcomposer
