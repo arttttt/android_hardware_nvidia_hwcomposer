@@ -504,6 +504,12 @@ class TegraAtomicStateManager : public AtomicStateManager {
     int64_t rotate_ns = 0;
     int64_t rotate_ns_max = 0;
     uint64_t rotate_refused = 0;
+
+    /* How many layers the drawn groups carried, bucketed on one, two,
+     * three, four and five-or-more members. A one-member group costs a
+     * whole engine pass for a single layer, and its share decides whether
+     * it is worth hunting for at all. */
+    uint64_t members[5] = {0, 0, 0, 0, 0};
   };
   FenceCounters fences_;
   MergeCounters merges_;

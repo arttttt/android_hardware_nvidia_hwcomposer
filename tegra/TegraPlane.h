@@ -116,7 +116,6 @@ class TegraPlane : public Plane {
    * in are cut no larger. Told once by whoever sizes those intermediates;
    * zero means no turning machinery exists and no such bound applies. */
   static void SetTurnReach(uint32_t reach) { turn_reach_ = reach; }
-  static uint32_t TurnReach() { return turn_reach_; }
 
  private:
   const uint32_t index_;

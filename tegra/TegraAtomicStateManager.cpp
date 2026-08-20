@@ -92,34 +92,34 @@ uint8_t TransformBits(const LayerTransform &t) {
 
 /* The engine's code for each framework transform.
  *
- * Copied from the stock translation, entry for entry, because two of its
- * rows cannot be derived: the rotations INVERT -- the framework counts
- * clockwise and the engine's names count the other way, so ROT_90 is the
- * engine's Rotate270 -- and the two three-bit composites land on the
- * OPPOSITE transposes than the order of application suggests. The stock
- * table is the only authority; both traps are its verbatim case lines. */
+ * The engine has no named transforms at all: a code is three independent
+ * bits of axis, the low bit mirroring one axis, the next mirroring the
+ * other, and the third swapping the axes (a transpose). All eight
+ * combinations are legal and handled alike -- there is no dictionary, so
+ * nothing here is a special case that could go stale.
+ *
+ * Only sources are ever transformed; the target is never turned. The
+ * table translates the framework's transform into these axis bits, and it
+ * is taken from the stock composer's translation and confirmed against a
+ * disassembly of the library's body rather than trusted on practice
+ * alone -- the same reason the two traps the stock table once carried are
+ * not re-derived here.
+ *
+ * Passing the framework's own bits straight through is believed
+ * equivalent, because the axes commute -- but it has not been verified.
+ * The table must not be simplified without running all eight codes. */
 uint32_t VicTransformFor(uint8_t bits) {
   static constexpr uint32_t kTable[8] = {
-      0, /* identity   -- never sent */
-      1, /* FLIP_H     -> FlipX */
-      2, /* FLIP_V     -> FlipY */
-      3, /* ROT_180    -> Rot180 */
-      6, /* ROT_90     -> Rot270: directions invert */
-      7, /* FH|ROT_90  -> InvTranspose */
-      5, /* ROT_270    -> Rot90: directions invert */
-      4, /* FV|ROT_90  -> Transpose */
+      0, /* identity          -- 000: unchanged */
+      1, /* FLIP_H            -- 001: mirror the first axis */
+      2, /* FLIP_V            -- 010: mirror the second axis */
+      3, /* ROT_180           -- 011: both mirrors */
+      6, /* ROT_90            -- 110: transpose + mirror */
+      7, /* FH|ROT_90         -- 111: transpose + both mirrors */
+      5, /* ROT_270           -- 101: transpose + first-axis mirror */
+      4, /* FV|ROT_90         -- 100: plain transpose */
   };
   return kTable[bits & 7];
-}
-
-/* Forces a quarter turn onto the top member of every merge, so that the
- * turning machinery can be watched on a scene that has no turned layers of
- * its own -- which is every scene this tablet usually shows. A test
- * switch, off unless asked for, read once. */
-bool ForcedTestRotation() {
-  static const bool wanted = property_get_bool("vendor.hwc.test.rotate",
-                                               0) != 0;
-  return wanted;
 }
 
 /* When a fence came due, or nothing if it has not yet.
@@ -673,36 +673,6 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
     merge.layers.resize(kept);
     merge.source_ids.resize(kept);
     merge.transforms.resize(kept);
-
-    /* The test switch turns the top member, machinery-watching on scenes
-     * that have no turned layers of their own. After the clip, so the
-     * forced turn cannot vanish with a clipped member; deliberately not
-     * gated on the plane's own switch, so the turning path can be driven
-     * through any scene even while real turned layers are being
-     * refused. The forced bit lands after the plane already judged the
-     * layer unturned, so the plane's reach check never saw the turned
-     * axes -- it is repeated here, and a member whose turned copy would
-     * resize past the engine's reach is left unturned rather than fed to
-     * a verifier that will refuse the whole set every frame. A status
-     * bar laid on its side asks for a thirty-fold resize; the test is
-     * for turning, not for that. */
-    if (ForcedTestRotation() && !merge.transforms.empty()) {
-      const auto &top = merge.layers.back();
-      /* The turned axes: the crop laid on its side, judged by the same
-       * judge the plane uses, plus the fit no intermediate can offer
-       * past the reach -- the two checks the plane would have made had
-       * it seen the turn. */
-      const float turned_w = top.source_bottom - top.source_top;
-      const float turned_h = top.source_right - top.source_left;
-      const auto dst_w =
-          static_cast<float>(top.display_right - top.display_left);
-      const auto dst_h =
-          static_cast<float>(top.display_bottom - top.display_top);
-      const auto reach = static_cast<float>(TegraPlane::TurnReach());
-      if (!TegraPlane::BeyondEngineReach(turned_w, turned_h, dst_w, dst_h) &&
-          (reach <= 0 || (turned_w <= reach && turned_h <= reach)))
-        merge.transforms.back() |= 4;
-    }
   }
 
   /* As many turns as there are intermediates to hold them, and no more: a
@@ -1144,6 +1114,10 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       const int64_t took = NowNs() - before_merge;
       merges_.frames++;
       merges_.layers += merge.layers.size();
+      const size_t bucket = merge.layers.empty()
+                                ? 0
+                                : std::min<size_t>(merge.layers.size() - 1, 4);
+      merges_.members[bucket]++;
       merges_.engine_ns += took;
       if (took > merges_.engine_ns_max)
         merges_.engine_ns_max = took;
@@ -1515,7 +1489,10 @@ std::string TegraAtomicStateManager::DumpState() {
 
     ss << "Merges since last dumpsys request:\n"
        << "  frames merged           : " << m.frames << "\n"
-       << "  shown from memory       : " << m.reused << "\n";
+       << "  shown from memory       : " << m.reused << "\n"
+       << "  members 1/2/3/4/5+      : " << m.members[0] << "/"
+       << m.members[1] << "/" << m.members[2] << "/" << m.members[3] << "/"
+       << m.members[4] << "\n";
     if (m.frames != 0)
       ss << "  layers per merge (avg)  : "
          << (m.layers / m.frames) << "\n"
