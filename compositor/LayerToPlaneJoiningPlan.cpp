@@ -67,16 +67,17 @@ bool PlaceFirstFit(LayerToPlaneJoiningPlan &plan,
  * buffer can only take a contiguous run of the stack, and the first fit
  * always hands it the top -- where popups and animations live, so the
  * engine redraws the group on every frame of exactly the scenes that
- * are busiest. Steering gives the merge the longest contiguous run of
- * QUIET layers instead, wherever in the stack it lies, and seats the
- * drawing layers in windows of their own: the group's content then
- * holds still, the merge cache answers every frame, and the engine
- * sleeps through the animation.
+ * are busiest. Steering gives the merge a contiguous run of the needed
+ * width carrying the fewest drawing layers instead, wherever in the
+ * stack it lies, and seats the drawing layers in windows of their own:
+ * the group's content then holds still, the merge cache answers every
+ * frame, and the engine sleeps through the animation.
  *
  * Only worth doing when a merge is unavoidable and the scene is mixed;
  * anything else falls through to the first fit, as does any layout this
- * one cannot seat -- a drawing layer the windows cannot take, a quiet
- * run too long for one engine pass. Nothing is moved until the whole
+ * one cannot seat -- a drawing layer the windows cannot take, or a
+ * scene that wants to put more layers into the merge than it takes in
+ * one pass. Nothing is moved until the whole
  * seating is known to work, so falling through costs a walk, not a
  * frame. */
 bool PlaceSteered(LayerToPlaneJoiningPlan &plan,
@@ -113,33 +114,50 @@ bool PlaceSteered(LayerToPlaneJoiningPlan &plan,
     return false;
   }
 
-  /* The longest contiguous quiet run; ties go to the lower one, which
-   * is where wallpaper and application -- the natural group -- sit. */
-  size_t run_begin = 0;
-  size_t run_len = 0;
-  for (size_t i = 0; i < composition.size();) {
-    if (composition[i].live) {
-      i++;
-      continue;
-    }
-    size_t j = i;
-    while (j < composition.size() && !composition[j].live) {
-      j++;
-    }
-    if (j - i > run_len) {
-      run_len = j - i;
-      run_begin = i;
-    }
-    i = j;
-  }
-
-  if (run_len > merging_count) {
+  /* A contiguous run of exactly the needed width, carrying the fewest
+   * drawing layers; ties go to the lower run, where wallpaper and
+   * application -- the natural group -- sit.
+   *
+   * The width is fixed: adding a layer to the run can never lower the
+   * number of live layers it holds, so the minimum is always reached at
+   * the minimum width, and a wider run cannot win. And a run one member
+   * wider would have stolen that member a window for no gain -- a direct
+   * window is cheaper than the merge. Hence one pass instead of a
+   * search.
+   *
+   * This leaves exactly as many layers outside the run as there are
+   * ordinary windows. If one of those fails to seat, the whole seating
+   * fails and everything falls to the first fit, exactly as today. A
+   * wider run would have pulled the troublesome layer into the merge and
+   * saved the layout. Widening is trivial -- repeat the search one layer
+   * wider, up to the merge's limit -- and is deliberately not done: the
+   * seating-refusal counter in the field is steady at zero.
+   *
+   * The only honest refusal left is wanting to put more layers into the
+   * merge than it takes in one pass. */
+  const size_t need = composition.size() - ordinary_count;
+  if (need > merging_count) {
     plan.steering = Steering::kRunTooLong;
     return false;
   }
-  if (composition.size() - run_len > ordinary_count) {
-    plan.steering = Steering::kLivesOverflow;
-    return false;
+
+  size_t live_here = 0;
+  for (size_t i = 0; i < need; i++)
+    if (composition[i].live)
+      live_here++;
+
+  size_t run_begin = 0;
+  const size_t run_len = need;
+  size_t fewest_live = live_here;
+  for (size_t i = need; i < composition.size(); i++) {
+    if (composition[i - need].live)
+      live_here--;
+    if (composition[i].live)
+      live_here++;
+    if (live_here < fewest_live) {
+      fewest_live = live_here;
+      run_begin = i - need + 1;
+    }
   }
 
   /* Seat everything tentatively -- the plan's z comes from position in
