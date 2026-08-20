@@ -121,6 +121,13 @@ const VendorBuffer *TurnPool::Take(uint32_t width, uint32_t height) {
   return taken;
 }
 
+void TurnPool::GiveBack(const VendorBuffer *buffer) {
+  for (auto &slot : slots_) {
+    if (slot.buffer.get() == buffer)
+      slot.taken = false;
+  }
+}
+
 void TurnPool::FrameEnd(bool turned_any) {
   for (auto &slot : slots_)
     slot.taken = false;

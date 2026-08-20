@@ -781,6 +781,56 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
     }
   }
 
+  /* A turned member needs a real slot, not a guess. A guess over the pool
+   * cannot see whether the zone is fragmented, and would lie; Take either
+   * happens or it does not. Failure here is the signal the planner already
+   * knows how to walk: it asks again, giving the layer to the client, and
+   * the frame stays honest. A refusal at show never had that property --
+   * the work was already promised and nobody would do it.
+   *
+   * The slot is given back at once and nothing is remembered. It stays in
+   * the pool; the show finds it idle and takes it again. Holding it would
+   * make the show's own build see it taken, walk past, and hit the cap --
+   * failing a plan that used to pass.
+   *
+   * Two limits are accepted. After a long idle the trim may free the slot
+   * this just created, and the show allocates again; that is safe -- the
+   * trim freed the memory -- but this check then guarantees the show
+   * nothing. And between check and show the slot is not reserved: eviction
+   * or the cursor's staging could take it in the milliseconds of one
+   * frame. The result is today's honest refusal at show. This removes most
+   * refusals, not all; a rotate-refusal counter that stays off zero would
+   * mean coming back to a real reservation. */
+  for (size_t i = 0; i < merge.transforms.size(); ++i) {
+    const uint8_t bits = merge.transforms[i];
+    if (bits == 0)
+      continue;
+
+    if (!rotate_pool_) {
+      if (scratch_ == nullptr || vic_ == nullptr)
+        return nullptr;
+      const uint32_t reach =
+          std::max(scratch_->width(), scratch_->height());
+      rotate_pool_ = std::make_unique<hwc::TurnPool>(reach, reach,
+                                                     kMaxRotatedMembers,
+                                                     vic_);
+    }
+
+    const hwc::VicSession::Layer &l = merge.layers[i];
+    const auto crop_w =
+        static_cast<uint32_t>(ceilf(l.source_right - l.source_left));
+    const auto crop_h =
+        static_cast<uint32_t>(ceilf(l.source_bottom - l.source_top));
+    const bool swaps = (bits & 4) != 0;
+    const uint32_t turned_w = swaps ? crop_h : crop_w;
+    const uint32_t turned_h = swaps ? crop_w : crop_h;
+
+    const hwc::VendorBuffer *inter = rotate_pool_->Take(turned_w, turned_h);
+    if (inter == nullptr)
+      return nullptr;
+    rotate_pool_->GiveBack(inter);
+  }
+
   /* The proposal must weigh the merged window too. Its buffer does not
    * exist yet -- the engine draws it at execute, after exactly one plan has
    * won -- but the bandwidth question never needed the buffer: the kernel

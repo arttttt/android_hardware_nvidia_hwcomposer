@@ -75,11 +75,16 @@ class TurnPool {
    * the way every engine refusal fails.
    *
    * Borrowed: the buffer belongs to the pool, and the frame that took it
-   * must not outlive the pool's own life.
+   * must not outlive the pool's own life. Occupancy is set by Take and
+   * cleared either by FrameEnd or by GiveBack.
    *
    * No fence comes back on purpose: the only reader is the group pass of
    * the same frame, ordered behind the write by the engine's own channel. */
   const VendorBuffer *Take(uint32_t width, uint32_t height);
+
+  /* Puts this buffer's slot back to idle without waiting for FrameEnd, so
+   * a check can Take for real and still leave the slot for the show. */
+  void GiveBack(const VendorBuffer *buffer);
 
   /* The frame is over: what was taken may be taken again next frame, and
    * `turned_any` says whether the frame turned anything at all. A few
