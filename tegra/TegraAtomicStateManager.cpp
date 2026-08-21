@@ -137,6 +137,24 @@ uint32_t VicTransformFor(uint8_t bits) {
   return kTable[bits & 7];
 }
 
+/* The group's one transform, or none.
+ *
+ * The engine has a single transform for the whole configuration, applied
+ * to every source it is told to read. A display rotation -- every member
+ * turned the same way -- can ride that one value in the merge pass. A
+ * mixed group cannot: a member that was not turned would turn with the
+ * rest. Empty, identity, or any disagreement therefore yields nothing,
+ * and those members are turned one by one the way they always were. */
+uint8_t UniformTurn(const std::vector<uint8_t> &transforms) {
+  if (transforms.empty() || transforms.front() == 0)
+    return 0;
+  for (const uint8_t bits : transforms) {
+    if (bits != transforms.front())
+      return 0;
+  }
+  return transforms.front();
+}
+
 /* Which engine code to force onto every turned member, or -1 to leave
  * each member's own alone.
  *
@@ -815,54 +833,60 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
     }
   }
 
-  /* A turned member needs a real slot, not a guess. A guess over the pool
-   * cannot see whether the zone is fragmented, and would lie; Take either
-   * happens or it does not. Failure here is the signal the planner already
-   * knows how to walk: it asks again, giving the layer to the client, and
-   * the frame stays honest. A refusal at show never had that property --
-   * the work was already promised and nobody would do it.
-   *
-   * The slot is given back at once and nothing is remembered. It stays in
-   * the pool; the show finds it idle and takes it again. Holding it would
-   * make the show's own build see it taken, walk past, and hit the cap --
-   * failing a plan that used to pass.
-   *
-   * Two limits are accepted. After a long idle the trim may free the slot
-   * this just created, and the show allocates again; that is safe -- the
-   * trim freed the memory -- but this check then guarantees the show
-   * nothing. And between check and show the slot is not reserved: eviction
-   * or the cursor's staging could take it in the milliseconds of one
-   * frame. The result is today's honest refusal at show. This removes most
-   * refusals, not all; a rotate-refusal counter that stays off zero would
-   * mean coming back to a real reservation. */
-  for (size_t i = 0; i < merge.transforms.size(); ++i) {
-    const uint8_t bits = merge.transforms[i];
-    if (bits == 0)
-      continue;
+  const uint8_t group_turn = UniformTurn(merge.transforms);
+  /* A uniformly turned group needs no intermediate: the merge pass itself
+   * will carry the turn. Asking the pool would refuse a plan that does not
+   * want the memory at all. */
+  if (group_turn == 0) {
+    /* A turned member needs a real slot, not a guess. A guess over the pool
+     * cannot see whether the zone is fragmented, and would lie; Take either
+     * happens or it does not. Failure here is the signal the planner already
+     * knows how to walk: it asks again, giving the layer to the client, and
+     * the frame stays honest. A refusal at show never had that property --
+     * the work was already promised and nobody would do it.
+     *
+     * The slot is given back at once and nothing is remembered. It stays in
+     * the pool; the show finds it idle and takes it again. Holding it would
+     * make the show's own build see it taken, walk past, and hit the cap --
+     * failing a plan that used to pass.
+     *
+     * Two limits are accepted. After a long idle the trim may free the slot
+     * this just created, and the show allocates again; that is safe -- the
+     * trim freed the memory -- but this check then guarantees the show
+     * nothing. And between check and show the slot is not reserved: eviction
+     * or the cursor's staging could take it in the milliseconds of one
+     * frame. The result is today's honest refusal at show. This removes most
+     * refusals, not all; a rotate-refusal counter that stays off zero would
+     * mean coming back to a real reservation. */
+    for (size_t i = 0; i < merge.transforms.size(); ++i) {
+      const uint8_t bits = merge.transforms[i];
+      if (bits == 0)
+        continue;
 
-    if (!rotate_pool_) {
-      if (scratch_ == nullptr || vic_ == nullptr)
+      if (!rotate_pool_) {
+        if (scratch_ == nullptr || vic_ == nullptr)
+          return nullptr;
+        const uint32_t reach =
+            std::max(scratch_->width(), scratch_->height());
+        rotate_pool_ = std::make_unique<hwc::TurnPool>(reach, reach,
+                                                       kMaxRotatedMembers,
+                                                       vic_);
+      }
+
+      const hwc::VicSession::Layer &l = merge.layers[i];
+      const auto crop_w =
+          static_cast<uint32_t>(ceilf(l.source_right - l.source_left));
+      const auto crop_h =
+          static_cast<uint32_t>(ceilf(l.source_bottom - l.source_top));
+      const bool swaps = (bits & 4) != 0;
+      const uint32_t turned_w = swaps ? crop_h : crop_w;
+      const uint32_t turned_h = swaps ? crop_w : crop_h;
+
+      const hwc::VendorBuffer *inter = rotate_pool_->Take(turned_w, turned_h);
+      if (inter == nullptr)
         return nullptr;
-      const uint32_t reach =
-          std::max(scratch_->width(), scratch_->height());
-      rotate_pool_ = std::make_unique<hwc::TurnPool>(reach, reach,
-                                                     kMaxRotatedMembers,
-                                                     vic_);
+      rotate_pool_->GiveBack(inter);
     }
-
-    const hwc::VicSession::Layer &l = merge.layers[i];
-    const auto crop_w =
-        static_cast<uint32_t>(ceilf(l.source_right - l.source_left));
-    const auto crop_h =
-        static_cast<uint32_t>(ceilf(l.source_bottom - l.source_top));
-    const bool swaps = (bits & 4) != 0;
-    const uint32_t turned_w = swaps ? crop_h : crop_w;
-    const uint32_t turned_h = swaps ? crop_w : crop_h;
-
-    const hwc::VendorBuffer *inter = rotate_pool_->Take(turned_w, turned_h);
-    if (inter == nullptr)
-      return nullptr;
-    rotate_pool_->GiveBack(inter);
   }
 
   /* The proposal must weigh the merged window too. Its buffer does not
@@ -1139,95 +1163,103 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
        * onto it one-to-one. The group is remembered under its ORIGINAL
        * sources and transforms: the intermediate is a stage prop, not an
        * identity. */
+      const uint8_t group_turn = UniformTurn(merge.transforms);
       std::vector<hwc::VicSession::Layer> drawn = merge.layers;
       std::vector<SharedFd> turned_fences;
       bool turn_failed = false;
-      for (size_t i = 0; i < drawn.size(); ++i) {
-        const uint8_t bits = merge.transforms[i];
-        if (bits == 0)
-          continue;
+      /* When the group shares one turn, the merge pass carries it, so no
+       * member is turned ahead and no intermediate is taken. The
+       * rectangles are left as they are: the source is already in its own
+       * axes, the destination in the panel's. */
+      if (group_turn == 0) {
+        for (size_t i = 0; i < drawn.size(); ++i) {
+          const uint8_t bits = merge.transforms[i];
+          if (bits == 0)
+            continue;
 
-        /* The pool object is made on the first turned layer ever -- on
-         * most days, never -- and even then owns no memory until a slot is
-         * taken. A turned crop can be as tall as the panel is, laid on its
-         * side, so each axis allows the longer of the panel's two. */
-        if (!rotate_pool_) {
-          const uint32_t reach =
-              std::max(scratch_->width(), scratch_->height());
-          rotate_pool_ = std::make_unique<hwc::TurnPool>(reach, reach,
-                                                         kMaxRotatedMembers,
-                                                         vic_);
+          /* The pool object is made on the first turned layer ever -- on
+           * most days, never -- and even then owns no memory until a slot is
+           * taken. A turned crop can be as tall as the panel is, laid on its
+           * side, so each axis allows the longer of the panel's two. */
+          if (!rotate_pool_) {
+            const uint32_t reach =
+                std::max(scratch_->width(), scratch_->height());
+            rotate_pool_ = std::make_unique<hwc::TurnPool>(reach, reach,
+                                                           kMaxRotatedMembers,
+                                                           vic_);
+          }
+
+          hwc::VicSession::Layer &l = drawn[i];
+          const auto crop_w =
+              static_cast<uint32_t>(ceilf(l.source_right - l.source_left));
+          const auto crop_h =
+              static_cast<uint32_t>(ceilf(l.source_bottom - l.source_top));
+          const bool swaps = (bits & 4) != 0;
+          const uint32_t turned_w = swaps ? crop_h : crop_w;
+          const uint32_t turned_h = swaps ? crop_w : crop_h;
+
+          const hwc::VendorBuffer *inter =
+              rotate_pool_->Take(turned_w, turned_h);
+          if (inter == nullptr) {
+            /* The pool's refusal and the engine's look identical from the
+             * dump; the log tells them apart, and says what was asked of a
+             * pool holding what. */
+            ALOGE("no intermediate for a turned %ux%u (pool holds %zu of %zu)",
+                  turned_w, turned_h, rotate_pool_->held_slots(),
+                  rotate_pool_->cap());
+            turn_failed = true;
+            break;
+          }
+
+          const int64_t before_turn = NowNs();
+          const int forced_turn = ForcedVicTransform();
+          const uint32_t turn = forced_turn >= 0 && forced_turn <= 7
+                                    ? static_cast<uint32_t>(forced_turn)
+                                    : VicTransformFor(bits);
+          SharedFd done = vic_->ComposeRotated(*inter, l, turn,
+                                               turned_w, turned_h);
+          const int64_t turn_took = NowNs() - before_turn;
+          if (!done) {
+            turn_failed = true;
+            break;
+          }
+
+          merges_.rotated++;
+          merges_.rotate_ns += turn_took;
+          if (turn_took > merges_.rotate_ns_max)
+            merges_.rotate_ns_max = turn_took;
+          turned_in_frame_ = true;
+
+          /* The turned copy is one of ours, so the engine reads it by the
+           * descriptor the library built when the zone cut it -- there is no
+           * allocator handle to name it by. */
+          l.handle = nullptr;
+          l.vendor = inter;
+          l.source_left = 0.F;
+          l.source_top = 0.F;
+          l.source_right = static_cast<float>(turned_w);
+          l.source_bottom = static_cast<float>(turned_h);
+          l.acquire_fence = *done;
+          turned_fences.push_back(std::move(done));
         }
 
-        hwc::VicSession::Layer &l = drawn[i];
-        const auto crop_w =
-            static_cast<uint32_t>(ceilf(l.source_right - l.source_left));
-        const auto crop_h =
-            static_cast<uint32_t>(ceilf(l.source_bottom - l.source_top));
-        const bool swaps = (bits & 4) != 0;
-        const uint32_t turned_w = swaps ? crop_h : crop_w;
-        const uint32_t turned_h = swaps ? crop_w : crop_h;
-
-        const hwc::VendorBuffer *inter =
-            rotate_pool_->Take(turned_w, turned_h);
-        if (inter == nullptr) {
-          /* The pool's refusal and the engine's look identical from the
-           * dump; the log tells them apart, and says what was asked of a
-           * pool holding what. */
-          ALOGE("no intermediate for a turned %ux%u (pool holds %zu of %zu)",
-                turned_w, turned_h, rotate_pool_->held_slots(),
-                rotate_pool_->cap());
-          turn_failed = true;
-          break;
+        if (turn_failed) {
+          /* Nothing of the group was drawn into the show pool's slot, and a
+           * frame nobody judged forgets what it remembered -- the same exits
+           * every other engine refusal takes. */
+          scratch_->Rewind();
+          ForgetMerge();
+          merges_.rotate_refused++;
+          ALOGE("a turned member could not be drawn");
+          return -EINVAL;
         }
-
-        const int64_t before_turn = NowNs();
-        const int forced_turn = ForcedVicTransform();
-        const uint32_t turn = forced_turn >= 0 && forced_turn <= 7
-                                  ? static_cast<uint32_t>(forced_turn)
-                                  : VicTransformFor(bits);
-        SharedFd done = vic_->ComposeRotated(*inter, l, turn,
-                                             turned_w, turned_h);
-        const int64_t turn_took = NowNs() - before_turn;
-        if (!done) {
-          turn_failed = true;
-          break;
-        }
-
-        merges_.rotated++;
-        merges_.rotate_ns += turn_took;
-        if (turn_took > merges_.rotate_ns_max)
-          merges_.rotate_ns_max = turn_took;
-        turned_in_frame_ = true;
-
-        /* The turned copy is one of ours, so the engine reads it by the
-         * descriptor the library built when the zone cut it -- there is no
-         * allocator handle to name it by. */
-        l.handle = nullptr;
-        l.vendor = inter;
-        l.source_left = 0.F;
-        l.source_top = 0.F;
-        l.source_right = static_cast<float>(turned_w);
-        l.source_bottom = static_cast<float>(turned_h);
-        l.acquire_fence = *done;
-        turned_fences.push_back(std::move(done));
-      }
-
-      if (turn_failed) {
-        /* Nothing of the group was drawn into the show pool's slot, and a
-         * frame nobody judged forgets what it remembered -- the same exits
-         * every other engine refusal takes. */
-        scratch_->Rewind();
-        ForgetMerge();
-        merges_.rotate_refused++;
-        ALOGE("a turned member could not be drawn");
-        return -EINVAL;
       }
 
       const int64_t before_merge = NowNs();
       merged = vic_->Compose(*target->vendor, drawn, merge.width,
                              merge.height,
-                             target_ready ? *target_ready : -1);
+                             target_ready ? *target_ready : -1,
+                             VicTransformFor(group_turn));
       if (!merged) {
         /* The engine would not take it. Nothing has been written, so the
          * honest thing is to drop the frame rather than show a window
@@ -1263,6 +1295,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
 
       const int64_t took = NowNs() - before_merge;
       merges_.frames++;
+      if (group_turn != 0)
+        merges_.turn_folded++;
       merges_.layers += merge.layers.size();
       const size_t bucket = merge.layers.empty()
                                 ? 0
@@ -1676,8 +1710,9 @@ std::string TegraAtomicStateManager::DumpState() {
          << (m.rotated != 0 ? m.rotate_ns / 1000 /
                                   static_cast<int64_t>(m.rotated)
                             : 0)
-         << " (worst " << (m.rotate_ns_max / 1000) << ")\n"
-         << "  turns refused           : " << m.rotate_refused << "\n";
+          << " (worst " << (m.rotate_ns_max / 1000) << ")\n"
+          << "  turns refused           : " << m.rotate_refused << "\n"
+          << "  turns folded into pass  : " << m.turn_folded << "\n";
     }
     if (rotate_pool_ && rotate_pool_->held_slots() != 0)
       ss << "  intermediates held      : " << rotate_pool_->held_slots()

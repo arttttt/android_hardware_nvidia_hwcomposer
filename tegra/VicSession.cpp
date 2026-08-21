@@ -251,7 +251,7 @@ VicSession::~VicSession() {
 
 drm_hwcomposer::SharedFd VicSession::Compose(
     const VendorBuffer &target, const std::vector<Layer> &layers,
-    uint32_t width, uint32_t height, int target_ready) {
+    uint32_t width, uint32_t height, int target_ready, uint32_t transform) {
   /* The layers are still mostly the framework's buffers, and the allocator
    * is answerable for those; a turned copy among them carries its own
    * description and needs no one. */
@@ -263,14 +263,14 @@ drm_hwcomposer::SharedFd VicSession::Compose(
 
   return ComposeInto(gralloc, target.surface.data(), target.width,
                      target.height, layers, width, height, target_ready,
-                     target.surface.data());
+                     target.surface.data(), transform);
 }
 
 drm_hwcomposer::SharedFd VicSession::ComposeInto(
     drm_hwcomposer::NvGralloc *gralloc, const void *target_surfaces,
     uint32_t buffer_width, uint32_t buffer_height,
     const std::vector<Layer> &layers, uint32_t width, uint32_t height,
-    int target_ready, const uint32_t *probe_words) {
+    int target_ready, const uint32_t *probe_words, uint32_t transform) {
   if (layers.empty() || layers.size() > kMaxLayers) {
     refused_++;
     return {};
@@ -407,6 +407,10 @@ drm_hwcomposer::SharedFd VicSession::ComposeInto(
       return {};
     }
   }
+
+  /* One transform for the whole configuration, applied to the read of
+   * every source. Each destination rectangle stays in the panel's axes. */
+  configure_transform_(session_, config, transform);
 
   /* Where a layer above covers one below completely there is no reason to
    * read the lower one at all, and the engine can be told so. Offered rather

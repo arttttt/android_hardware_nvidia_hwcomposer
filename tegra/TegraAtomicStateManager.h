@@ -505,6 +505,11 @@ class TegraAtomicStateManager : public AtomicStateManager {
     int64_t rotate_ns_max = 0;
     uint64_t rotate_refused = 0;
 
+    /* Groups whose turn the merge pass carried, with no turning pass of
+     * their own. Without this count, rotated falling to zero would read
+     * as the turns having gone, while they were still running. */
+    uint64_t turn_folded = 0;
+
     /* How many layers the drawn groups carried, bucketed on one, two,
      * three, four and five-or-more members. A one-member group costs a
      * whole engine pass for a single layer, and its share decides whether
