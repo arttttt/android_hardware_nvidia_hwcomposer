@@ -93,43 +93,43 @@ uint8_t TransformBits(const LayerTransform &t) {
 /* The engine's code for each framework transform.
  *
  * The engine has no named transforms at all: a code is three independent
- * bits of axis, the low bit mirroring its axis, the next bit its own
- * axis, and the third swapping the axes (a transpose). The rows below are
- * named for the bits, not for the axes in any geometric order: the
- * disassembly does not say whether a mirror is applied before the
- * transpose or after, so no row that carries both can be named by which
- * axis it mirrors in space. All eight combinations are legal and handled
- * alike -- there is no dictionary, so nothing here is a special case that
- * could go stale.
+ * bits -- the low bit mirroring the first axis, the next the second, the
+ * third swapping them. The transform is one value for the whole
+ * composition, not one per source: it lives in three bytes of the
+ * configuration and is written by a single call that takes no source
+ * index. Only sources are ever transformed; the target is never turned.
  *
- * Only sources are ever transformed; the target is never turned. The
- * table translates the framework's transform into these axis bits, and it
- * is taken from the stock composer's translation and confirmed
- * structurally against a disassembly of the library's body rather than
- * trusted on practice alone.
+ * The mirrors are applied AFTER the transpose, in the destination's axes.
+ * That is the one thing the rows turn on, and it is what makes this table
+ * differ from WindowTransformFor, where the controller mirrors in the
+ * buffer's axes and reads columnar. The four rows without a turn agree
+ * between the two tables; the four with a turn cannot, and must not be
+ * unified.
  *
- * Passing the framework's own bits straight through is believed
- * equivalent, because the axes commute -- but it has not been verified.
- * The table must not be simplified without running all eight codes.
+ * The values are the stock composer's own translation, recovered from a
+ * disassembly of its rotating blit -- which was this same engine, chosen
+ * because the older two-dimensional block has no instance on this chip.
+ * They are reproduced by the mirrors-after-transpose reading, which is
+ * how the reading was confirmed: quarter turn one way is transpose then
+ * a first-axis mirror, the other way transpose then a second-axis one.
  *
  * The index is the framework's own bit value, so row 6 is FLIP_V with a
- * quarter turn and row 7 is ROT_270 -- not the other way round. Those two
- * stood swapped, and a swap of exactly these two rows is a single mirror:
- * the turned layer came out of the engine mirrored while the same layer
- * on a window came out right, so a window migrating between the two
- * flipped from frame to frame for as long as the scene moved. The order
- * here now agrees with WindowTransformFor row for row on the six rows the
- * two tables share, which is the check that caught it. */
+ * quarter turn and row 7 is ROT_270 -- not the other way round.
+ *
+ * Passing the framework's own bits straight through is NOT equivalent,
+ * and the rows show why: the two quarter turns map to codes that are
+ * neither the framework's own nor each other's. The table must not be
+ * simplified. */
 uint32_t VicTransformFor(uint8_t bits) {
   static constexpr uint32_t kTable[8] = {
       0, /* identity          -- 000: unchanged */
       1, /* FLIP_H            -- 001: mirror the first axis */
       2, /* FLIP_V            -- 010: mirror the second axis */
       3, /* ROT_180           -- 011: both mirrors */
-      6, /* ROT_90            -- 110: transpose + second-axis mirror */
-      7, /* FH|ROT_90         -- 111: transpose + both mirrors */
+      5, /* ROT_90            -- 101: transpose, then mirror the first axis */
+      7, /* FH|ROT_90         -- 111: transpose, then both mirrors */
       4, /* FV|ROT_90         -- 100: plain transpose */
-      5, /* ROT_270           -- 101: transpose + first-axis mirror */
+      6, /* ROT_270           -- 110: transpose, then mirror the second axis */
   };
   return kTable[bits & 7];
 }
