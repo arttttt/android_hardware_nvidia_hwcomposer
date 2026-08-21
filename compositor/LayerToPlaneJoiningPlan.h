@@ -68,6 +68,10 @@ struct LayerToPlaneJoiningPlan {
     kLivesOverflow,
     /* A layer refused the plane class the steering chose for it. */
     kSeatRefused,
+    /* No run of the needed width is uniform in transform: the engine
+     * has one turn for the whole configuration, so a mixed run would
+     * turn members that were not asked. */
+    kMixedTurn,
   };
   Steering steering = Steering::kFitsOrdinary;
 

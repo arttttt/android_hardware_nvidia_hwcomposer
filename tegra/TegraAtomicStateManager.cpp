@@ -352,9 +352,10 @@ uint32_t DepthForZPos(int z_pos) {
  * keeps; duplicated rather than shared because the two dumps answer to
  * different owners, and a shared table would couple them. */
 const char *SteeringWord(int steering) {
-  static const char *const kNames[] = {"steered",       "fits ordinary",
-                                       "monotone",      "run too long",
-                                       "lives overflow", "seat refused"};
+  static const char *const kNames[] = {"steered",        "fits ordinary",
+                                       "monotone",       "run too long",
+                                       "lives overflow", "seat refused",
+                                       "mixed turn"};
   if (steering < 0 ||
       steering >= static_cast<int>(sizeof(kNames) / sizeof(kNames[0])))
     return "?";

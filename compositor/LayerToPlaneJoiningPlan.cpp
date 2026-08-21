@@ -33,6 +33,14 @@ namespace {
 
 using PlaneRef = std::shared_ptr<BindingOwner<Plane>>;
 
+/* Whether two layers may share one merge pass. The engine has a single
+ * transform for the whole configuration, applied to every source it is
+ * told to read: a mixed group would turn a member that was not asked.
+ * One helper, because two copies of this question had already drifted. */
+bool SharesTurn(const LayerTransform &a, const LayerTransform &b) {
+  return a.hflip == b.hflip && a.vflip == b.vflip && a.rotate90 == b.rotate90;
+}
+
 /* The first fit: each layer takes the first remaining plane that can
  * show it, and a plane once passed is never offered again. With the
  * merging planes listed last, whatever fails to find an ordinary plane
@@ -48,9 +56,21 @@ bool PlaceFirstFit(LayerToPlaneJoiningPlan &plan,
 
     const auto suitable_plane = std::find_if(first_avail_plane,
                                              avail_planes.end(),
-                                             [&dhl](const auto &plane) {
-                                               return plane->Get()
-                                                   ->IsValidForLayer(&dhl);
+                                             [&dhl, &plan](const auto &plane) {
+                                               if (!plane->Get()->IsValidForLayer(
+                                                       &dhl))
+                                                 return false;
+                                               if (!plane->Get()->IsMerging())
+                                                 return true;
+                                               for (const auto &joining : plan.plan) {
+                                                 if (joining.plane->Get()
+                                                         ->IsMerging() &&
+                                                     !SharesTurn(dhl.pi.transform,
+                                                                 joining.layer.pi
+                                                                     .transform))
+                                                   return false;
+                                               }
+                                               return true;
                                              });
     if (suitable_plane == avail_planes.end()) {
       return false;
@@ -141,23 +161,41 @@ bool PlaceSteered(LayerToPlaneJoiningPlan &plan,
     return false;
   }
 
+  const size_t run_len = need;
+  auto run_uniform = [&](size_t begin) {
+    const LayerTransform &t = composition[begin].pi.transform;
+    for (size_t i = 1; i < run_len; i++) {
+      if (!SharesTurn(composition[begin + i].pi.transform, t))
+        return false;
+    }
+    return true;
+  };
+
   size_t live_here = 0;
-  for (size_t i = 0; i < need; i++)
+  for (size_t i = 0; i < run_len; i++)
     if (composition[i].live)
       live_here++;
 
+  bool found = run_uniform(0);
   size_t run_begin = 0;
-  const size_t run_len = need;
   size_t fewest_live = live_here;
-  for (size_t i = need; i < composition.size(); i++) {
-    if (composition[i - need].live)
+  for (size_t i = run_len; i < composition.size(); i++) {
+    if (composition[i - run_len].live)
       live_here--;
     if (composition[i].live)
       live_here++;
-    if (live_here < fewest_live) {
+    const size_t begin = i - run_len + 1;
+    if (!run_uniform(begin))
+      continue;
+    if (!found || live_here < fewest_live) {
+      found = true;
       fewest_live = live_here;
-      run_begin = i - need + 1;
+      run_begin = begin;
     }
+  }
+  if (!found) {
+    plan.steering = Steering::kMixedTurn;
+    return false;
   }
 
   /* Seat everything tentatively -- the plan's z comes from position in
