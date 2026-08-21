@@ -172,11 +172,16 @@ uint32_t WindowTransformFor(uint8_t bits) {
  * The window mapping above was taken from the shipped stock composer and
  * has not been confirmed by our own run. The door substitutes one of the
  * eight values on a still picture, so all eight can be driven and an
- * expected map read off the panel. Read once. */
+ * expected map read off the panel.
+ *
+ * Read every time rather than once. The map is read off the panel by
+ * walking the eight values and looking, and a door read once needs the
+ * composer restarted between values -- which reshuffles the scene being
+ * looked at, so what the eye compares is no longer the same picture. The
+ * cost is a property read per window per frame, paid only while someone
+ * is standing in front of the panel driving it. */
 int ForcedWindowTransform() {
-  static const int forced =
-      property_get_int32("vendor.hwc.test.wintransform", -1);
-  return forced;
+  return property_get_int32("vendor.hwc.test.wintransform", -1);
 }
 
 /* When a fence came due, or nothing if it has not yet.
@@ -1578,10 +1583,16 @@ void TegraAtomicStateManager::NoteFrame(
   for (const auto &window : windows) {
     if (window.bufferFd == 0)
       continue;
+    /* The flags word goes out beside the rectangle because the turn a
+     * window carries lives nowhere else: the layer's own transform is not
+     * in this line, and the mirrors and the columnar read are exactly what
+     * a wrongly-turned picture is made of. Printed raw -- the bits are
+     * TEGRA_DC_EXT_FLIP_FLAG_*, and naming them here would cost the line
+     * more room than reading a hex word costs the reader. */
     char b[128];
-    snprintf(b, sizeof(b), " %d:fd%d %d,%d %dx%d z%u", window.index,
+    snprintf(b, sizeof(b), " %d:fd%d %d,%d %dx%d z%u f%x", window.index,
              window.bufferFd, window.outX, window.outY, window.outWidth,
-             window.outHeight, window.z);
+             window.outHeight, window.z, window.flags);
     line << b;
   }
   /* When the line was written, in the same clock the engine's timings use.
