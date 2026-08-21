@@ -752,52 +752,22 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
     }
   }
 
-  /* Clipped to the panel before anything else is derived from it.
-   *
-   * A layer sliding off an edge puts part of its rectangle outside the
-   * panel, and a group's corner outside the panel is a position this
-   * hardware cannot be told: the window's coordinates are unsigned
-   * thirteen-bit fields, the kernel passes them through unchecked -- its
-   * own comment says so -- and a negative number wraps into a position far
-   * off the panel, where the window is silently never scanned. So the
-   * visible part is kept, the rest is cut away here: each rectangle is
-   * intersected with the panel and its source trimmed in proportion, and a
-   * member nothing of which is visible leaves the group. What remains is a
-   * group that lies on the panel whole, by construction. */
+  /* SurfaceFlinger already intersects the layer with the viewport before
+   * we see it, so a member off the panel is a broken contract, not a
+   * case to trim. Trimming would hide it, which is why the old clip
+   * existed -- and it was also wrong under a turn, because it moved the
+   * source along same-named axes. */
   if (!merge.layers.empty() && panel_w > 0 && panel_h > 0) {
-    size_t kept = 0;
     for (size_t i = 0; i < merge.layers.size(); ++i) {
-      hwc::VicSession::Layer l = merge.layers[i];
-      const int32_t cl = std::max(l.display_left, 0);
-      const int32_t ct = std::max(l.display_top, 0);
-      const int32_t cr = std::min(l.display_right, panel_w);
-      const int32_t cb = std::min(l.display_bottom, panel_h);
-      if (cr <= cl || cb <= ct)
-        continue;
-
-      const auto dw = static_cast<float>(l.display_right - l.display_left);
-      const auto dh = static_cast<float>(l.display_bottom - l.display_top);
-      if (dw > 0 && dh > 0) {
-        const float sx = (l.source_right - l.source_left) / dw;
-        const float sy = (l.source_bottom - l.source_top) / dh;
-        l.source_left += static_cast<float>(cl - l.display_left) * sx;
-        l.source_top += static_cast<float>(ct - l.display_top) * sy;
-        l.source_right -= static_cast<float>(l.display_right - cr) * sx;
-        l.source_bottom -= static_cast<float>(l.display_bottom - cb) * sy;
+      const hwc::VicSession::Layer &l = merge.layers[i];
+      if (l.display_left < 0 || l.display_top < 0 ||
+          l.display_right > panel_w || l.display_bottom > panel_h) {
+        ALOGE("merge member %zu sits off the panel: %d,%d-%d,%d on %dx%d",
+              i, l.display_left, l.display_top, l.display_right,
+              l.display_bottom, panel_w, panel_h);
+        return nullptr;
       }
-      l.display_left = cl;
-      l.display_top = ct;
-      l.display_right = cr;
-      l.display_bottom = cb;
-
-      merge.layers[kept] = l;
-      merge.source_ids[kept] = merge.source_ids[i];
-      merge.transforms[kept] = merge.transforms[i];
-      ++kept;
     }
-    merge.layers.resize(kept);
-    merge.source_ids.resize(kept);
-    merge.transforms.resize(kept);
   }
 
   /* The group's own frame of reference, found now that its members are
