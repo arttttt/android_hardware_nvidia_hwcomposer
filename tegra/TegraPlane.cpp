@@ -16,7 +16,6 @@
 
 #include "tegra/TegraPlane.h"
 
-#include <cutils/properties.h>
 #include <tegra_dc_ext.h>
 
 #include "compositor/LayerData.h"
@@ -66,21 +65,6 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
                                         static_cast<float>(bi.height));
 
     if (pi.transform.hflip || pi.transform.vflip || pi.transform.rotate90) {
-      static const bool turn_in_merge =
-          property_get_bool("vendor.hwc.merge.rotate", 1) != 0;
-      /* A turned member is taken now: it is drawn turned into an
-       * intermediate by a pass of the engine's own before the group
-       * composes, the way the stock composer turned layers on the way
-       * into its scratch. The switch puts the refusal back -- turned
-       * layers go to a window that turns them, or the GPU -- for an A/B
-       * on one binary; the counter keeps the tally of what the refusal
-       * costs. */
-      if (!turn_in_merge) {
-        transform_refusals_.fetch_add(1, std::memory_order_relaxed);
-        ALOGV("plane %u: the engine will not turn a layer", index_);
-        return false;
-      }
-
       /* A crop collapsed to nothing cannot be turned into anything --
        * the stock blit skipped such layers on the same strict
        * comparison. Nothing upstream ever sends one; should one arrive,
@@ -89,20 +73,6 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
       if (e.src_w <= 0 || e.src_h <= 0) {
         ALOGV("plane %u: nothing to turn in a %gx%g crop", index_, e.src_w,
               e.src_h);
-        return false;
-      }
-
-      /* And a turned copy has to land somewhere: the intermediates are
-       * cut no larger than the reach says, and a copy that fits none of
-       * them is a group refused at execute time, every frame, which no
-       * ladder walks back. Windows and the GPU turn such a layer
-       * natively -- it goes to them. */
-      if (turn_reach_ != 0 &&
-          (e.src_w > static_cast<float>(turn_reach_) ||
-           e.src_h > static_cast<float>(turn_reach_))) {
-        scale_refusals_.fetch_add(1, std::memory_order_relaxed);
-        ALOGV("plane %u: no intermediate holds a turned %gx%g", index_,
-              e.src_w, e.src_h);
         return false;
       }
     }

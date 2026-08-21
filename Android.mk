@@ -160,7 +160,6 @@ LOCAL_SRC_FILES := \
     tegra/TegraDisplayPipeline.cpp \
     tegra/TegraVSyncSource.cpp \
     tegra/ScratchPool.cpp \
-    tegra/TurnPool.cpp \
     tegra/VicSession.cpp
 
 include $(BUILD_SHARED_LIBRARY)

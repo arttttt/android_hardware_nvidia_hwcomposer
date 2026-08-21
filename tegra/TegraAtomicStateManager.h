@@ -30,7 +30,6 @@
 #include "tegra/CursorUnit.h"
 #include "tegra/RefreshGovernor.h"
 #include "tegra/ScratchPool.h"
-#include "tegra/TurnPool.h"
 #include "tegra/VicSession.h"
 #include "utils/properties.h"
 
@@ -104,9 +103,9 @@ class TegraAtomicRequest : public AtomicRequest {
     std::vector<uint64_t> source_ids;
 
     /* How each member is turned, in step with `layers`: the framework's
-     * bits, hflip | vflip << 1 | rotate90 << 2, nought for most. A turned
-     * member is drawn turned into an intermediate by its own engine pass
-     * before the group composes, and a turn that changed is a different
+     * bits, hflip | vflip << 1 | rotate90 << 2, nought for most. The merge
+     * pass carries one value for the whole configuration, so every member
+     * of a seated group shares it; a turn that changed is a different
      * picture -- so this is part of what the drawn result is recognised
      * by. */
     std::vector<uint8_t> transforms;
@@ -350,22 +349,6 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * write. Null together where the device was not asked for them. */
   hwc::VicSession *const vic_ = nullptr;
 
-  /* Where turned copies land -- see TurnPool for why it is its own pool
-   * and not the show pool's shape. As many turned members as the engine
-   * takes sources in a pass; the memory behind them is lazy, cut to size,
-   * and given back when nothing has turned for a while, so the cap prices
-   * a scene that actually happens, not a reservation. No fences between
-   * writes: the engine's channel serialises our passes, so the group that
-   * read an intermediate has run before the next turn rewrites it -- held
-   * by the driver's construction (serialize=true, one channel a session),
-   * and by the stock blit's own reliance on the same. */
-  static constexpr size_t kMaxRotatedMembers = hwc::VicSession::kMaxLayers;
-  std::unique_ptr<hwc::TurnPool> rotate_pool_;
-
-  /* Whether the frame being built has turned anything yet -- settled into
-   * the pool's idle accounting at the top of the next Execute. */
-  bool turned_in_frame_ = false;
-
   hwc::ScratchPool *const scratch_ = nullptr;
 
   /* The controller's cursor, or null where another descriptor holds it.
@@ -497,17 +480,12 @@ class TegraAtomicStateManager : public AtomicStateManager {
     uint64_t changed_transform = 0;
     uint64_t nameless = 0;
 
-    /* The turning passes: how many ran, what they cost the engine, and how
-     * many groups were refused because they asked for more turns than the
-     * intermediates can hold at once. */
-    uint64_t rotated = 0;
-    int64_t rotate_ns = 0;
-    int64_t rotate_ns_max = 0;
+    /* Groups refused because the planner seated a mixed run -- a seating
+     * error, not a case. */
     uint64_t rotate_refused = 0;
 
-    /* Groups whose turn the merge pass carried, with no turning pass of
-     * their own. Without this count, rotated falling to zero would read
-     * as the turns having gone, while they were still running. */
+    /* Groups whose turn the merge pass carried. Without this count the
+     * dump would go silent in the case worth reading. */
     uint64_t turn_folded = 0;
 
     /* How many layers the drawn groups carried, bucketed on one, two,
