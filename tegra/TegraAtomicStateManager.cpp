@@ -1704,15 +1704,18 @@ std::string TegraAtomicStateManager::DumpState() {
          << ", size " << m.changed_size << ", blend " << m.changed_blend
          << ", transform " << m.changed_transform << ", nameless "
          << m.nameless << "\n";
-    if (m.rotated != 0 || m.rotate_refused != 0) {
+    /* A group whose turn the pass carried leaves every other count here at
+     * nought, so a block gated on those alone would go silent in exactly
+     * the case worth reading. */
+    if (m.rotated != 0 || m.rotate_refused != 0 || m.turn_folded != 0) {
       ss << "  members turned          : " << m.rotated << "\n"
          << "  turn us per pass        : "
          << (m.rotated != 0 ? m.rotate_ns / 1000 /
                                   static_cast<int64_t>(m.rotated)
                             : 0)
-          << " (worst " << (m.rotate_ns_max / 1000) << ")\n"
-          << "  turns refused           : " << m.rotate_refused << "\n"
-          << "  turns folded into pass  : " << m.turn_folded << "\n";
+         << " (worst " << (m.rotate_ns_max / 1000) << ")\n"
+         << "  turns refused           : " << m.rotate_refused << "\n"
+         << "  turns folded into pass  : " << m.turn_folded << "\n";
     }
     if (rotate_pool_ && rotate_pool_->held_slots() != 0)
       ss << "  intermediates held      : " << rotate_pool_->held_slots()

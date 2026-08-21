@@ -186,11 +186,11 @@ class VicSession {
    * second set of rules, and the last time this class had two, the one
    * nobody was watching wrote the fault we spent a month chasing in the
    * other. */
-   drm_hwcomposer::SharedFd Compose(const VendorBuffer &target,
-                                    const std::vector<Layer> &layers,
-                                    uint32_t width = 0, uint32_t height = 0,
-                                    int target_ready = -1,
-                                    uint32_t transform = 0);
+  drm_hwcomposer::SharedFd Compose(const VendorBuffer &target,
+                                   const std::vector<Layer> &layers,
+                                   uint32_t width = 0, uint32_t height = 0,
+                                   int target_ready = -1,
+                                   uint32_t transform = 0);
 
   /* The target descriptor as it stood the last time a frame was handed to
    * the engine with a vendor-born target: the memory handle in the word
@@ -288,10 +288,10 @@ class VicSession {
                                        uint32_t buffer_width,
                                        uint32_t buffer_height,
                                        const std::vector<Layer> &layers,
-                                        uint32_t width, uint32_t height,
-                                        int target_ready,
-                                        const uint32_t *probe_words,
-                                        uint32_t transform);
+                                       uint32_t width, uint32_t height,
+                                       int target_ready,
+                                       const uint32_t *probe_words,
+                                       uint32_t transform);
 
   /* Their settings structure, held as a plain run of bytes.
    *
