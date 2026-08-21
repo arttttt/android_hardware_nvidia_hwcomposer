@@ -1058,15 +1058,24 @@ void TegraAtomicStateManager::RememberMerge(
  * member are all plain. Written as the simplest format that carries a
  * picture, because whatever reads it will not be this program.
  *
- * Armed by writing a number to the property and disarmed by having been
- * written, so a frame is caught rather than a stream: asking twice with
- * the same number asks once, and a fresh number asks again. */
+ * The number asked for is how many frames in a row to catch, because the
+ * defects left are the ones that live in movement: a frame caught at
+ * leisure shows a scene that has settled, and a scene that has settled has
+ * been proved right by other means already. A run of frames through a
+ * rotation can be walked afterwards until the wrong one is found. Asking
+ * again with the same number asks nothing -- a fresh number starts a fresh
+ * run. */
 void TegraAtomicStateManager::WriteMergedPicture(
     const hwc::VendorBuffer &target, const SharedFd &done) {
   const int arm = property_get_int32("vendor.hwc.test.dumpmerge", 0);
-  if (arm == 0 || arm == merge_picture_arm_)
+  if (arm != merge_picture_arm_) {
+    merge_picture_arm_ = arm;
+    merge_picture_left_ = arm > 0 ? arm : 0;
+    merge_picture_seq_ = 0;
+  }
+  if (merge_picture_left_ == 0)
     return;
-  merge_picture_arm_ = arm;
+  merge_picture_left_--;
 
   if (target.pixels == nullptr || target.pitch == 0)
     return;
@@ -1077,9 +1086,11 @@ void TegraAtomicStateManager::WriteMergedPicture(
     sync_wait(*done, 500);
 
   /* Somewhere this process may actually write: the shell's own directory
-   * belongs to the shell, and the composer is not it. */
+   * belongs to the shell, and the composer is not it. Numbered in the
+   * order they were drawn, so the run reads as the animation ran. */
   char path[64];
-  snprintf(path, sizeof(path), "/data/misc/hwc-merge-%d.ppm", arm);
+  snprintf(path, sizeof(path), "/data/misc/hwc-merge-%03d.ppm",
+           merge_picture_seq_++);
   FILE *out = fopen(path, "wb");
   if (out == nullptr) {
     ALOGE("no picture: %s: %s", path, strerror(errno));

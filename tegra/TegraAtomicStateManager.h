@@ -573,10 +573,13 @@ class TegraAtomicStateManager : public AtomicStateManager {
 
   /* Writes what the engine drew into the group's slot to a file, when
    * asked. See the body for why a picture of it is worth having at all.
-   * The number last asked for, so one asking writes one frame. */
+   * The number last asked for, how many frames of the run are still owed,
+   * and where in the run the next one goes. */
   void WriteMergedPicture(const hwc::VendorBuffer &target,
                           const SharedFd &done);
   int merge_picture_arm_ = 0;
+  int merge_picture_left_ = 0;
+  int merge_picture_seq_ = 0;
 
   bool merge_cache_ = true;
   static bool MergeCacheFromProperty();
