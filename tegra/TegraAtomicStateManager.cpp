@@ -1069,8 +1069,10 @@ void TegraAtomicStateManager::WriteMergedPicture(
   if (done)
     sync_wait(*done, 500);
 
+  /* Somewhere this process may actually write: the shell's own directory
+   * belongs to the shell, and the composer is not it. */
   char path[64];
-  snprintf(path, sizeof(path), "/data/local/tmp/merge-%d.ppm", arm);
+  snprintf(path, sizeof(path), "/data/misc/hwc-merge-%d.ppm", arm);
   FILE *out = fopen(path, "wb");
   if (out == nullptr) {
     ALOGE("no picture: %s: %s", path, strerror(errno));
