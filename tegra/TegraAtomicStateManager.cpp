@@ -221,6 +221,13 @@ uint32_t WindowTransformFor(uint8_t bits) {
  * eight values on a still picture, so all eight can be driven and an
  * expected map read off the panel.
  *
+ * Substituted only where a layer already carries a turn of its own. A
+ * window with nothing to turn -- the client's target above all, which is
+ * the whole screen already composed -- would otherwise be turned too, and
+ * every frame the scene fell to the client would come out wrong for a
+ * reason that has nothing to do with the question. The eye watching the
+ * panel would then be describing the door rather than the map.
+ *
  * Read every time rather than once. The map is read off the panel by
  * walking the eight values and looking, and a door read once needs the
  * composer restarted between values -- which reshuffles the scene being
@@ -423,7 +430,7 @@ bool DescribeWindow(const LayerData &layer, uint32_t plane_id, uint32_t depth,
    * mapping above can be exercised on a picture that does not move. */
   uint8_t transform = TransformBits(layer.pi.transform);
   const int forced = ForcedWindowTransform();
-  if (forced >= 0 && forced <= 7)
+  if (transform != 0 && forced >= 0 && forced <= 7)
     transform = static_cast<uint8_t>(forced);
   out->flags |= WindowTransformFor(transform);
 
