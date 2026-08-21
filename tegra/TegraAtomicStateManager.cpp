@@ -1396,7 +1396,17 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         return -EINVAL;
       }
 
-      WriteMergedPicture(*target->vendor, merged);
+      /* Only frames that carried a turn are worth a place in the run. A
+       * still portrait scene draws merge after merge with nothing turned
+       * in any of them, and a run armed before a rotation would spend
+       * itself on those and catch the rotation's last frames or none.
+       * Counted the same way it is drawn: any member turned at all. */
+      const bool any_turn =
+          group_turn != 0 ||
+          std::any_of(merge.transforms.begin(), merge.transforms.end(),
+                      [](uint8_t bits) { return bits != 0; });
+      if (any_turn)
+        WriteMergedPicture(*target->vendor, merged);
 
       const int64_t took = NowNs() - before_merge;
       merges_.frames++;
