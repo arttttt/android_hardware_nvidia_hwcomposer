@@ -659,8 +659,17 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * alpha and at what scale -- and no answer to it survives the frame it
    * belongs to anywhere else: this composer's lines never reach the system
    * log on this platform, so the dump is the only channel. A ring, because
-   * the defect is reproduced first and asked about after. */
-  static constexpr size_t kFrameRing = 64;
+   * the defect is reproduced first and asked about after.
+   *
+   * Long enough to hold a whole rotation, animations and all. Sixty-four
+   * frames is a second at the panel's rate, and the defect being chased
+   * lasts most of a second somewhere inside an animation that runs for
+   * several -- so a ring that short forces the dump to be taken again and
+   * again while the animation runs, and the taking is heavy enough to push
+   * the composer off the hardware path and change the very thing being
+   * watched. Five hundred lines cost a quarter of a megabyte and remove
+   * the observer from the experiment. */
+  static constexpr size_t kFrameRing = 512;
   std::vector<std::string> frame_ring_;
   size_t frame_ring_pos_ = 0; /* where the next line goes, once full */
   void NoteFrame(const TegraAtomicRequest &tegra,
