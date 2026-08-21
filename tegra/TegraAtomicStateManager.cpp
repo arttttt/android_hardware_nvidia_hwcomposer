@@ -106,15 +106,18 @@ uint8_t TransformBits(const LayerTransform &t) {
  * between the two tables; the four with a turn cannot, and must not be
  * unified.
  *
- * The values are the stock composer's own translation, recovered from a
- * disassembly of its rotating blit -- which was this same engine, chosen
- * because the older two-dimensional block has no instance on this chip.
- * They are reproduced by the mirrors-after-transpose reading, which is
- * how the reading was confirmed: quarter turn one way is transpose then
- * a first-axis mirror, the other way transpose then a second-axis one.
- *
  * The index is the framework's own bit value, so row 6 is FLIP_V with a
  * quarter turn and row 7 is ROT_270 -- not the other way round.
+ *
+ * The two quarter turns have been read off the panel, not derived. A
+ * disassembly of the stock composer's rotating blit yields a translation
+ * naming its own transforms, and reading those names as the framework's
+ * puts the two quarter turns the other way round -- which the panel
+ * refuses: the picture then stands a half turn from upright, exactly the
+ * distance between the two codes. The names in that translation are the
+ * vendor's and do not carry the framework's sense of which way a quarter
+ * turn goes, so they cannot settle these two rows. The door below can,
+ * and did.
  *
  * Passing the framework's own bits straight through is NOT equivalent,
  * and the rows show why: the two quarter turns map to codes that are
@@ -126,12 +129,29 @@ uint32_t VicTransformFor(uint8_t bits) {
       1, /* FLIP_H            -- 001: mirror the first axis */
       2, /* FLIP_V            -- 010: mirror the second axis */
       3, /* ROT_180           -- 011: both mirrors */
-      5, /* ROT_90            -- 101: transpose, then mirror the first axis */
+      6, /* ROT_90            -- 110: transpose, then mirror the second axis */
       7, /* FH|ROT_90         -- 111: transpose, then both mirrors */
       4, /* FV|ROT_90         -- 100: plain transpose */
-      6, /* ROT_270           -- 110: transpose, then mirror the second axis */
+      5, /* ROT_270           -- 101: transpose, then mirror the first axis */
   };
   return kTable[bits & 7];
+}
+
+/* Which engine code to force onto every turned member, or -1 to leave
+ * each member's own alone.
+ *
+ * The engine's eight codes are three bits with no dictionary, and which
+ * of them is a given framework transform cannot be settled by reading:
+ * the disassembly names the codes in the vendor's own terms, and those
+ * terms do not say which way a quarter turn goes. So the map is read off
+ * the panel. This substitutes one code for every turned member of the
+ * group at once, which is the right shape for the question -- under a
+ * display rotation every member carries the same transform anyway.
+ *
+ * Read every frame, so the values can be walked while looking at one
+ * still picture rather than restarting between them. */
+int ForcedVicTransform() {
+  return property_get_int32("vendor.hwc.test.victransform", -1);
 }
 
 /* The framework's transform, as the controller's window flags.
@@ -1162,7 +1182,11 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         }
 
         const int64_t before_turn = NowNs();
-        SharedFd done = vic_->ComposeRotated(*inter, l, VicTransformFor(bits),
+        const int forced_turn = ForcedVicTransform();
+        const uint32_t turn = forced_turn >= 0 && forced_turn <= 7
+                                  ? static_cast<uint32_t>(forced_turn)
+                                  : VicTransformFor(bits);
+        SharedFd done = vic_->ComposeRotated(*inter, l, turn,
                                              turned_w, turned_h);
         const int64_t turn_took = NowNs() - before_turn;
         if (!done) {
