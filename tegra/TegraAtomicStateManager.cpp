@@ -1035,6 +1035,70 @@ void TegraAtomicStateManager::RememberMerge(
   last_merge_fence_ = drawn;
 }
 
+/* A picture of what the engine actually drew, taken out of the slot it
+ * drew into.
+ *
+ * Until this existed the only place that composition could be seen was the
+ * panel, and the panel answers in sentences a person has to type: it took
+ * a build, a restart and somebody's eyes to learn one fact about one
+ * frame. Every question that has cost us a day -- which way a turn went,
+ * whether it was mirrored, whether a member landed where its rectangle
+ * said -- is a question about these bytes, and these bytes have been
+ * mapped in this process the whole time.
+ *
+ * Sampled every fourth pixel along both axes: small enough to pull in a
+ * moment, large enough that an orientation, a mirror and a misplaced
+ * member are all plain. Written as the simplest format that carries a
+ * picture, because whatever reads it will not be this program.
+ *
+ * Armed by writing a number to the property and disarmed by having been
+ * written, so a frame is caught rather than a stream: asking twice with
+ * the same number asks once, and a fresh number asks again. */
+void TegraAtomicStateManager::WriteMergedPicture(
+    const hwc::VendorBuffer &target, const SharedFd &done) {
+  const int arm = property_get_int32("vendor.hwc.test.dumpmerge", 0);
+  if (arm == 0 || arm == merge_picture_arm_)
+    return;
+  merge_picture_arm_ = arm;
+
+  if (target.pixels == nullptr || target.pitch == 0)
+    return;
+
+  /* The engine is still writing until this comes due, and a picture read
+   * before then is a picture of the frame before. */
+  if (done)
+    sync_wait(*done, 500);
+
+  char path[64];
+  snprintf(path, sizeof(path), "/data/local/tmp/merge-%d.ppm", arm);
+  FILE *out = fopen(path, "wb");
+  if (out == nullptr) {
+    ALOGE("no picture: %s: %s", path, strerror(errno));
+    return;
+  }
+
+  constexpr uint32_t kStep = 4;
+  const uint32_t width = target.width / kStep;
+  const uint32_t height = target.height / kStep;
+  fprintf(out, "P6\n%u %u\n255\n", width, height);
+
+  const auto *bytes = reinterpret_cast<const uint8_t *>(target.pixels);
+  std::vector<uint8_t> row(static_cast<size_t>(width) * 3);
+  for (uint32_t y = 0; y < height; ++y) {
+    const auto *line = reinterpret_cast<const uint32_t *>(
+        bytes + static_cast<size_t>(y) * kStep * target.pitch);
+    for (uint32_t x = 0; x < width; ++x) {
+      const uint32_t word = line[x * kStep];
+      row[x * 3 + 0] = static_cast<uint8_t>(word & 0xff);
+      row[x * 3 + 1] = static_cast<uint8_t>((word >> 8) & 0xff);
+      row[x * 3 + 2] = static_cast<uint8_t>((word >> 16) & 0xff);
+    }
+    fwrite(row.data(), 1, row.size(), out);
+  }
+  fclose(out);
+  ALOGI("picture of the group written to %s (%ux%u)", path, width, height);
+}
+
 int TegraAtomicStateManager::Execute(const AtomicRequest &request,
                                      AtomicCommitResult *out_result) {
   const auto &tegra = static_cast<const TegraAtomicRequest &>(request);
@@ -1311,6 +1375,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
               merge.layers.size(), geometry.c_str());
         return -EINVAL;
       }
+
+      WriteMergedPicture(*target->vendor, merged);
 
       const int64_t took = NowNs() - before_merge;
       merges_.frames++;
