@@ -146,6 +146,15 @@ uint32_t VicTransformFor(uint8_t bits) {
  * rest. Empty, identity, or any disagreement therefore yields nothing,
  * and those members are turned one by one the way they always were. */
 uint8_t UniformTurn(const std::vector<uint8_t> &transforms) {
+  /* The door that takes the folding away, leaving every turned member to
+   * its own pass. The two paths draw the same picture by two different
+   * routes, so a scene that comes out wrong under one and right under the
+   * other says which route is at fault -- and says it in the second it
+   * takes to set a property, on the scene that is already on the panel.
+   * Read every frame for that reason. */
+  if (property_get_int32("vendor.hwc.test.foldturn", 1) == 0)
+    return 0;
+
   if (transforms.empty() || transforms.front() == 0)
     return 0;
   for (const uint8_t bits : transforms) {
@@ -1256,10 +1265,20 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       }
 
       const int64_t before_merge = NowNs();
+      /* The same door the turning pass answers to, so a code can be walked
+       * on this route as well. The two routes give the engine the same
+       * code in different company -- one writes a turned copy into a box
+       * cut to the turned crop, the other writes every source into its
+       * own rectangle on the panel -- and a code right in one is not
+       * therefore right in the other. */
+      const int forced_group = ForcedVicTransform();
+      const uint32_t group_code =
+          group_turn != 0 && forced_group >= 0 && forced_group <= 7
+              ? static_cast<uint32_t>(forced_group)
+              : VicTransformFor(group_turn);
       merged = vic_->Compose(*target->vendor, drawn, merge.width,
                              merge.height,
-                             target_ready ? *target_ready : -1,
-                             VicTransformFor(group_turn));
+                             target_ready ? *target_ready : -1, group_code);
       if (!merged) {
         /* The engine would not take it. Nothing has been written, so the
          * honest thing is to drop the frame rather than show a window
