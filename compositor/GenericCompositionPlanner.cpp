@@ -156,6 +156,9 @@ auto GenericCompositionPlanner::ValidateDisplay(
     validated_composition
         .composition_types = GetCompositionTypes(layers, client_start,
                                                  client_size, use_cursor_plane);
+    validated_composition.punch_out_layers = GetPunchOutLayers(layers,
+                                                               client_start,
+                                                               client_size);
 
     bool testing_needed = client_start != 0 || client_size != layers.size();
     if (testing_needed) {
@@ -346,6 +349,41 @@ uint32_t GenericCompositionPlanner::CalcPixOps(
     pixops += layers[z_order]->GetPixOps();
   }
   return pixops;
+}
+
+/* Which layers the client must punch a hole for.
+ *
+ * The client draws every layer it kept into one buffer and hands it over as
+ * the client target, which is shown on a window of its own at the depth of
+ * the layers it holds. A layer this composer took for the hardware and put
+ * BELOW that depth is scanned out from its own window, and the client target
+ * lies over it -- so wherever that layer sits, the client target has to be
+ * transparent, or the pixels it happens to be carrying cover a layer the
+ * client never drew.
+ *
+ * The client does not work this out for itself. It clears under a layer only
+ * when the composer asks, by name, through the requests this list becomes
+ * (SurfaceFlinger.cpp: the clear is gated on getClearClientTarget, which is
+ * exactly what the composer answered). Ask for nothing and the client target
+ * keeps whatever its buffer held a few frames ago -- which after a rotation
+ * is the picture in the old orientation, laid over the new one.
+ *
+ * Only what lies below is asked for. A hardware layer ABOVE the client range
+ * has its own window in front of the client target and needs no hole; asking
+ * for one there would erase what the client did draw. And with no client
+ * composition at all there is no target to punch. */
+auto GenericCompositionPlanner::GetPunchOutLayers(
+    const std::vector<const HwcLayer*>& layers, size_t client_first_z,
+    size_t client_size) -> std::vector<const HwcLayer*> {
+  std::vector<const HwcLayer*> punch_out;
+  if (client_size == 0)
+    return punch_out;
+
+  for (size_t z_order = 0; z_order < client_first_z && z_order < layers.size();
+       ++z_order) {
+    punch_out.push_back(layers[z_order]);
+  }
+  return punch_out;
 }
 
 auto GenericCompositionPlanner::GetCompositionTypes(

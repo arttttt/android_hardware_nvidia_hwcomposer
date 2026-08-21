@@ -81,6 +81,13 @@ class Hwc2DeviceDisplay : public FrontendDisplayBase {
   std::vector<HwcDisplay::ReleaseFence> release_fences;
   std::vector<HwcDisplay::ChangedLayer> changed_layers;
 
+  /* Layers the client is asked to leave transparent for, so that what this
+   * composer scans out from a window of its own is not covered by whatever
+   * the client target's buffer happened to be carrying. Held between the
+   * validate that decided them and the asking that collects them, exactly
+   * as the changed types above are. */
+  std::vector<ILayerId> punch_out_layers;
+
   int64_t next_layer_id = 1;
 };
 
@@ -462,16 +469,57 @@ static int32_t GetActiveConfig(hwc2_device_t *device, hwc2_display_t display,
   return 0;
 }
 
-static int32_t GetDisplayRequests(hwc2_device_t * /*device*/,
-                                  hwc2_display_t /*display*/,
-                                  int32_t * /* out_display_requests */,
+/* Which layers the client must leave transparent for.
+ *
+ * A layer this composer took for the hardware and put below the client
+ * target is scanned out from a window of its own, with the client target
+ * lying over it. The client clears its target under such a layer only when
+ * asked here, by name; unasked, the target keeps whatever its buffer was
+ * carrying from an earlier frame and covers the layer with it. After a
+ * rotation that is the picture in the old orientation, laid over the new
+ * one -- which is what this stub cost until it stopped being a stub.
+ *
+ * Nothing is asked of the display as a whole, only of layers. */
+static int32_t GetDisplayRequests(hwc2_device_t *device,
+                                  hwc2_display_t display,
+                                  int32_t *out_display_requests,
                                   uint32_t *out_num_elements,
-                                  hwc2_layer_t * /*out_layers*/,
-                                  int32_t * /*out_layer_requests*/) {
+                                  hwc2_layer_t *out_layers,
+                                  int32_t *out_layer_requests) {
   ALOGV("GetDisplayRequests");
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
 
-  *out_num_elements = 0;
-  return 0;
+  auto hwc2display = GetHwc2DeviceDisplay(*idisplay);
+
+  if (out_display_requests != nullptr)
+    *out_display_requests = 0;
+
+  /* Asked twice, the first time only to learn how much room to make. The
+   * count is what is answered then, and the answer must survive until the
+   * second asking, so nothing is cleared here. */
+  if (out_layers == nullptr || out_layer_requests == nullptr) {
+    *out_num_elements = hwc2display->punch_out_layers.size();
+    return static_cast<int32_t>(HWC2::Error::None);
+  }
+
+  if (*out_num_elements < hwc2display->punch_out_layers.size()) {
+    ALOGW("Overflow num_elements %d/%zu", *out_num_elements,
+          hwc2display->punch_out_layers.size());
+    return static_cast<int32_t>(HWC2::Error::NoResources);
+  }
+
+  for (size_t i = 0; i < hwc2display->punch_out_layers.size(); ++i) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
+    out_layers[i] = hwc2display->punch_out_layers[i];
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
+    out_layer_requests[i] = HWC2_LAYER_REQUEST_CLEAR_CLIENT_TARGET;
+  }
+
+  *out_num_elements = hwc2display->punch_out_layers.size();
+  hwc2display->punch_out_layers.clear();
+
+  return static_cast<int32_t>(HWC2::Error::None);
 }
 
 static int32_t GetDisplayType(hwc2_device_t *device, hwc2_display_t display,
@@ -932,15 +980,20 @@ static int32_t ValidateDisplay(hwc2_device_t *device, hwc2_display_t display,
 
   auto hwc2display = GetHwc2DeviceDisplay(*idisplay);
 
-  /* Validating now answers with more than the layers whose composition
-   * changed: it also says which of them the client should punch a hole for.
-   * This entry point has no way to ask for that, so only the first half is
-   * kept -- which is the whole of what it used to be given. */
-  hwc2display->changed_layers = idisplay->ValidateStagedComposition()
-                                    .changed_layers;
+  /* Both halves of the answer are kept. The changed types are collected by
+   * one asking, the holes to punch by another, and this entry point says how
+   * many of each are waiting.
+   *
+   * The second half used to be dropped here. Nothing downstream noticed,
+   * because the client asks for it separately and got an empty answer -- so
+   * it cleared nothing under the layers this composer took, and its target
+   * carried old pixels over them wherever they lay below it. */
+  auto validated = idisplay->ValidateStagedComposition();
+  hwc2display->changed_layers = std::move(validated.changed_layers);
+  hwc2display->punch_out_layers = std::move(validated.punch_out_layers);
 
   *out_num_types = hwc2display->changed_layers.size();
-  *out_num_requests = 0;
+  *out_num_requests = hwc2display->punch_out_layers.size();
 
   return 0;
 }

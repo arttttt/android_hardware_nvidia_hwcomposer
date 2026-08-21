@@ -93,6 +93,11 @@ class GenericCompositionPlanner : public CompositionPlanner {
   static CompositionTypeMap GetCompositionTypes(
       const std::vector<const HwcLayer*>& layers, size_t client_first_z,
       size_t client_size, bool use_cursor_plane);
+
+  /* The layers the client must leave transparent for -- see the body. */
+  static std::vector<const HwcLayer*> GetPunchOutLayers(
+      const std::vector<const HwcLayer*>& layers, size_t client_first_z,
+      size_t client_size);
   static bool HardwareSupportsLayerType(CompositionType comp_type);
   static uint32_t CalcPixOps(const std::vector<const HwcLayer*>& layers,
                              size_t first_z, size_t size);
