@@ -123,19 +123,60 @@ struct PresentInfo {
   DstRectInfo display_frame{};
   DamageInfo damage{};
 
+  struct MatchedExtents {
+    float src_w;
+    float src_h;
+    float dst_w;
+    float dst_h;
+  };
+
+  /* Source and destination extents in the same axes, so a resize is a
+   * disagreement of like with like.
+   *
+   * The display frame arrives already turned: under a quarter turn the
+   * source's width sits against the screen's height and height against
+   * width. Crossing lives here and only here, because four independent
+   * copies of the question had already drifted -- two crossed, two did
+   * not -- and a turned layer that did not resize was read as one that
+   * did. Mirrors swap no axis.
+   *
+   * A missing rectangle means the whole buffer, and that is the caller's
+   * rule: PresentInfo does not know the buffer, so its size arrives as
+   * an argument. */
+  MatchedExtents ExtentsInDestAxes(float whole_w = 0,
+                                   float whole_h = 0) const {
+    float src_w = source_crop.f_rect ? source_crop.f_rect->Width() : whole_w;
+    float src_h = source_crop.f_rect ? source_crop.f_rect->Height() : whole_h;
+    if (transform.rotate90) {
+      const float t = src_w;
+      src_w = src_h;
+      src_h = t;
+    }
+    const float dst_w = display_frame.i_rect
+                            ? static_cast<float>(display_frame.i_rect->Width())
+                            : whole_w;
+    const float dst_h = display_frame.i_rect
+                            ? static_cast<float>(display_frame.i_rect->Height())
+                            : whole_h;
+    return {src_w, src_h, dst_w, dst_h};
+  }
+
+  bool Resizes() const {
+    if (!source_crop.f_rect || !display_frame.i_rect)
+      return false;
+    const auto e = ExtentsInDestAxes();
+    return e.src_w != e.dst_w || e.src_h != e.dst_h;
+  }
+
   bool RequireScalingOrPhasing() const {
     if (!source_crop.f_rect || !display_frame.i_rect) {
       return false;
     }
 
     const auto &src = *source_crop.f_rect;
-    const auto &dst = *display_frame.i_rect;
-
-    auto scaling = src.Width() != static_cast<float>(dst.Width()) ||
-                   src.Height() != static_cast<float>(dst.Height());
-    auto phasing = (src.left - std::floor(src.left) != 0) ||
-                   (src.top - std::floor(src.top) != 0);
-    return scaling || phasing;
+    const auto phasing = (src.left - std::floor(src.left) != 0) ||
+                         (src.top - std::floor(src.top) != 0);
+    return Resizes() || phasing;
   }
 };
 

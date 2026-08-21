@@ -16,8 +16,6 @@
 
 #include "tegra/TegraPlane.h"
 
-#include <utility>
-
 #include <cutils/properties.h>
 #include <tegra_dc_ext.h>
 
@@ -64,20 +62,8 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
      * filled the way the merge itself fills them -- a whole buffer to a
      * whole buffer. Judging anything narrower leaves a layer the merge
      * would resize slipping past the judge unmeasured. */
-    float src_w = pi.source_crop.f_rect ? pi.source_crop.f_rect->Width()
-                                        : static_cast<float>(bi.width);
-    float src_h = pi.source_crop.f_rect ? pi.source_crop.f_rect->Height()
-                                        : static_cast<float>(bi.height);
-    if (pi.transform.rotate90)
-      std::swap(src_w, src_h);
-    const float dst_w = pi.display_frame.i_rect
-                            ? static_cast<float>(
-                                  pi.display_frame.i_rect->Width())
-                            : static_cast<float>(bi.width);
-    const float dst_h = pi.display_frame.i_rect
-                            ? static_cast<float>(
-                                  pi.display_frame.i_rect->Height())
-                            : static_cast<float>(bi.height);
+    const auto e = pi.ExtentsInDestAxes(static_cast<float>(bi.width),
+                                        static_cast<float>(bi.height));
 
     if (pi.transform.hflip || pi.transform.vflip || pi.transform.rotate90) {
       static const bool turn_in_merge =
@@ -100,9 +86,9 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
        * comparison. Nothing upstream ever sends one; should one arrive,
        * it goes where whole layers go, not into an ask for a zero-sized
        * copy. */
-      if (src_w <= 0 || src_h <= 0) {
-        ALOGV("plane %u: nothing to turn in a %gx%g crop", index_, src_w,
-              src_h);
+      if (e.src_w <= 0 || e.src_h <= 0) {
+        ALOGV("plane %u: nothing to turn in a %gx%g crop", index_, e.src_w,
+              e.src_h);
         return false;
       }
 
@@ -111,11 +97,12 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
        * them is a group refused at execute time, every frame, which no
        * ladder walks back. Windows and the GPU turn such a layer
        * natively -- it goes to them. */
-      if (turn_reach_ != 0 && (src_w > static_cast<float>(turn_reach_) ||
-                               src_h > static_cast<float>(turn_reach_))) {
+      if (turn_reach_ != 0 &&
+          (e.src_w > static_cast<float>(turn_reach_) ||
+           e.src_h > static_cast<float>(turn_reach_))) {
         scale_refusals_.fetch_add(1, std::memory_order_relaxed);
         ALOGV("plane %u: no intermediate holds a turned %gx%g", index_,
-              src_w, src_h);
+              e.src_w, e.src_h);
         return false;
       }
     }
@@ -129,10 +116,10 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
      * stands. Measured against the turned axes, since the turned copy is
      * what the group will resize. Not gated on the turning switch -- the
      * reach binds turned and straight members alike. */
-    if (BeyondEngineReach(src_w, src_h, dst_w, dst_h)) {
+    if (BeyondEngineReach(e.src_w, e.src_h, e.dst_w, e.dst_h)) {
       scale_refusals_.fetch_add(1, std::memory_order_relaxed);
       ALOGV("plane %u: the engine will not resize %gx%g to %gx%g", index_,
-            src_w, src_h, dst_w, dst_h);
+            e.src_w, e.src_h, e.dst_w, e.dst_h);
       return false;
     }
     return true;
@@ -208,20 +195,15 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
    * the vendor's own remedy is on record: a half-pixel inset of the crop
    * when the filter runs, as their blit library does. */
   if (pi.source_crop.f_rect && pi.display_frame.i_rect) {
-    const auto &src = *pi.source_crop.f_rect;
-    const auto &dst = *pi.display_frame.i_rect;
-    const float src_w = src.Width();
-    const float src_h = src.Height();
-    const auto dst_w = static_cast<float>(dst.Width());
-    const auto dst_h = static_cast<float>(dst.Height());
+    const auto e = pi.ExtentsInDestAxes();
 
-    if (src_w > 0 && src_h > 0 && dst_w > 0 && dst_h > 0) {
-      if (src_w > dst_w * static_cast<float>(caps_.maxDownH) ||
-          src_h > dst_h * static_cast<float>(caps_.maxDownV) ||
-          dst_w > src_w * static_cast<float>(caps_.maxUpH) ||
-          dst_h > src_h * static_cast<float>(caps_.maxUpV)) {
-        ALOGV("plane %u will not resize %gx%g to %gx%g", index_, src_w,
-              src_h, dst_w, dst_h);
+    if (e.src_w > 0 && e.src_h > 0 && e.dst_w > 0 && e.dst_h > 0) {
+      if (e.src_w > e.dst_w * static_cast<float>(caps_.maxDownH) ||
+          e.src_h > e.dst_h * static_cast<float>(caps_.maxDownV) ||
+          e.dst_w > e.src_w * static_cast<float>(caps_.maxUpH) ||
+          e.dst_h > e.src_h * static_cast<float>(caps_.maxUpV)) {
+        ALOGV("plane %u will not resize %gx%g to %gx%g", index_, e.src_w,
+              e.src_h, e.dst_w, e.dst_h);
         return false;
       }
 
@@ -261,22 +243,7 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
    * that check would be unreachable -- left out. */
   const bool turned =
       pi.transform.hflip || pi.transform.vflip || pi.transform.rotate90;
-  /* The display frame arrives already turned, so under a quarter turn the
-   * axes are crossed: a layer that did not resize has its source width
-   * against the screen height and height against width. Comparing the
-   * same-named axes would read an honest turn as a resize. Mirrors swap
-   * no axis, so those keep the straight comparison. */
-  bool scaled = false;
-  if (pi.source_crop.f_rect && pi.display_frame.i_rect) {
-    const float src_w = pi.source_crop.f_rect->Width();
-    const float src_h = pi.source_crop.f_rect->Height();
-    const float dst_w =
-        static_cast<float>(pi.display_frame.i_rect->Width());
-    const float dst_h =
-        static_cast<float>(pi.display_frame.i_rect->Height());
-    scaled = pi.transform.rotate90 ? (src_w != dst_h || src_h != dst_w)
-                                   : (src_w != dst_w || src_h != dst_h);
-  }
+  const bool scaled = pi.Resizes();
   if (turned && scaled) {
     ALOGV("plane %u: a turned layer cannot also resize", index_);
     return false;
