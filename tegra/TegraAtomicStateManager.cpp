@@ -110,7 +110,16 @@ uint8_t TransformBits(const LayerTransform &t) {
  *
  * Passing the framework's own bits straight through is believed
  * equivalent, because the axes commute -- but it has not been verified.
- * The table must not be simplified without running all eight codes. */
+ * The table must not be simplified without running all eight codes.
+ *
+ * The index is the framework's own bit value, so row 6 is FLIP_V with a
+ * quarter turn and row 7 is ROT_270 -- not the other way round. Those two
+ * stood swapped, and a swap of exactly these two rows is a single mirror:
+ * the turned layer came out of the engine mirrored while the same layer
+ * on a window came out right, so a window migrating between the two
+ * flipped from frame to frame for as long as the scene moved. The order
+ * here now agrees with WindowTransformFor row for row on the six rows the
+ * two tables share, which is the check that caught it. */
 uint32_t VicTransformFor(uint8_t bits) {
   static constexpr uint32_t kTable[8] = {
       0, /* identity          -- 000: unchanged */
@@ -119,8 +128,8 @@ uint32_t VicTransformFor(uint8_t bits) {
       3, /* ROT_180           -- 011: both mirrors */
       6, /* ROT_90            -- 110: transpose + second-axis mirror */
       7, /* FH|ROT_90         -- 111: transpose + both mirrors */
-      5, /* ROT_270           -- 101: transpose + first-axis mirror */
       4, /* FV|ROT_90         -- 100: plain transpose */
+      5, /* ROT_270           -- 101: transpose + first-axis mirror */
   };
   return kTable[bits & 7];
 }
