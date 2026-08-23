@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cinttypes>
 #include <cmath>
 #include <cstddef>
@@ -41,6 +42,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -836,15 +838,63 @@ void HwcDisplay::SetPipeline(std::shared_ptr<DisplayPipeline> pipeline) {
 
   pipeline_ = std::move(pipeline);
 
-  if (pipeline_ != nullptr || handle_ == kPrimaryDisplay) {
-    bool success = Init();
-    ALOGE_IF(!success, "Failed to init HwcDisplay after setting pipeline.");
-    hwc_->ScheduleHotplugEvent(handle_, Hwc::kConnected);
-    if (pipeline_) {
-      LogModesOnHotplug();
-    }
-  } else {
+  if (pipeline_ == nullptr && handle_ != kPrimaryDisplay) {
     hwc_->ScheduleHotplugEvent(handle_, Hwc::kDisconnected);
+    return;
+  }
+
+  bool success = Init();
+
+  /* The primary is announced at once, not after the retries below: this
+   * release checks, on the way out of RegisterCallback, that a primary
+   * display was announced during the call, and an announcement held back
+   * for even one retry could miss that window. It does not need to wait:
+   * from here on the display always answers from a consistent state --
+   * the live pipeline on success, the headless stand-in after the
+   * fallback below. */
+  if (handle_ == kPrimaryDisplay)
+    hwc_->ScheduleHotplugEvent(handle_, Hwc::kConnected);
+
+  /* The one way this backend's Init fails is transient: a predecessor on
+   * its way out still holds the head's windows, and the first modeset
+   * finds nothing to show with. The windows come back when the old
+   * process finishes dying -- a matter of milliseconds -- so the cure is
+   * to wait it out, bounded. Each attempt runs the whole Deinit/Init
+   * pair: a failed Init leaves half-built state behind (a vsync worker
+   * already running, real configs under a dangling active id), and Init
+   * on top of that is not a retry, it is a leak. */
+  for (int attempt = 0; !success && pipeline_ != nullptr && attempt < 3;
+       ++attempt) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    Deinit();
+    success = Init();
+  }
+
+  if (!success && pipeline_ != nullptr) {
+    ALOGE("Failed to init the display pipeline; falling back to headless.");
+    /* The fallback restates, field by field, the state the headless
+     * branch of Init builds. Deinit alone is not enough: the failed Init
+     * may have left real configs behind, with the active id still
+     * pointing into the fake set they replaced -- and GetDisplayConfigs
+     * hands configs_ out verbatim, so the dangling id would outlive the
+     * teardown. */
+    Deinit();
+    pipeline_ = nullptr;
+    configs_ = configs_generator_.GetFakeMode(0, 0);
+    active_config_id_ = configs_.preferred_config_id;
+    staged_mode_config_id_.reset();
+  }
+
+  ALOGE_IF(!success, "Failed to init HwcDisplay after setting pipeline.");
+
+  /* Unlike the primary, a secondary display may tell the truth: nobody
+   * saw it connected yet, so a failed one simply never appears. */
+  if (handle_ != kPrimaryDisplay)
+    hwc_->ScheduleHotplugEvent(handle_, success ? Hwc::kConnected
+                                                : Hwc::kDisconnected);
+
+  if (pipeline_ != nullptr) {
+    LogModesOnHotplug();
   }
 }
 
