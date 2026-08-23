@@ -215,22 +215,30 @@ constexpr MirroredRect MirrorRectWithin(int32_t left, int32_t top,
   return out;
 }
 
-/* The measured cases of the mirror-glitch hunt, checked on every build: a
- * split screen's halves trade places across a 1536x2048 target, the
- * divider strip shifts by its own asymmetry, a full-screen member and an
- * untouched rectangle stay put, an edge column crosses to the other edge. */
-static_assert(MirrorRectWithin(0, 0, 1536, 1014, false, true, 1536, 2048).top
-                  == 1034, "the top half lands where the bottom one was");
-static_assert(MirrorRectWithin(0, 1034, 1536, 2048, false, true, 1536, 2048)
-                  .top == 0, "the bottom half lands on top");
-static_assert(MirrorRectWithin(0, 974, 1536, 1072, false, true, 1536, 2048)
-                  .top == 976, "the strip shifts by its own asymmetry");
-static_assert(MirrorRectWithin(0, 0, 1536, 2048, false, true, 1536, 2048).top
-                  == 0, "a full-screen member stays put");
-static_assert(MirrorRectWithin(1488, 0, 1536, 2048, true, false, 1536, 2048)
-                  .left == 0, "an edge column crosses to the other edge");
-static_assert(MirrorRectWithin(7, 9, 100, 200, false, false, 1536, 2048).left
-                  == 7, "no mirror, no movement");
+/* The properties, checked on every build: a mirror is an involution about
+ * the middle of the extents, sizes survive it, bands trade places, the
+ * untouched axis stays put. Stated over neutral numbers on purpose -- the
+ * panel cases that bred this helper are measurements and live in the
+ * hunt's records; a panel size hard-coded here would tie a general helper
+ * to one device. */
+static_assert(MirrorRectWithin(7, 9, 30, 40, false, false, 100, 100).left == 7
+                  && MirrorRectWithin(7, 9, 30, 40, false, false, 100, 100)
+                             .top == 9,
+              "no mirror, no movement");
+static_assert(MirrorRectWithin(0, 10, 50, 30, false, true, 100, 100).top == 70
+                  && MirrorRectWithin(0, 10, 50, 30, false, true, 100, 100)
+                             .bottom == 90,
+              "a band lands mirrored about the middle, height kept");
+static_assert(MirrorRectWithin(0, 70, 50, 90, false, true, 100, 100).top == 10,
+              "mirroring twice comes home");
+static_assert(MirrorRectWithin(0, 0, 50, 40, false, true, 100, 100).top == 60,
+              "the first band lands where the second one was");
+static_assert(MirrorRectWithin(0, 10, 50, 30, false, true, 100, 100).left == 0,
+              "the axis not mirrored stays put");
+static_assert(MirrorRectWithin(80, 0, 100, 5, true, false, 100, 100).left == 0
+                  && MirrorRectWithin(80, 0, 100, 5, true, false, 100, 100)
+                             .right == 20,
+              "an edge strip crosses to the other edge");
 
 struct LayerData {
   std::optional<BufferInfo> bi;
