@@ -180,6 +180,58 @@ struct PresentInfo {
   }
 };
 
+/* A rectangle mirrored within the extents it is placed in.
+ *
+ * The one home for the question "where does this rectangle land when its
+ * placement is mirrored". The stock composer kept helpers of this kind and
+ * pushed every rectangle through them before anything below saw it; three
+ * of our own defects grew from answering the question inline -- the kernel
+ * scale check, the merge clip, the window clip -- each crossing axes by
+ * hand and each crossing them differently.
+ *
+ * Mirrors only, deliberately. The engine's transpose was measured to leave
+ * placement alone, and a transposed mapping written here untested would be
+ * a guessed convention -- the class of error this helper exists to end. */
+struct MirroredRect {
+  int32_t left;
+  int32_t top;
+  int32_t right;
+  int32_t bottom;
+};
+
+constexpr MirroredRect MirrorRectWithin(int32_t left, int32_t top,
+                                        int32_t right, int32_t bottom,
+                                        bool mirror_x, bool mirror_y,
+                                        int32_t width, int32_t height) {
+  MirroredRect out{left, top, right, bottom};
+  if (mirror_x) {
+    out.left = width - right;
+    out.right = width - left;
+  }
+  if (mirror_y) {
+    out.top = height - bottom;
+    out.bottom = height - top;
+  }
+  return out;
+}
+
+/* The measured cases of the mirror-glitch hunt, checked on every build: a
+ * split screen's halves trade places across a 1536x2048 target, the
+ * divider strip shifts by its own asymmetry, a full-screen member and an
+ * untouched rectangle stay put, an edge column crosses to the other edge. */
+static_assert(MirrorRectWithin(0, 0, 1536, 1014, false, true, 1536, 2048).top
+                  == 1034, "the top half lands where the bottom one was");
+static_assert(MirrorRectWithin(0, 1034, 1536, 2048, false, true, 1536, 2048)
+                  .top == 0, "the bottom half lands on top");
+static_assert(MirrorRectWithin(0, 974, 1536, 1072, false, true, 1536, 2048)
+                  .top == 976, "the strip shifts by its own asymmetry");
+static_assert(MirrorRectWithin(0, 0, 1536, 2048, false, true, 1536, 2048).top
+                  == 0, "a full-screen member stays put");
+static_assert(MirrorRectWithin(1488, 0, 1536, 2048, true, false, 1536, 2048)
+                  .left == 0, "an edge column crosses to the other edge");
+static_assert(MirrorRectWithin(7, 9, 100, 200, false, false, 1536, 2048).left
+                  == 7, "no mirror, no movement");
+
 struct LayerData {
   std::optional<BufferInfo> bi;
   std::shared_ptr<FbIdHandle> fb;
