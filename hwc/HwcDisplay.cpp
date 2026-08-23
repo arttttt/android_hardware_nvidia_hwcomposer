@@ -1077,24 +1077,6 @@ bool HwcDisplay::Init() {
   return true;
 }
 
-std::optional<PanelOrientation> HwcDisplay::getDisplayPhysicalOrientation()
-    const {
-  if (IsInHeadlessMode()) {
-    // The pipeline can be nullptr in headless mode, so return the default
-    // "normal" mode.
-    return PanelOrientation::kModePanelOrientationNormal;
-  }
-
-  const DisplayPipeline &pipeline = GetPipe();
-  if (pipeline.connector == nullptr || pipeline.connector->Get() == nullptr) {
-    ALOGW(
-        "No display pipeline present to query the panel orientation property.");
-    return {};
-  }
-
-  return pipeline.connector->Get()->GetPanelOrientation();
-}
-
 auto HwcDisplay::CreateLayer(ILayerId new_layer_id) -> bool {
   if (layers_.count(new_layer_id) > 0)
     return false;

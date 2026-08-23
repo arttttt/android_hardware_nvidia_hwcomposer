@@ -348,8 +348,6 @@ class HwcDisplay : public ICompositorDisplay {
     virtual_disp_height_ = height;
   }
 
-  auto getDisplayPhysicalOrientation() const -> std::optional<PanelOrientation>;
-
   bool NeedsClientLayerUpdate() const;
 
   std::pair<uint32_t, uint32_t> GetSize() const override;
