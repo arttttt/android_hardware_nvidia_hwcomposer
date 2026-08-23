@@ -1603,13 +1603,8 @@ std::string TegraAtomicStateManager::DumpState() {
          << ", size " << m.changed_size << ", blend " << m.changed_blend
          << ", transform " << m.changed_transform << ", nameless "
          << m.nameless << "\n";
-    /* A group whose turn the pass carried leaves every other count here at
-     * nought, so a block gated on those alone would go silent in exactly
-     * the case worth reading. */
-    if (m.rotate_refused != 0 || m.turn_folded != 0) {
-      ss << "  turns refused           : " << m.rotate_refused << "\n"
-         << "  turns folded into pass  : " << m.turn_folded << "\n";
-    }
+    if (m.turn_folded != 0)
+      ss << "  turns folded into pass  : " << m.turn_folded << "\n";
     if (scratch_ != nullptr)
       ss << "  scratch pool            : " << scratch_->source_name()
          << " (" << scratch_->width() << "x" << scratch_->height() << ")\n"
@@ -1618,8 +1613,6 @@ std::string TegraAtomicStateManager::DumpState() {
     ss << "Engine over its lifetime:\n"
        << "  frames accepted         : " << vic_->composed() << "\n"
        << "  frames refused          : " << vic_->refused() << "\n"
-       << "  turned layers refused   : " << TegraPlane::TransformRefusals()
-       << "\n"
        << "  scaled beyond its reach : " << TegraPlane::ScaleRefusals()
        << " (limit " << TegraPlane::kEngineScaleReach << "x)\n";
 

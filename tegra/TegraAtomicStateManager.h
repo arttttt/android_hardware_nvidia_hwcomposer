@@ -480,10 +480,6 @@ class TegraAtomicStateManager : public AtomicStateManager {
     uint64_t changed_transform = 0;
     uint64_t nameless = 0;
 
-    /* Groups refused because the planner seated a mixed run -- a seating
-     * error, not a case. */
-    uint64_t rotate_refused = 0;
-
     /* Groups whose turn the merge pass carried. Without this count the
      * dump would go silent in the case worth reading. */
     uint64_t turn_folded = 0;

@@ -24,9 +24,7 @@
 
 namespace android::drm_hwcomposer {
 
-std::atomic<uint64_t> TegraPlane::transform_refusals_{0};
 std::atomic<uint64_t> TegraPlane::scale_refusals_{0};
-uint32_t TegraPlane::turn_reach_{0};
 
 bool TegraPlane::BeyondEngineReach(float src_w, float src_h, float dst_w,
                                    float dst_h) {

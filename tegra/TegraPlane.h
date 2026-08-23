@@ -75,17 +75,6 @@ class TegraPlane : public Plane {
     return merging_;
   }
 
-  /* How many times a merging plane turned a layer away for carrying a
-   * transform. Counts answers, not distinct layers: the planner asks per
-   * plan weighed, so a persistent transformed layer counts every frame --
-   * read it as none, some, or bursts, never as a population. This is the
-   * number that decides whether the merge ever learns to turn layers
-   * itself, the way the stock composer's scratch path did with the 2D
-   * engine. */
-  static uint64_t TransformRefusals() {
-    return transform_refusals_.load(std::memory_order_relaxed);
-  }
-
   /* How many times a merging plane turned a layer away for resizing past
    * what the engine takes. Same counting rule as above: answers per plan
    * weighed, not distinct layers. */
@@ -112,19 +101,12 @@ class TegraPlane : public Plane {
   static bool BeyondEngineReach(float src_w, float src_h, float dst_w,
                                 float dst_h);
 
-  /* The longest side a turned copy may have -- the intermediates it lands
-   * in are cut no larger. Told once by whoever sizes those intermediates;
-   * zero means no turning machinery exists and no such bound applies. */
-  static void SetTurnReach(uint32_t reach) { turn_reach_ = reach; }
-
  private:
   const uint32_t index_;
   const hwc::DcHead::WindowCapabilities &caps_;
   bool merging_ = false;
 
-  static std::atomic<uint64_t> transform_refusals_;
   static std::atomic<uint64_t> scale_refusals_;
-  static uint32_t turn_reach_;
 };
 
 }  // namespace android::drm_hwcomposer
