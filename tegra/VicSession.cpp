@@ -379,22 +379,25 @@ drm_hwcomposer::SharedFd VicSession::ComposeInto(
         .right = layer.source_right,
         .bottom = layer.source_bottom,
     };
-    /* Where the member lands. The engine mirrors PLACEMENT by the low bit
-     * of the configuration's transform: with it set, every destination
-     * rectangle is reflected across the middle of the target's second
-     * axis, while the content of each member is still read the way the
-     * whole code says. Measured on silicon, not read from anywhere: a walk
-     * of the codes over an asymmetric scene put members mirrored under
-     * codes 5 and 7 and in place under 4 and 6, sizes travelling with
-     * their content; the transpose bit and the other mirror bit leave
-     * placement alone. So the rectangle is pre-mirrored here, on the
-     * engine's own border, and everything above this call keeps thinking
-     * in the panel's axes. Mirrored within the group's own extents -- the
-     * only bound the engine was told; measured on full-panel groups, the
-     * kind a display rotation makes. */
+    /* Where the member lands. The engine mirrors PLACEMENT by the mirror
+     * bits of the configuration's transform -- each bit reflecting every
+     * destination rectangle across the middle of its own target axis --
+     * while the content of each member is still read the way the whole
+     * code says. Measured on silicon twice, not read from anywhere: the
+     * low bit was caught swapping a split screen's halves (a walk of the
+     * codes over an asymmetric scene: mirrored under 5 and 7, in place
+     * under 4 and 6, sizes travelling with their content); the second bit
+     * hid longer, because every member of a settled scene happens to be
+     * invariant under its axis -- it was caught moving the status bar's
+     * edge column to the opposite edge in the merges at the end of a
+     * rotation's animation, the one member asymmetric that way. The
+     * transpose bit leaves placement alone. So the rectangle is
+     * pre-mirrored here, on the engine's own border, and everything above
+     * this call keeps thinking in the panel's axes. Mirrored within the
+     * group's own extents -- the only bound the engine was told. */
     const auto placed = drm_hwcomposer::MirrorRectWithin(
         layer.display_left, layer.display_top, layer.display_right,
-        layer.display_bottom, false, (transform & 1U) != 0,
+        layer.display_bottom, (transform & 2U) != 0, (transform & 1U) != 0,
         static_cast<int32_t>(width), static_cast<int32_t>(height));
     const NvRect display = {
         .left = placed.left,
@@ -427,11 +430,12 @@ drm_hwcomposer::SharedFd VicSession::ComposeInto(
   }
 
   /* One transform for the whole configuration. It governs how every
-   * source is read -- and its low bit also mirrors where members LAND,
-   * which is why the display rectangles above went in pre-mirrored. The
-   * sentence that used to stand here -- "each destination rectangle stays
-   * in the panel's axes" -- was this composer's own guess, and a month of
-   * mirrored halves measured it wrong. */
+   * source is read -- and its mirror bits also mirror where members LAND,
+   * each along its own target axis, which is why the display rectangles
+   * above went in pre-mirrored. The sentence that used to stand here --
+   * "each destination rectangle stays in the panel's axes" -- was this
+   * composer's own guess, and it cost a month of mirrored halves and a
+   * status bar that crossed the screen at the end of every rotation. */
   configure_transform_(session_, config, transform);
 
   /* Where a layer above covers one below completely there is no reason to
