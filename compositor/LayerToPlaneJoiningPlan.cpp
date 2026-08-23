@@ -103,7 +103,7 @@ bool PlaceFirstFit(LayerToPlaneJoiningPlan &plan,
  * frame. */
 bool PlaceSteered(LayerToPlaneJoiningPlan &plan,
                   const std::vector<PlaneRef> &avail_planes,
-                  std::vector<LayerData> &composition) {
+                  std::vector<LayerData> &composition, bool prefer_merge) {
   using Steering = LayerToPlaneJoiningPlan::Steering;
 
   size_t ordinary_count = 0;
@@ -117,8 +117,12 @@ bool PlaceSteered(LayerToPlaneJoiningPlan &plan,
   }
 
   /* A scene the ordinary planes can hold whole should not pay an engine
-   * pass for tidiness. */
-  if (merging_count == 0 || composition.size() <= ordinary_count) {
+   * pass for tidiness -- unless the door says the tidiness is the point:
+   * a turned scene held whole by the windows pays the column reader's
+   * way every vsync, and the door exists to price that against the
+   * pass. */
+  if (merging_count == 0 ||
+      (!prefer_merge && composition.size() <= ordinary_count)) {
     plan.steering = Steering::kFitsOrdinary;
     return false;
   }
@@ -156,7 +160,12 @@ bool PlaceSteered(LayerToPlaneJoiningPlan &plan,
    *
    * The only honest refusal left is wanting to put more layers into the
    * merge than it takes in one pass. */
-  const size_t need = composition.size() - ordinary_count;
+  /* With the door open the width flips its meaning: not the overflow
+   * the windows could not take, but the most the merge will hold --
+   * the remainder, not the run, goes to the windows. */
+  const size_t need = prefer_merge
+                          ? std::min(composition.size(), merging_count)
+                          : composition.size() - ordinary_count;
   if (need > merging_count) {
     plan.steering = Steering::kRunTooLong;
     return false;
@@ -241,20 +250,25 @@ auto LayerToPlaneJoiningPlan::CreateLayerToPlaneJoiningPlan(
     -> std::unique_ptr<LayerToPlaneJoiningPlan> {
   auto [avail_planes, cursor_plane] = pipe.GetUsablePlanes();
 
-  /* Which end of the queue the merging planes sit at IS the seating
-   * policy: listed last, they catch only what the windows cannot take.
-   * A turned scene pays the windows' way every vsync -- the column
-   * reader holds a GOB's worth of lines in the display's one line
-   * buffer, awake even over a still frame -- while the merge pays per
-   * change and shows its target through the cheapest window there is.
-   * The door flips the queue for scenes that carry a turn. It moves no
-   * judgement: validity and the group's uniform-turn veto still rule,
-   * and closed, it leaves the queue exactly as the pipeline dealt it. */
-  if (Properties::PreferMergeForTurns() &&
+  /* Where the merging planes sit in the queue -- and how wide a run the
+   * steering asks of them -- IS the seating policy: by default they
+   * catch only what the windows cannot take. A turned scene pays the
+   * windows' way every vsync -- the column reader holds a GOB's worth
+   * of lines in the display's one line buffer, awake even over a still
+   * frame -- while the merge pays per change and shows its target
+   * through the cheapest window there is. The door flips both halves
+   * for scenes that carry a turn: the steering widens its run to the
+   * merge's capacity, and the first-fit queue puts the merging planes
+   * first for whatever falls through. It moves no judgement: validity
+   * and the group's uniform-turn veto still rule, and closed, it
+   * leaves the plan exactly as the pipeline dealt it. */
+  const bool prefer_merge =
+      Properties::PreferMergeForTurns() &&
       std::any_of(composition.begin(), composition.end(),
                   [](const LayerData &dhl) {
                     return dhl.pi.transform.rotate90;
-                  })) {
+                  });
+  if (prefer_merge) {
     std::stable_partition(avail_planes.begin(), avail_planes.end(),
                           [](const PlaneRef &plane) {
                             return plane->Get()->IsMerging();
@@ -274,7 +288,7 @@ auto LayerToPlaneJoiningPlan::CreateLayerToPlaneJoiningPlan(
   plan->plan.reserve(composition.size() +
                      static_cast<size_t>(cursor_layer.has_value()));
 
-  plan->steered = PlaceSteered(*plan, avail_planes, composition);
+  plan->steered = PlaceSteered(*plan, avail_planes, composition, prefer_merge);
   if (!plan->steered && !PlaceFirstFit(*plan, avail_planes, composition)) {
     return {};
   }
