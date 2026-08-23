@@ -130,8 +130,8 @@ auto Properties::UseColorPipeline() -> bool {
 
 /* Read every frame, like the other measuring doors: the A/B this serves
  * is walked on a live scene, not across restarts. */
-auto Properties::PreferMergeForTurns() -> bool {
-  return (property_get_int32("vendor.hwc.test.prefermerge", 0) != 0);
+auto Properties::MergePreference() -> int {
+  return property_get_int32("vendor.hwc.test.prefermerge", 0);
 }
 
 auto Properties::PersistentHdrEnabled() -> bool {

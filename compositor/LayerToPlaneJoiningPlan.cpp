@@ -26,7 +26,6 @@
 #include "compositor/LayerData.h"
 #include "display/DisplayPipeline.h"
 #include "display/Plane.h"
-#include "utils/properties.h"
 
 namespace android::drm_hwcomposer {
 
@@ -246,28 +245,19 @@ bool PlaceSteered(LayerToPlaneJoiningPlan &plan,
 
 auto LayerToPlaneJoiningPlan::CreateLayerToPlaneJoiningPlan(
     const DisplayPipeline &pipe, std::vector<LayerData> composition,
-    std::optional<LayerData> cursor_layer)
+    std::optional<LayerData> cursor_layer, bool prefer_merge)
     -> std::unique_ptr<LayerToPlaneJoiningPlan> {
   auto [avail_planes, cursor_plane] = pipe.GetUsablePlanes();
 
   /* Where the merging planes sit in the queue -- and how wide a run the
    * steering asks of them -- IS the seating policy: by default they
-   * catch only what the windows cannot take. A turned scene pays the
-   * windows' way every vsync -- the column reader holds a GOB's worth
-   * of lines in the display's one line buffer, awake even over a still
-   * frame -- while the merge pays per change and shows its target
-   * through the cheapest window there is. The door flips both halves
-   * for scenes that carry a turn: the steering widens its run to the
-   * merge's capacity, and the first-fit queue puts the merging planes
-   * first for whatever falls through. It moves no judgement: validity
-   * and the group's uniform-turn veto still rule, and closed, it
-   * leaves the plan exactly as the pipeline dealt it. */
-  const bool prefer_merge =
-      Properties::PreferMergeForTurns() &&
-      std::any_of(composition.begin(), composition.end(),
-                  [](const LayerData &dhl) {
-                    return dhl.pi.transform.rotate90;
-                  });
+   * catch only what the windows cannot take. The preference itself is
+   * decided by the caller, in one place; this only carries it out --
+   * the steering widens its run to the merge's capacity, and the
+   * first-fit queue puts the merging planes first for whatever falls
+   * through. No judgement moves: validity and the group's uniform-turn
+   * veto still rule, and unasked, the plan is exactly as the pipeline
+   * dealt it. */
   if (prefer_merge) {
     std::stable_partition(avail_planes.begin(), avail_planes.end(),
                           [](const PlaneRef &plane) {

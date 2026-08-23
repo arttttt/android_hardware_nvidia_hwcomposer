@@ -79,7 +79,8 @@ struct LayerToPlaneJoiningPlan {
 
   static auto CreateLayerToPlaneJoiningPlan(
       const DisplayPipeline &pipe, std::vector<LayerData> composition,
-      std::optional<LayerData> cursor_layer = std::nullopt)
+      std::optional<LayerData> cursor_layer = std::nullopt,
+      bool prefer_merge = false)
       -> std::unique_ptr<LayerToPlaneJoiningPlan>;
 };
 
