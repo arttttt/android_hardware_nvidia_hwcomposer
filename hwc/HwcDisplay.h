@@ -517,7 +517,7 @@ class HwcDisplay : public ICompositorDisplay {
    * outcome, over the lifetime and since the last dump -- the same two
    * windows every neighbouring section answers for. Mutable for the
    * same reason the invalidator bits are: counted from a const path. */
-  static constexpr size_t kSteeringOutcomes = 6;
+  static constexpr size_t kSteeringOutcomes = 7;
   mutable uint64_t steering_outcomes_[kSteeringOutcomes] = {};
   mutable uint64_t steering_interval_[kSteeringOutcomes] = {};
 

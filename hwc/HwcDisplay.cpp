@@ -1614,7 +1614,7 @@ std::string HwcDisplay::DumpGroupSelector() const {
    * the scene's shape (run too long), or nothing to steer at all. */
   static const char *const kOutcomeNames[kSteeringOutcomes] =
       {"steered", "fits ordinary", "monotone", "run too long",
-       "lives overflow", "seat refused"};
+       "lives overflow", "seat refused", "mixed turn"};
   std::stringstream ss;
   ss << "Group selector            :";
   for (size_t i = 0; i < kSteeringOutcomes; i++) {
