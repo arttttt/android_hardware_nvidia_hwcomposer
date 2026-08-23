@@ -475,8 +475,8 @@ drm_hwcomposer::SharedFd VicSession::ComposeInto(
   return drm_hwcomposer::MakeSharedFd(fd);
 }
 
-drm_hwcomposer::SharedFd VicSession::ComposeRotated(
-    const VendorBuffer &target, const Layer &layer, uint32_t transform,
+drm_hwcomposer::SharedFd VicSession::CopyLayer(
+    const VendorBuffer &target, const Layer &layer,
     uint32_t width, uint32_t height, int target_ready) {
   auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
   if (gralloc == nullptr || width == 0 || height == 0) {
@@ -548,7 +548,9 @@ drm_hwcomposer::SharedFd VicSession::ComposeRotated(
    * way. */
   configure_blending_(session_, config, 0, kAlphaIgnore, 1.0F);
 
-  configure_transform_(session_, config, transform);
+  /* Untransformed, always: the copy's one caller stages the cursor sprite
+   * verbatim. The turning use of this pass died with the folded merge. */
+  configure_transform_(session_, config, 0);
 
   configure_clear_rects_(session_, config);
 

@@ -237,25 +237,25 @@ class VicSession {
                                                    uint32_t height,
                                                    uint32_t pitch_grain = 256);
 
-  /* Draws one layer into `target` turned by `transform` -- the engine's own
-   * transform code, which the caller owes to the stock translation table,
-   * not to arithmetic of its own. The write is bounded to `width` by
-   * `height` from the origin, which the caller sizes to the turned crop.
+  /* Copies one layer into `target`, untransformed. The write is bounded to
+   * `width` by `height` from the origin, which the caller sizes to the
+   * crop. Born as the per-layer turning pass; the turning died with the
+   * folded merge, and the one caller left is the cursor unit staging its
+   * sprite -- a straightening copy, nothing turned.
    *
    * The copy is verbatim: blending is told to ignore alpha, so the pixels
-   * arrive in the intermediate exactly as they left the source, and the
-   * layer's own alpha and premultiplication are honoured later, by the pass
-   * that composes the turned copy. This is how the stock blit copied too.
+   * arrive in the target exactly as they left the source, and the layer's
+   * own alpha and premultiplication are honoured later, by whoever shows
+   * the copy. This is how the stock blit copied too.
    *
    * Fences as in Compose: the layer's acquire is handed to the engine, the
-   * returned fence says when the turned copy may be read. `target_ready`
-   * is usually not needed at all -- the channel serialises our passes, so
-   * a pass submitted after the group that read this buffer runs after it. */
-  drm_hwcomposer::SharedFd ComposeRotated(const VendorBuffer &target,
-                                          const Layer &layer,
-                                          uint32_t transform,
-                                          uint32_t width, uint32_t height,
-                                          int target_ready = -1);
+   * returned fence says when the copy may be read. `target_ready` is
+   * usually not needed at all -- the channel serialises our passes, so a
+   * pass submitted after the group that read this buffer runs after it. */
+  drm_hwcomposer::SharedFd CopyLayer(const VendorBuffer &target,
+                                     const Layer &layer,
+                                     uint32_t width, uint32_t height,
+                                     int target_ready = -1);
 
   /* How many sets the engine has refused, and how many it has taken. What
    * decides whether a third way of merging is worth building at all. */

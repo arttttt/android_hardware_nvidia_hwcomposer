@@ -159,7 +159,7 @@ const VendorBuffer *CursorUnit::LinearizeLocked(buffer_handle_t sprite,
   layer.alpha = 1.0F;
   layer.acquire_fence = acquire_fence;
 
-  auto done = vic_->ComposeRotated(*staging_, layer, 0, width, height);
+  auto done = vic_->CopyLayer(*staging_, layer, width, height);
   if (!done) {
     ALOGE("the engine would not lay the sprite flat");
     return nullptr;
