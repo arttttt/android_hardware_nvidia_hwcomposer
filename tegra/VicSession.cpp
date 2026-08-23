@@ -27,6 +27,7 @@
 
 
 #include "bufferinfo/NvGralloc.h"
+#include "compositor/LayerData.h"
 #include "tegra/nvmap.h"
 #include "utils/log.h"
 
@@ -378,11 +379,28 @@ drm_hwcomposer::SharedFd VicSession::ComposeInto(
         .right = layer.source_right,
         .bottom = layer.source_bottom,
     };
+    /* Where the member lands. The engine mirrors PLACEMENT by the low bit
+     * of the configuration's transform: with it set, every destination
+     * rectangle is reflected across the middle of the target's second
+     * axis, while the content of each member is still read the way the
+     * whole code says. Measured on silicon, not read from anywhere: a walk
+     * of the codes over an asymmetric scene put members mirrored under
+     * codes 5 and 7 and in place under 4 and 6, sizes travelling with
+     * their content; the transpose bit and the other mirror bit leave
+     * placement alone. So the rectangle is pre-mirrored here, on the
+     * engine's own border, and everything above this call keeps thinking
+     * in the panel's axes. Mirrored within the group's own extents -- the
+     * only bound the engine was told; measured on full-panel groups, the
+     * kind a display rotation makes. */
+    const auto placed = drm_hwcomposer::MirrorRectWithin(
+        layer.display_left, layer.display_top, layer.display_right,
+        layer.display_bottom, false, (transform & 1U) != 0,
+        static_cast<int32_t>(width), static_cast<int32_t>(height));
     const NvRect display = {
-        .left = layer.display_left,
-        .top = layer.display_top,
-        .right = layer.display_right,
-        .bottom = layer.display_bottom,
+        .left = placed.left,
+        .top = placed.top,
+        .right = placed.right,
+        .bottom = placed.bottom,
     };
 
     if (configure_source_(session_, config, static_cast<uint32_t>(i), surfaces,
@@ -408,8 +426,12 @@ drm_hwcomposer::SharedFd VicSession::ComposeInto(
     }
   }
 
-  /* One transform for the whole configuration, applied to the read of
-   * every source. Each destination rectangle stays in the panel's axes. */
+  /* One transform for the whole configuration. It governs how every
+   * source is read -- and its low bit also mirrors where members LAND,
+   * which is why the display rectangles above went in pre-mirrored. The
+   * sentence that used to stand here -- "each destination rectangle stays
+   * in the panel's axes" -- was this composer's own guess, and a month of
+   * mirrored halves measured it wrong. */
   configure_transform_(session_, config, transform);
 
   /* Where a layer above covers one below completely there is no reason to
