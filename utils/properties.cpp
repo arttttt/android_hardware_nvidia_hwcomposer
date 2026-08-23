@@ -128,12 +128,6 @@ auto Properties::UseColorPipeline() -> bool {
   return (property_get_bool("vendor.hwc.drm.enable_color_pipeline", 0) != 0);
 }
 
-/* Read every frame, like the other measuring doors: the A/B this serves
- * is walked on a live scene, not across restarts. */
-auto Properties::MergePreference() -> int {
-  return property_get_int32("vendor.hwc.test.prefermerge", 0);
-}
-
 auto Properties::PersistentHdrEnabled() -> bool {
   return (property_get_bool("vendor.hwc.drm.persistent_hdr", 0) != 0);
 }

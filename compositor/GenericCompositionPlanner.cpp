@@ -34,7 +34,6 @@
 #include "hwc/HwcLayer.h"
 #include "utils/Logging.h"
 #include "utils/log.h"
-#include "utils/properties.h"
 
 namespace android::drm_hwcomposer {
 
@@ -71,18 +70,13 @@ auto GenericCompositionPlanner::ValidateDisplay(
 
   const auto layers = display->GetOrderLayersByZPos();
 
-  /* At the adaptive door a still multi-layer scene is not flattened on
-   * the GPU: the plan below consolidates it into the merge instead --
-   * the seating sees the same stillness and widens its run -- so the
-   * scene ends on one scanned buffer either way, with the cheaper
-   * executor. Every other reason to flatten stands untouched. */
-  const FlatteningController* flatcon = display->GetFlatCon();
-  if (flatcon != nullptr && flatcon->ShouldFlatten() &&
-      !(Properties::MergePreference() == 2 && layers.size() > 1)) {
-    return {.composition = GetFlattenedComposition(layers,
-                                                   FlattenReason::kStaticScene),
-            .short_circuited = false};
-  }
+  /* A still scene is no longer flattened on the GPU: the plan below
+   * consolidates it into the merge instead -- the seating sees the same
+   * stillness and widens its run -- so the scene ends on one scanned
+   * buffer with the cheaper executor, and the GPU stays asleep. The
+   * controller never triggers for a single layer, so the static reason
+   * has no seat left here; every other reason to flatten stands
+   * untouched. */
 
   if (display->CtmByGpu()) {
     return {.composition = GetFlattenedComposition(layers, FlattenReason::

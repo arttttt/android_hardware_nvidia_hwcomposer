@@ -43,16 +43,6 @@ class Properties {
    * sRGB rather than showing the panel as it is. */
   static auto CalibratedColorMode() -> bool;
   static auto GetBackendOverride() -> std::string;
-  /* How the seating prefers the merge. 0 leaves the plan exactly as
-   * dealt. 1 forces the merge for scenes that carry a turn -- the
-   * measuring mode the A/B walks. 2 consolidates a scene the flattening
-   * controller has judged still into the merge instead of the GPU
-   * flatten, in either orientation, and hands it back to the windows on
-   * the first live frame. The door only reorders and widens the
-   * candidate seating -- validity and the uniform-turn veto still
-   * rule. */
-  static auto MergePreference() -> int;
-
   static auto UseColorPipeline() -> bool;
   static auto ForceColorMode() -> int;
   static auto PersistentHdrEnabled() -> bool;

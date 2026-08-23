@@ -1627,25 +1627,18 @@ HwcDisplay::CreateLayerToPlaneJoiningPlan(
     composition_layers.back().live = layer->IsLive();
   }
   /* The seating preference is decided here, once, with everything it
-   * needs in view: the door, the scene, and the flattening controller's
-   * own judgement of stillness. 1 forces the merge for scenes that carry
-   * a turn -- the measuring mode. 2 is the adaptive: a scene the
-   * controller holds still consolidates into the merge, the cheaper
-   * executor taking the flatten's place, and the first live frame
-   * reseats it onto the windows through the activity invalidator,
-   * nothing held back. */
-  bool prefer_merge = false;
-  const int merge_pref = Properties::MergePreference();
-  if (merge_pref == 1) {
-    prefer_merge = std::any_of(composition_layers.begin(),
-                               composition_layers.end(),
-                               [](const LayerData &dhl) {
-                                 return dhl.pi.transform.rotate90;
-                               });
-  } else if (merge_pref == 2) {
-    prefer_merge = flatcon_ != nullptr && flatcon_->ShouldFlatten() &&
-                   composition_layers.size() > 1;
-  }
+   * needs in view: the scene, and the flattening controller's own
+   * judgement of stillness. A still multi-layer scene consolidates
+   * into the merge -- the cheaper executor taking the GPU flatten's
+   * place, the panel ending on one scanned buffer either way -- and
+   * the first live frame reseats it onto the windows through the
+   * activity invalidator, nothing held back. The entry leans on the
+   * liveness crossing arriving with the trigger frame itself; a stream
+   * of validates without layer activity would leave it mute, and on
+   * this stack no such stream exists -- every frame SurfaceFlinger
+   * sends is born of a transaction or damage that stamps activity. */
+  const bool prefer_merge = flatcon_ != nullptr && flatcon_->ShouldFlatten() &&
+                            composition_layers.size() > 1;
 
   auto composition = LayerToPlaneJoiningPlan::
       CreateLayerToPlaneJoiningPlan(GetPipe(), std::move(composition_layers),
