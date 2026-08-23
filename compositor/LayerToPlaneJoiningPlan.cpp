@@ -26,6 +26,7 @@
 #include "compositor/LayerData.h"
 #include "display/DisplayPipeline.h"
 #include "display/Plane.h"
+#include "utils/properties.h"
 
 namespace android::drm_hwcomposer {
 
@@ -239,6 +240,26 @@ auto LayerToPlaneJoiningPlan::CreateLayerToPlaneJoiningPlan(
     std::optional<LayerData> cursor_layer)
     -> std::unique_ptr<LayerToPlaneJoiningPlan> {
   auto [avail_planes, cursor_plane] = pipe.GetUsablePlanes();
+
+  /* Which end of the queue the merging planes sit at IS the seating
+   * policy: listed last, they catch only what the windows cannot take.
+   * A turned scene pays the windows' way every vsync -- the column
+   * reader holds a GOB's worth of lines in the display's one line
+   * buffer, awake even over a still frame -- while the merge pays per
+   * change and shows its target through the cheapest window there is.
+   * The door flips the queue for scenes that carry a turn. It moves no
+   * judgement: validity and the group's uniform-turn veto still rule,
+   * and closed, it leaves the queue exactly as the pipeline dealt it. */
+  if (Properties::PreferMergeForTurns() &&
+      std::any_of(composition.begin(), composition.end(),
+                  [](const LayerData &dhl) {
+                    return dhl.pi.transform.rotate90;
+                  })) {
+    std::stable_partition(avail_planes.begin(), avail_planes.end(),
+                          [](const PlaneRef &plane) {
+                            return plane->Get()->IsMerging();
+                          });
+  }
 
   if (cursor_layer) {
     if (!cursor_plane ||

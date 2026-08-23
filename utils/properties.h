@@ -43,6 +43,12 @@ class Properties {
    * sRGB rather than showing the panel as it is. */
   static auto CalibratedColorMode() -> bool;
   static auto GetBackendOverride() -> std::string;
+  /* Whether a scene that carries a turn seats its layers into the merge
+   * before the ordinary windows. The door only reorders the candidate
+   * queue -- validity and the uniform-turn veto still rule -- and closed
+   * it leaves the queue untouched. */
+  static auto PreferMergeForTurns() -> bool;
+
   static auto UseColorPipeline() -> bool;
   static auto ForceColorMode() -> int;
   static auto PersistentHdrEnabled() -> bool;
