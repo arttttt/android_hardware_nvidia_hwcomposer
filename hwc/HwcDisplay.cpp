@@ -129,7 +129,7 @@ void UpdateClientTargetIfNeeded(const HwcLayer &client_layer,
                                 LayerToPlaneJoiningPlan *composition_plan) {
   if (!composition_plan)
     return;
-  if (const auto client_z = composition_plan->client_z_order)
+  if (const auto client_z = composition_plan->client_index)
     composition_plan->plan[*client_z].layer = client_layer.GetLayerData();
 }
 
@@ -1522,7 +1522,7 @@ std::optional<AtomicCommitArgs> HwcDisplay::CreateFrameUpdateCommit(
     return std::nullopt;
   }
 
-  const bool all_client_layers = a_args.composition->client_z_order &&
+  const bool all_client_layers = a_args.composition->client_index &&
                                  a_args.composition->plan.size() == 1;
   // On a frame composed entirely by the GPU, SurfaceFlinger applies the
   // client's transform itself -- whenever there is no device composition
@@ -1658,7 +1658,7 @@ HwcDisplay::CreateLayerToPlaneJoiningPlan(
       CreateLayerToPlaneJoiningPlan(GetPipe(), std::move(composition_layers),
                                     std::move(cursor_layer), prefer_merge);
   if (composition) {
-    composition->client_z_order = client_plan_index;
+    composition->client_index = client_plan_index;
     const auto outcome = static_cast<size_t>(composition->steering);
     if (outcome < kSteeringOutcomes) {
       steering_outcomes_[outcome]++;

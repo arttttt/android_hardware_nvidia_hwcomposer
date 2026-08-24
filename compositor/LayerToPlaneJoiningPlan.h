@@ -46,7 +46,8 @@ struct LayerToPlaneJoiningPlan {
   };
 
   std::vector<LayerToPlaneJoining> plan;
-  std::optional<int> client_z_order;
+  /* The client entry's position in `plan` -- a rank, not a z-order. */
+  std::optional<int> client_index;
 
   /* Whether the merge was steered onto the quiet run of the stack
    * rather than taking the top by first fit, and when it was not --
