@@ -75,7 +75,6 @@ struct LayerToPlaneJoiningPlan {
   };
   Steering steering = Steering::kFitsOrdinary;
 
-  bool steered = false;
 
   static auto CreateLayerToPlaneJoiningPlan(
       const DisplayPipeline &pipe, std::vector<LayerData> composition,

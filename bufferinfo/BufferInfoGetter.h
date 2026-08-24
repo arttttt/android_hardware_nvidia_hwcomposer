@@ -60,7 +60,6 @@ class BufferInfoGetter {
   static void Init(std::unique_ptr<BufferInfoGetter> getter);
   static BufferInfoGetter *GetInstance();
 
-  static bool IsDrmFormatRgb(uint32_t drm_format);
 };
 
 class LegacyBufferInfoGetter : public BufferInfoGetter {

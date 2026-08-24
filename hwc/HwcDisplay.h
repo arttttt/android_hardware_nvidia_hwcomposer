@@ -47,7 +47,6 @@
 
 namespace android::drm_hwcomposer {
 
-class ChangedLayer;
 template <typename T>
 class CommitStatusOr;
 class DisplayConfigurationResultReporter;
@@ -103,10 +102,6 @@ class HwcDisplay : public ICompositorDisplay {
   HwcDisplay(const HwcDisplay &) = delete;
   ~HwcDisplay() override;
 
-  auto GetColorTransformMatrix() const
-      -> std::shared_ptr<const HalColorTransformMatrix> override {
-    return color_matrix_;
-  }
 
   void SetColorTransformMatrix(
       const HalColorTransformMatrix &color_transform_matrix);
@@ -156,7 +151,6 @@ class HwcDisplay : public ICompositorDisplay {
    * or below it -- and these counters say which. */
   auto DumpColorBridge() const -> std::string;
 
-  std::string Dump();
 
   auto GetDisplayName() const -> std::string;
 
@@ -266,9 +260,6 @@ class HwcDisplay : public ICompositorDisplay {
   auto StartHdcp() -> bool;
   auto StopHdcp() -> bool;
 
-  bool IsWritebackSupported() const;
-  bool SetWritebackEnabled(bool enabled);
-  SharedFd GetWritebackBufferFence();
 
   HwcLayer *get_layer(ILayerId layer) {
     auto it = layers_.find(layer);
@@ -277,13 +268,6 @@ class HwcDisplay : public ICompositorDisplay {
     return &it->second;
   }
 
-  auto layers() -> std::map<ILayerId, HwcLayer> & {
-    return layers_;
-  }
-
-  auto layers() const -> const std::map<ILayerId, HwcLayer> & {
-    return layers_;
-  }
 
   const auto &GetPipe() const {
     return *pipeline_;
@@ -323,13 +307,6 @@ class HwcDisplay : public ICompositorDisplay {
 
   void Deinit();
 
-  const FlatteningController *GetFlatCon() const override {
-    return flatcon_.get();
-  }
-
-  const HdcpController *GetHdcpController() const {
-    return hdcpcon_.get();
-  }
 
   auto GetClientLayer() -> HwcLayer & {
     return client_layer_;
@@ -348,7 +325,6 @@ class HwcDisplay : public ICompositorDisplay {
     virtual_disp_height_ = height;
   }
 
-  bool NeedsClientLayerUpdate() const;
 
   std::pair<uint32_t, uint32_t> GetSize() const override;
 
@@ -491,7 +467,6 @@ class HwcDisplay : public ICompositorDisplay {
   std::optional<CompositionPlanner::ValidatedComposition>
       validated_composition_ = std::nullopt;
 
-  SharedFd writeback_complete_fence_;
 
   uint32_t frame_no_ = 0;
   std::map<CompositionAttributes, CompositionStats> comp_stats_{};

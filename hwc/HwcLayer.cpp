@@ -209,10 +209,6 @@ bool HwcLayer::RefreshLiveness() const {
   return true;
 }
 
-void HwcLayer::InvalidateBuffer() {
-  has_buffer_set_ = false;
-  plan_invalidators_ |= kBufferGeometry;
-}
 
 /* Check that the layer has an active slot set, and there is a valid
    * framebuffer in the active slot.

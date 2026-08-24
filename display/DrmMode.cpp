@@ -29,9 +29,5 @@ bool DrmMode::operator==(const drmModeModeInfo &m) const {
   return memcmp(&m, &mode_, offsetof(drmModeModeInfo, name)) == 0;
 }
 
-bool DrmMode::SameSize(const DrmMode &mode) const {
-  return (mode_.vdisplay == mode.mode_.vdisplay) &&
-         (mode_.hdisplay == mode.mode_.hdisplay);
-}
 
 }  // namespace android::drm_hwcomposer

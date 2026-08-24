@@ -95,9 +95,6 @@ class Hwc : public PipelineToFrontendBindingInterface, public StatsProvider {
    */
   bool Init();
 
-  Device *GetDevice() {
-    return device_.get();
-  }
 
   /* The one lock the framework's calls are serialised on.
    *

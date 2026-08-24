@@ -259,9 +259,6 @@ class TegraAtomicStateManager : public AtomicStateManager {
 
   void WaitLastFrame() override;
 
-  void SetActive(bool active) {
-    active_ = active;
-  }
 
   /* Would the controller take this frame? Nothing is shown and nothing
    * changes. */

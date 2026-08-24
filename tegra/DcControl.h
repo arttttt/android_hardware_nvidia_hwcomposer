@@ -71,8 +71,6 @@ public:
     DcControl(const DcControl &) = delete;
     DcControl &operator=(const DcControl &) = delete;
 
-    /* Number of outputs the controller knows about, connected or not. */
-    int outputCount(uint32_t *outCount) const;
 
     /* Chooses which events this descriptor will deliver. A mask of zero
      * stops delivery. Returns 0 or a negative errno. */

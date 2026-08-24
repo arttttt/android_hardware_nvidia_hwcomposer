@@ -20,10 +20,7 @@
 
 namespace android::drm_hwcomposer {
 
-using UniqueFd = std::unique_ptr<int, void (*)(const int *)>;
 using SharedFd = std::shared_ptr<int>;
-
-auto MakeUniqueFd(int fd) -> UniqueFd;
 
 auto MakeSharedFd(int fd) -> SharedFd;
 

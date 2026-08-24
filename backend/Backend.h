@@ -73,9 +73,6 @@ class Backend {
   // Get the AtomicCommitSink for the Backend.
   virtual std::unique_ptr<AtomicCommitSink> CreateAtomicCommitSink() = 0;
 
-  virtual std::optional<std::string> Dump() {
-    return std::nullopt;
-  }
 
  protected:
   Device &GetDevice() const {

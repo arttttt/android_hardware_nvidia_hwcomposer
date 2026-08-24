@@ -139,20 +139,6 @@ class ColorUtil {
     }
   }
 
-  static DrmColorspace ToDrmColorspace(HwcColorspace colorspace) {
-    switch (colorspace) {
-      case HwcColorspace::kDefault:
-        return DrmColorspace::kDefault;
-      case HwcColorspace::kBt601:
-        return DrmColorspace::kBt601Ycc;
-      case HwcColorspace::kBt709:
-        return DrmColorspace::kBt709Ycc;
-      case HwcColorspace::kDciP3:
-        return DrmColorspace::kDciP3RgbD65;
-      case HwcColorspace::kBt2020:
-        return DrmColorspace::kBt2020Rgb;
-    }
-  }
 
   // If required, adjust color transform matrix to handle gamut mapping
   template <typename T>

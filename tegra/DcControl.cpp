@@ -61,16 +61,6 @@ DcControl::~DcControl() {
     setEventMask(0);
 }
 
-int DcControl::outputCount(uint32_t *outCount) const {
-    __u32 count = 0;
-    if (ioctl(mFd.get(), TEGRA_DC_EXT_CONTROL_GET_NUM_OUTPUTS, &count) < 0) {
-        int err = -errno;
-        HWC_LOGE("GET_NUM_OUTPUTS: %s", strerror(-err));
-        return err;
-    }
-    *outCount = count;
-    return 0;
-}
 
 int DcControl::setEventMask(uint32_t mask) {
     /* The mask goes by value, not by address.

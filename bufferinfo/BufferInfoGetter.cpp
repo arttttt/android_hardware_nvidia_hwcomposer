@@ -101,19 +101,6 @@ uint32_t LegacyBufferInfoGetter::ConvertHalFormatToDrm(uint32_t hal_format) {
   }
 }
 
-bool BufferInfoGetter::IsDrmFormatRgb(uint32_t drm_format) {
-  switch (drm_format) {
-    case DRM_FORMAT_ARGB8888:
-    case DRM_FORMAT_XBGR8888:
-    case DRM_FORMAT_ABGR8888:
-    case DRM_FORMAT_BGR888:
-    case DRM_FORMAT_BGR565:
-    case DRM_FORMAT_ABGR2101010:
-      return true;
-    default:
-      return false;
-  }
-}
 
 __attribute__((weak)) std::unique_ptr<LegacyBufferInfoGetter>
 LegacyBufferInfoGetter::CreateInstance() {

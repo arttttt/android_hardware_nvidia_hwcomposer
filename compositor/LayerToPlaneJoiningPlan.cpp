@@ -278,8 +278,9 @@ auto LayerToPlaneJoiningPlan::CreateLayerToPlaneJoiningPlan(
   plan->plan.reserve(composition.size() +
                      static_cast<size_t>(cursor_layer.has_value()));
 
-  plan->steered = PlaceSteered(*plan, avail_planes, composition, prefer_merge);
-  if (!plan->steered && !PlaceFirstFit(*plan, avail_planes, composition)) {
+  const bool steered = PlaceSteered(*plan, avail_planes, composition,
+                                    prefer_merge);
+  if (!steered && !PlaceFirstFit(*plan, avail_planes, composition)) {
     return {};
   }
 

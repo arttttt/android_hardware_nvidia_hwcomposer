@@ -36,12 +36,6 @@ static void CloseFd(const int *fd) {
   }
 }
 
-auto MakeUniqueFd(int fd) -> UniqueFd {
-  if (fd < 0)
-    return {nullptr, CloseFd};
-
-  return {new int(fd), CloseFd};
-}
 
 auto MakeSharedFd(int fd) -> SharedFd {
   if (fd < 0)

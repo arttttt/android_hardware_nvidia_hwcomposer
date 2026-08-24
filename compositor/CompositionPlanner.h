@@ -47,7 +47,6 @@ class CompositionPlanner {
   // composition.
   enum class FlattenReason {
     kNone,
-    kStaticScene,
     kValidateFailed,
     kCtmWithOffset,
     kNoPerPlaneColorspaceSupport,

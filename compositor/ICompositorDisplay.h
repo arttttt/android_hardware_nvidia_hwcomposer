@@ -45,7 +45,6 @@ class ICompositorDisplay {
 
   virtual std::vector<const HwcLayer *> GetOrderLayersByZPos() const = 0;
 
-  virtual const FlatteningController *GetFlatCon() const = 0;
 
   virtual size_t GetNumAvailablePlanes() const = 0;
   virtual std::shared_ptr<BindingOwner<Plane>> GetCursorPlane() const = 0;
@@ -85,8 +84,6 @@ class ICompositorDisplay {
 
   virtual const HwcLayer &GetClientLayer() const = 0;
 
-  virtual std::shared_ptr<const HalColorTransformMatrix>
-  GetColorTransformMatrix() const = 0;
 
   virtual bool CursorPlaneNeedsColorPipeline(
       const HwcLayer &cursor_layer) const = 0;

@@ -38,8 +38,6 @@ const char* NameOf(CompositionPlanner::FlattenReason reason) {
   switch (reason) {
     case CompositionPlanner::FlattenReason::kNone:
       return "no reason given";
-    case CompositionPlanner::FlattenReason::kStaticScene:
-      return "the scene stopped changing";
     case CompositionPlanner::FlattenReason::kValidateFailed:
       return "the hardware would not take the plan";
     case CompositionPlanner::FlattenReason::kCtmWithOffset:

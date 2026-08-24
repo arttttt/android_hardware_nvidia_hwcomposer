@@ -158,7 +158,6 @@ class HwcLayer {
  private:
   void PopulateLayerData();
 
-  friend class CompositorTestUtils;
 
   // sf_type_ stores the initial type given to us by surfaceflinger,
   // validated_type_ stores the type after running ValidateDisplay
@@ -204,7 +203,6 @@ class HwcLayer {
   bool has_buffer_set_ = false;
 
  public:
-  void InvalidateBuffer();
   bool IsLayerUsableAsDevice() const;
 };
 

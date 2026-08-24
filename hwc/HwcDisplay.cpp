@@ -1795,7 +1795,6 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
 
 void HwcDisplay::ApplyCommitChanges(const AtomicCommitArgs &a_args,
                                     const AtomicCommitResult &result) {
-  writeback_complete_fence_ = result.writeback_complete_fence;
   if (a_args.display_mode) {
     // Get the vsync period before updating active_config_id.
     uint32_t prev_vperiod_ns = GetCurrentVsyncPeriodNs();
@@ -1874,49 +1873,6 @@ bool HwcDisplay::ForcedScalingWithGpu() const {
   return hwc_->ForcedScalingWithGpu();
 }
 
-bool HwcDisplay::IsWritebackSupported() const {
-  return !IsInHeadlessMode() && !is_virtual_ &&
-         pipeline_->FindWritebackConnectorForPipeline() != nullptr;
-}
-
-bool HwcDisplay::SetWritebackEnabled(bool enabled) {
-  if (IsInHeadlessMode()) {
-    return false;
-  }
-
-  // Handle Disable
-  if (!enabled) {
-    pipeline_->writeback_connector = nullptr;
-    return true;
-  }
-
-  // Handle Enable
-  if (pipeline_->writeback_connector != nullptr) {
-    return true;
-  }
-
-  auto *wb_connector = pipeline_->FindWritebackConnectorForPipeline();
-  if (!wb_connector) {
-    ALOGE("HwcDisplay: No writeback connector found");
-    return false;
-  }
-  auto bound_connector = wb_connector->BindPipeline(pipeline_.get());
-  if (!bound_connector) {
-    ALOGE("HwcDisplay: Failed to bind writeback connector");
-    return false;
-  }
-  pipeline_->writeback_connector = bound_connector;
-  return true;
-}
-
-SharedFd HwcDisplay::GetWritebackBufferFence() {
-  if (!writeback_complete_fence_) {
-    ALOGE("HwcDisplay: No readback fence available for display");
-    return nullptr;
-  }
-
-  return std::move(writeback_complete_fence_);
-}
 
 std::vector<const HwcLayer *> HwcDisplay::GetOrderLayersByZPos() const {
   std::vector<const HwcLayer *> ordered_layers;
@@ -2003,13 +1959,6 @@ void HwcDisplay::SetHdrOutputMetadata(const ColorGamut &color_gamut,
   m->white_point.y = ToU16ColorValue(whitePoint.y);
 }
 
-bool HwcDisplay::NeedsClientLayerUpdate() const {
-  return std::any_of(layers_.begin(), layers_.end(), [](const auto &pair) {
-    const auto &layer = pair.second;
-    return layer.GetSfType() == CompositionType::kClient ||
-           layer.GetValidatedType() == CompositionType::kClient;
-  });
-}
 
 std::optional<LayerData> HwcDisplay::GetModesetLayerData(
     const HwcDisplayConfig *new_config) {

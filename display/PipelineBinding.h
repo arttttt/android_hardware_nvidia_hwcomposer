@@ -43,9 +43,6 @@ class PipelineBindable {
   friend class BindingOwner<O>;
 
  public:
-  auto *GetPipeline() {
-    return bound_pipeline_;
-  }
 
   // Header implementation required for template instantiation.
   auto BindPipeline(const DisplayPipeline *pipeline,

@@ -199,27 +199,6 @@ static hwc2_function_pointer_t ToHook(T function) {
   return reinterpret_cast<hwc2_function_pointer_t>(function);
 }
 
-template <typename T, typename HookType, HookType func, typename... Args>
-static T DeviceHook(hwc2_device_t *dev, Args... args) {
-  ALOGV("Device hook: %s", GetFuncName(__PRETTY_FUNCTION__).c_str());
-  DrmHwcTwo *hwc = ToDrmHwcTwo(dev);
-  const std::unique_lock lock(hwc->GetMainLock());
-  return static_cast<T>(((*hwc).*func)(std::forward<Args>(args)...));
-}
-
-template <typename HookType, HookType func, typename... Args>
-static int32_t DisplayHook(hwc2_device_t *dev, hwc2_display_t display_handle,
-                           Args... args) {
-  ALOGV("Display #%" PRIu64 " hook: %s", display_handle,
-        GetFuncName(__PRETTY_FUNCTION__).c_str());
-  DrmHwcTwo *hwc = ToDrmHwcTwo(dev);
-  const std::unique_lock lock(hwc->GetMainLock());
-  auto *display = hwc->GetDisplay(static_cast<DisplayHandle>(display_handle));
-  if (display == nullptr)
-    return static_cast<int32_t>(HWC2::Error::BadDisplay);
-
-  return static_cast<int32_t>((display->*func)(std::forward<Args>(args)...));
-}
 
 /* Registering a callback is the one entry point whose locking depends on the
  * release this is built for, so it does not go through the ordinary hook.
