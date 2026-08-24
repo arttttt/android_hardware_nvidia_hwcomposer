@@ -1717,8 +1717,8 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
 
   /* Between the lock and the controller there are three steps, and the frame
    * is known to lose several milliseconds somewhere among them: the composer's
-   * own work at the bottom -- undoing the compression and posting the flip --
-   * has been timed at about one, and the lock is never waited on. Timed apart
+   * own work at the bottom -- posting the flip -- has been timed at about
+   * one, and the lock is never waited on. Timed apart
    * so the answer names a step rather than a range. */
   const int64_t t0 = GetTimeMonotonicNs();
 

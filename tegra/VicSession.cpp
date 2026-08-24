@@ -27,7 +27,6 @@
 
 
 #include "bufferinfo/NvGralloc.h"
-#include "compositor/LayerData.h"
 #include "tegra/nvmap.h"
 #include "utils/log.h"
 

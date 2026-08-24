@@ -160,17 +160,6 @@ class Hwc2DeviceLayer : public FrontendLayerBase {
       return std::nullopt;
     }
 
-    /* What the GPU draws is compressed, and this display cannot read that --
-     * but flattening it is not done here. Nothing is known at this point about
-     * where the buffer is going, and most of them are not going to the display
-     * at all: a layer the planner sends to the client is composed by the GPU,
-     * which reads the compressed arrangement natively and is only slowed down
-     * by having been handed a flattened copy. Undoing it for every buffer of
-     * every frame is work thrown away several times over on every frame.
-     *
-     * It is undone where that is known instead -- when the plan is turned into
-     * windows of the controller, which is exactly the set of buffers the
-     * display will read. See TegraAtomicStateManager. */
     HwcLayer::LayerProperties lp;
     lp.buffer = HwcLayer::Buffer{
         .bi = bo_info.value(),

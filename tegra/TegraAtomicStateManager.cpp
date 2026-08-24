@@ -556,12 +556,6 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
   for (size_t i = 0; i < available.size(); ++i)
     windows[i].index = static_cast<int32_t>(available[i]);
 
-  /* In step with the windows, and null wherever one shows nothing. This is
-   * the answer to "which buffers will the display actually read", which is
-   * not known any earlier than here and is the whole reason for carrying the
-   * handles this far. */
-  std::vector<buffer_handle_t> handles(available.size(), nullptr);
-  std::vector<uint64_t> handle_ids(available.size(), 0);
 
   /* Value-initialised on purpose: the geometry fields are only assigned
    * when layers join the group, and every reader is behind a non-empty
@@ -702,9 +696,6 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
                           DepthForZPos(joining.z_pos), &windows[slot]))
         return nullptr;
 
-      handles[slot] = joining.layer.bi ? NativeHandleOf(*joining.layer.bi)
-                                       : nullptr;
-      handle_ids[slot] = joining.layer.bi ? joining.layer.bi->unique_id : 0;
     }
   }
 
@@ -787,8 +778,6 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
   }
 
   return std::make_unique<TegraAtomicRequest>(std::move(windows),
-                                              std::move(handles),
-                                              std::move(handle_ids),
                                               args.composition != nullptr,
                                               args.power_mode,
                                               std::move(merge),

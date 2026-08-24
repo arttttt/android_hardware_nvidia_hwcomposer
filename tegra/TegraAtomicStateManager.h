@@ -158,8 +158,6 @@ class TegraAtomicRequest : public AtomicRequest {
   };
 
   TegraAtomicRequest(std::vector<hwc::DcHead::Window> windows,
-                     std::vector<buffer_handle_t> handles,
-                     std::vector<uint64_t> handle_ids,
                      bool has_composition,
                      std::optional<PowerMode> power_mode,
                      Merge merge = {},
@@ -168,8 +166,6 @@ class TegraAtomicRequest : public AtomicRequest {
                      Cursor cursor = {},
                      FrameNote note = {})
       : windows_(std::move(windows)),
-        handles_(std::move(handles)),
-        handle_ids_(std::move(handle_ids)),
         has_composition_(has_composition),
         power_mode_(power_mode),
         merge_(std::move(merge)),
@@ -199,26 +195,6 @@ class TegraAtomicRequest : public AtomicRequest {
     return windows_;
   }
 
-  /* The buffer behind each window, as the allocator knows it, in step with
-   * GetWindows(); null where a window shows nothing.
-   *
-   * Carried because a window is described in the controller's terms and the
-   * allocator answers to none of them: preparing a buffer for the display
-   * takes its own handle. Kept beside the windows rather than inside one,
-   * because it is not something the controller is told -- it is what has to
-   * happen before the controller is told anything.
-   */
-  const std::vector<buffer_handle_t> &GetHandles() const {
-    return handles_;
-  }
-
-  /* The allocator's unique name for each buffer, in step with GetHandles();
-   * nought where a window shows nothing or the platform could not name it.
-   * Carried because a handle is an address and an address can be reused:
-   * anything remembering a buffer across frames must remember the name. */
-  const std::vector<uint64_t> &GetHandleIds() const {
-    return handle_ids_;
-  }
 
   /* Whether anything is to be shown. A commit that only changes the power
    * state must not post a frame: every window of the head goes into a flip,
@@ -238,8 +214,6 @@ class TegraAtomicRequest : public AtomicRequest {
 
  private:
   const std::vector<hwc::DcHead::Window> windows_;
-  const std::vector<buffer_handle_t> handles_;
-  const std::vector<uint64_t> handle_ids_;
   const bool has_composition_;
   const std::optional<PowerMode> power_mode_;
   const Merge merge_;
