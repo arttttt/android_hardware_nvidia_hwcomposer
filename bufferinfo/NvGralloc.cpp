@@ -44,6 +44,9 @@ namespace {
  *     colour, which nothing else in this buffer could plausibly be, and it
  *     fixes everything around it: the layout says blocklinear in the word
  *     before the pitch, and the block height beside the kind is a sane four.
+ *     (That dump predates the system-wide compression ban: with compression
+ *     off, the allocator marks the same buffers with the plain kind, which
+ *     is what the window's kind gate now expects.)
  */
 enum SurfaceWord {
   kWidth = 0,

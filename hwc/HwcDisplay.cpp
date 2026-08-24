@@ -129,8 +129,10 @@ void UpdateClientTargetIfNeeded(const HwcLayer &client_layer,
                                 LayerToPlaneJoiningPlan *composition_plan) {
   if (!composition_plan)
     return;
-  if (const auto client_z = composition_plan->client_index)
-    composition_plan->plan[*client_z].layer = client_layer.GetLayerData();
+  const auto client_at = composition_plan->client_index;
+  if (client_at && *client_at >= 0 &&
+      static_cast<size_t>(*client_at) < composition_plan->plan.size())
+    composition_plan->plan[*client_at].layer = client_layer.GetLayerData();
 }
 
 }  // namespace
@@ -812,8 +814,9 @@ HwcDisplay::Error HwcDisplay::SetPowerMode(PowerMode mode) {
   const auto result = ExecuteAtomicCommit(a_args);
   ALOGE_IF(!result.IsSuccess(), "Failed to set display active: %s. err=%d",
            enabled ? "enabled" : "disabled", result.GetStatus().error_code);
-  // If setting to |enabled|, log the error and return true. The next frame
-  // update will try to set it to active again.
+  // If setting to |enabled|, log the error and return success: the ON path
+  // is never answered from the cache, so the framework's next power request
+  // reaches the hardware again -- that is the retry.
   if (!result.IsSuccess() && !enabled) {
     return HwcDisplay::Error::kBadParameter;
   }
