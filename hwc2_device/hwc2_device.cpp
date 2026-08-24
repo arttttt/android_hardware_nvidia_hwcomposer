@@ -553,6 +553,18 @@ static int32_t SetClientTarget(hwc2_device_t *device, hwc2_display_t display,
   lp->color_encoding = Hwc2ToColorSpace(dataspace);
   lp->sample_range = Hwc2ToSampleRange(dataspace);
 
+  /* Panel-sized by construction, and said out loud: with the rects left
+   * unsaid every geometry gate in plane eligibility silently skipped the
+   * client target, and the missing-rect convention means three different
+   * things at three sites. */
+  const auto client_size = idisplay->GetSize();
+  lp->display_frame = DstRectInfo{
+      IRect{0, 0, static_cast<int32_t>(client_size.first),
+            static_cast<int32_t>(client_size.second)}};
+  lp->source_crop = SrcRectInfo{
+      FRect{0.F, 0.F, static_cast<float>(client_size.first),
+            static_cast<float>(client_size.second)}};
+
   idisplay->GetClientLayer().SetLayerProperties(lp.value());
 
   return 0;
