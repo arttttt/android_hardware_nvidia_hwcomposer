@@ -34,7 +34,6 @@ HwcLayer::HwcLayer(ICompositorDisplay* parent_display)
 void HwcLayer::SetLayerProperties(const LayerProperties& layer_properties) {
   if (layer_properties.buffer) {
     if (layer_data_.fb != layer_properties.buffer->fb) {
-      layer_data_.frame_time_history.AddFrameTime();
       /* A new buffer is the layer drawing -- the moment the liveness
        * clock restarts from. */
       last_activity_ = std::chrono::steady_clock::now();

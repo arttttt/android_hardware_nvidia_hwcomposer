@@ -119,7 +119,6 @@ LOCAL_SRC_FILES := \
     compositor/CompositionPlanner.cpp \
     compositor/FlatteningController.cpp \
     compositor/FlatteningEventAtomReporter.cpp \
-    compositor/FrameTimeHistory.cpp \
     compositor/GenericCompositionPlanner.cpp \
     compositor/HdcpController.cpp \
     compositor/LayerToPlaneJoiningPlan.cpp \

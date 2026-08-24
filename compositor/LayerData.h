@@ -24,7 +24,6 @@
 
 #include "bufferinfo/BufferInfo.h"
 #include "compositor/DisplayInfo.h"
-#include "compositor/FrameTimeHistory.h"
 #include "utils/fd.h"
 
 namespace android::drm_hwcomposer {
@@ -268,7 +267,6 @@ struct LayerData {
    */
   HwcColorspace colorspace{};
   TransferFunction transfer_func{};
-  FrameTimeHistory frame_time_history;
   std::optional<float> brightness;
 
   /* Whether this layer was drawing recently, judged by the HwcLayer it
