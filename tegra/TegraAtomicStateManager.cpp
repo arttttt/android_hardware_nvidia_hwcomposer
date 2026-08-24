@@ -18,6 +18,7 @@
 
 #include "tegra/CursorPlane.h"
 #include "tegra/TegraPlane.h"
+#include "utils/Time.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -75,11 +76,6 @@ bool RingWanted() {
   return wanted;
 }
 
-int64_t NowNs() {
-  struct timespec ts = {};
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  return (static_cast<int64_t>(ts.tv_sec) * 1000000000) + ts.tv_nsec;
-}
 
 /* The framework's transform, as bits: hflip | vflip << 1 | rotate90 << 2 --
  * the same encoding the platform's own enum uses. */
@@ -1057,7 +1053,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         return -EINVAL;
       }
 
-      const int64_t before_merge = NowNs();
+      const int64_t before_merge = GetTimeMonotonicNs();
       /* The same door the turning pass used to answer to, so a code can
        * still be walked on this route. */
       const int forced_group = ForcedVicTransform();
@@ -1110,7 +1106,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       if (any_turn)
         WriteMergedPicture(*target->vendor, merged);
 
-      const int64_t took = NowNs() - before_merge;
+      const int64_t took = GetTimeMonotonicNs() - before_merge;
       merges_.frames++;
       if (group_turn != 0)
         merges_.turn_folded++;
@@ -1200,7 +1196,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
     }
   }
 
-  const int64_t before_flip = NowNs();
+  const int64_t before_flip = GetTimeMonotonicNs();
 
   hwc::UniqueFd post_fence;
   int err = head_.flip(windows, &post_fence);
@@ -1236,7 +1232,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   /* Only when the flip did not fit comfortably inside a refresh -- the
    * rest is the ordinary case and says nothing. */
   constexpr int64_t kWorthSaying = 3000000;
-  const int64_t after_flip = NowNs();
+  const int64_t after_flip = GetTimeMonotonicNs();
   if (after_flip - before_flip > kWorthSaying) {
     HWC_LOGD("slow present: flip %" PRId64 "us",
              (after_flip - before_flip) / 1000);
@@ -1411,7 +1407,7 @@ void TegraAtomicStateManager::NoteFrame(
   /* When the line was written, in the same clock the engine's timings use.
    * Appended last so the field order the ring has always had is untouched;
    * intervals and percentiles are computed from it elsewhere. */
-  line << " t" << NowNs() << "\n";
+  line << " t" << GetTimeMonotonicNs() << "\n";
 
   if (frame_ring_.size() < kFrameRing) {
     frame_ring_.push_back(line.str());
