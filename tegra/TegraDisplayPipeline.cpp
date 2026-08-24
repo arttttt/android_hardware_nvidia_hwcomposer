@@ -173,6 +173,13 @@ TegraDisplayPipeline::~TegraDisplayPipeline() {
      * stop before the devices it reads from do. */
     mVSync.reset();
     atomic_state_manager.reset();
+    /* The cursor pair goes while the devices it borrows are still open:
+     * the unit hides its sprite through the head's descriptor on the way
+     * out. Left to the ordinary member order both would be destroyed
+     * after mHead had closed that descriptor -- two ioctls into a dead
+     * fd, and a hardware sprite nobody hid. */
+    mCursorUnit.reset();
+    mCursorPlane.reset();
     /* After the manager that speaks to it, before the head it speaks
      * through: letting go restores the native rate over the head's
      * descriptor. */
