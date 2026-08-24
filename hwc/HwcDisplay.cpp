@@ -1535,9 +1535,16 @@ std::optional<AtomicCommitArgs> HwcDisplay::CreateFrameUpdateCommit(
     a_args.color_matrix = render_intent_matrix_;
   }
 
-  // Client CTM with offset cannot be processed by CTM prop. Only apply render
-  // intent CTM which will never have offset.
-  if (client_ctm_has_offset_ && !UseColorPipeline()) {
+  // Whether a client CTM with an offset reaches the display is the
+  // controller's answer, and CtmByGpu already asks it per trait: the DRM
+  // CTM property has no addend, so there only the render intent's share
+  // may go down. Substituting unconditionally here silently contradicted
+  // that answer on a controller whose matrix stage does take an addend --
+  // the inversion matrix (offset column 1,1,1) was dropped on this side
+  // while the claimed SKIP_CLIENT_COLOR_TRANSFORM kept the client from
+  // ever applying it, so it applied nowhere.
+  if (client_ctm_has_offset_ && !UseColorPipeline() &&
+      !GetPipe().crtc->Get()->SupportsCtmOffset()) {
     a_args.color_matrix = render_intent_matrix_;
   }
 
