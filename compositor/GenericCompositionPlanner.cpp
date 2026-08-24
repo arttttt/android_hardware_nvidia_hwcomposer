@@ -26,7 +26,6 @@
 #include <vector>
 
 #include "compositor/CompositionPlanner.h"
-#include "compositor/FlatteningController.h"
 #include "compositor/ICompositorDisplay.h"
 #include "compositor/LayerData.h"
 #include "display/CommitStatus.h"

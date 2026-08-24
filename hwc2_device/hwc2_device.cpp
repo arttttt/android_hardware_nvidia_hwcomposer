@@ -19,7 +19,6 @@
 
 #define LOG_TAG "drmhwc"
 
-#include <cassert>
 #include <cinttypes>
 #include <memory>
 #include <optional>
@@ -30,7 +29,6 @@
 #include <ui/GraphicTypes.h>
 
 #include "bufferinfo/BufferInfoGetter.h"
-#include "bufferinfo/NvGralloc.h"
 #include "compositor/DisplayInfo.h"
 #include "hwc/HwcDisplay.h"
 #include "hwc/HwcLayer.h"
