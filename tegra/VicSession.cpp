@@ -394,7 +394,11 @@ drm_hwcomposer::SharedFd VicSession::ComposeInto(
      * transpose bit leaves placement alone. So the rectangle is
      * pre-mirrored here, on the engine's own border, and everything above
      * this call keeps thinking in the panel's axes. Mirrored within the
-     * group's own extents -- the only bound the engine was told. */
+     * group's own extents -- the only bound the engine was told, and,
+     * measured once on a group narrower than its buffer, the bound the
+     * engine itself mirrors by: every member came back in place and the
+     * far-edge strip uncut, where buffer anchors would have shifted the
+     * lot by the margin and clipped the strip away. */
     const auto placed = drm_hwcomposer::MirrorRectWithin(
         layer.display_left, layer.display_top, layer.display_right,
         layer.display_bottom, (transform & 2U) != 0, (transform & 1U) != 0,
