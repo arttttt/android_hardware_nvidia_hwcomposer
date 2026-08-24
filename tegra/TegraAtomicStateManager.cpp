@@ -57,6 +57,24 @@ namespace android::drm_hwcomposer {
 
 namespace {
 
+/* Whether the frame ring records at all.
+ *
+ * Of the whole instrument set the ring is the one piece that works on
+ * every shown frame -- a line built and stored per flip -- so it is the
+ * one piece production would pay for without asking. It records only
+ * when asked to: bracketing a defect is worth arming an instrument for,
+ * and a composer restart is a fair price for arming one.
+ *
+ * Read once, like every switch here: answering per frame would let it
+ * change without a restart, which is worth very little against asking
+ * the property store the same question sixty times a second for the
+ * life of the device.
+ */
+bool RingWanted() {
+  static const bool wanted = property_get_bool("vendor.hwc.ring", 0) != 0;
+  return wanted;
+}
+
 int64_t NowNs() {
   struct timespec ts = {};
   clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -1366,6 +1384,9 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
 void TegraAtomicStateManager::NoteFrame(
     const TegraAtomicRequest &tegra,
     const std::vector<hwc::DcHead::Window> &windows, bool merge_reused) {
+  if (!RingWanted())
+    return;
+
   /* One line a frame, kept dense on purpose: the ring holds a second of
    * frames, and a line that sprawls would make the dump itself the thing
    * nobody reads. Per layer: the buffer's name, the seat the plan gave it,
@@ -1521,6 +1542,9 @@ std::string TegraAtomicStateManager::DumpState() {
                             : (frame_ring_pos_ + i) % frame_ring_.size();
       ss << frame_ring_[at];
     }
+  } else if (!RingWanted()) {
+    /* An empty section must read as a choice, not a fault. */
+    ss << "Frame ring                : off (vendor.hwc.ring, read at start)\n";
   }
 
   if (!count_fences_)
