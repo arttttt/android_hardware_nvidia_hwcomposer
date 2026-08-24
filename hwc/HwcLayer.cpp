@@ -46,11 +46,17 @@ void HwcLayer::SetLayerProperties(const LayerProperties& layer_properties) {
      * buffer being replaced is still around to compare against. */
     {
       const BufferInfo& incoming = layer_properties.buffer->bi;
+      /* An import that failed where the last one succeeded (or healed
+       * where it failed) changes the layer's seat as surely as a new
+       * shape: usability is judged from the import, and a stale plan
+       * would seat an unusable layer on a window. */
       if (!layer_data_.bi ||
           layer_data_.bi->width != incoming.width ||
           layer_data_.bi->height != incoming.height ||
           layer_data_.bi->format != incoming.format ||
-          layer_data_.bi->modifiers[0] != incoming.modifiers[0]) {
+          layer_data_.bi->modifiers[0] != incoming.modifiers[0] ||
+          (layer_data_.fb == nullptr) !=
+              (layer_properties.buffer->fb == nullptr)) {
         plan_invalidators_ |= kBufferGeometry;
       }
     }

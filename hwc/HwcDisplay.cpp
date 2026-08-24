@@ -1619,11 +1619,19 @@ HwcDisplay::CreateLayerToPlaneJoiningPlan(
 
   std::vector<LayerData> composition_layers;
 
+  /* The plan is indexed by rank, and a z-order is not a rank: the cursor
+   * is sorted out of the z map while still consuming a z, so every rank
+   * above it shifts. The client entry's seat is therefore recorded here,
+   * where the rank is the position it actually takes. */
+  std::optional<int> client_plan_index;
+
   // now that they're ordered by z, add them to the composition
   for (const auto &[_, layer] : z_map) {
     if (!layer->IsLayerUsableAsDevice()) {
       return nullptr;
     }
+    if (layer == &client_layer_)
+      client_plan_index = static_cast<int>(composition_layers.size());
     composition_layers.emplace_back(layer->GetLayerData());
     /* The class the layer was last judged into, for the joining plan's
      * steering. The client target is a layer here like any other, and
@@ -1650,7 +1658,7 @@ HwcDisplay::CreateLayerToPlaneJoiningPlan(
       CreateLayerToPlaneJoiningPlan(GetPipe(), std::move(composition_layers),
                                     std::move(cursor_layer), prefer_merge);
   if (composition) {
-    composition->client_z_order = client_z_order;
+    composition->client_z_order = client_plan_index;
     const auto outcome = static_cast<size_t>(composition->steering);
     if (outcome < kSteeringOutcomes) {
       steering_outcomes_[outcome]++;
