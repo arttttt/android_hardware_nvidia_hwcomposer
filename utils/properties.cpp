@@ -172,9 +172,14 @@ auto Properties::CmuColorPipeline() -> bool {
   /* On unless told otherwise. Off unclaims the skip capability and idles
    * the colour pipeline in one move -- the framework tints in GL again, as
    * a build without any of this did. Read at process start on every side;
-   * changing it means restarting the composer, which restarts the client. */
+   * changing it means restarting the composer, which restarts the client.
+   * The caching below is what makes that sentence true: one caller sits
+   * on the present path, and an answer that could change mid-session
+   * would disagree with the capability the client read once at boot. */
   constexpr int kDefault = 1;
-  return (property_get_bool("vendor.hwc.cmu", kDefault) != 0);
+  static const bool wanted = property_get_bool("vendor.hwc.cmu",
+                                               kDefault) != 0;
+  return wanted;
 }
 
 auto Properties::CalibratedColorMode() -> bool {
