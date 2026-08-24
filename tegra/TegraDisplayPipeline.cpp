@@ -84,7 +84,9 @@ std::unique_ptr<TegraDisplayPipeline> TegraDisplayPipeline::create(
      * Whatever power mode SurfaceFlinger actually wants arrives moments later
      * and is obeyed. This only makes the starting point true.
      */
-    setPanelPowered(index, true);
+    if (setPanelPowered(index, true) != 0)
+        ALOGE("head %u: the starting blank was refused; the panel is in"
+              " whatever state boot left it", index);
 
     /* Both devices, because a blank takes both: the head is what is asked to
      * report them, the control device is where they come out. The head index

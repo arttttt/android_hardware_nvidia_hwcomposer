@@ -791,11 +791,7 @@ HwcDisplay::Error HwcDisplay::SetPowerMode(PowerMode mode) {
 
   // If the request is to enable the display, the CRTC is not active, and an
   // active config is set, try to reconfigure the pipeline with SetConfig.
-  if (enabled) {
-    if (GetPipe().atomic_state_manager->IsActive()) {
-      return HwcDisplay::Error::kNone;
-    }
-
+  if (enabled && !GetPipe().atomic_state_manager->IsActive()) {
     const HwcDisplayConfig *last_requested_config = GetLastRequestedConfig();
     if (last_requested_config) {
       if (SetConfig(last_requested_config->id) != ConfigError::kNone) {

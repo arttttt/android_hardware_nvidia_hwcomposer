@@ -1788,7 +1788,12 @@ void TegraAtomicStateManager::ProgramColorMatrix(
 }
 
 int TegraAtomicStateManager::SetPowered(bool powered) {
-  if (active_ == powered)
+  /* A repeated OFF is a no-op; a repeated ON is re-asserted regardless.
+   * The cache starts life as an assumption and a refused blank can leave
+   * it lying -- the light request is rare and idempotent, so asking the
+   * hardware again costs nothing and un-wedges a cache that lied, which
+   * once meant a black screen for the life of the process. */
+  if (active_ == powered && !powered)
     return 0;
 
   int err = hwc::setPanelPowered(head_.index(), powered);
