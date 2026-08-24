@@ -124,6 +124,14 @@ class HwcDisplay : public ICompositorDisplay {
   uint32_t TakePlanInvalidators() const override {
     uint32_t taken = plan_invalidators_;
     plan_invalidators_ = 0;
+    /* The client target answers the same questions as any other layer
+     * and its answers change: it takes a new buffer whenever the GPU
+     * composes. Left out of this walk it read quiet forever -- and the
+     * steering preferred into the merge the one buffer that misses the
+     * cache on every composed frame. */
+    taken |= client_layer_.TakePlanInvalidators();
+    if (client_layer_.RefreshLiveness())
+      taken |= kLayerActivity;
     for (const auto &[id, layer] : layers_) {
       taken |= layer.TakePlanInvalidators();
       /* Liveness is re-judged exactly where the plan's other inputs are
