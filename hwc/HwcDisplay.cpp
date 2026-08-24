@@ -1794,7 +1794,7 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
 }
 
 void HwcDisplay::ApplyCommitChanges(const AtomicCommitArgs &a_args,
-                                    const AtomicCommitResult &result) {
+                                    const AtomicCommitResult & /*result*/) {
   if (a_args.display_mode) {
     // Get the vsync period before updating active_config_id.
     uint32_t prev_vperiod_ns = GetCurrentVsyncPeriodNs();
