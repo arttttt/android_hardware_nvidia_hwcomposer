@@ -95,9 +95,8 @@ class TegraPlane : public Plane {
 
   /* Whether resizing `src` to `dst` is past the engine's reach. The source
    * axes are given already turned into the display's frame -- the caller
-   * that turns a layer swaps them first. One judge for the plane's own
-   * answer and for the test switch in the state manager, so the two can
-   * never drift apart when the boundary is recalibrated. */
+   * that turns a layer swaps them first. One judge with one caller, so
+   * recalibrating the boundary happens in exactly one place. */
   static bool BeyondEngineReach(float src_w, float src_h, float dst_w,
                                 float dst_h);
 

@@ -23,7 +23,7 @@
 
 namespace android::drm_hwcomposer {
 
-// CompositionStatsAtomReporter is a wrapper around creation of a VendorAtom
+// FlatteningEventAtomReporter is a wrapper around creation of a VendorAtom
 // and pushing it to the IStats::reportVendorAtom interface.
 class FlatteningEventAtomReporter {
  public:

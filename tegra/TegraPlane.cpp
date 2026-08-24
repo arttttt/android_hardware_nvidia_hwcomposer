@@ -190,9 +190,7 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
    * path -- only the window's capabilities are checked there, and no
    * layout check lives in it -- so a pitch-linear layer asked to turn
    * would reach the flip and fall there. Refused here, where refusal
-   * still steers the layer down the ladder. Our own turned intermediate
-   * is pitch-linear by construction and must never reach a window for
-   * this reason. */
+   * still steers the layer down the ladder. */
   if (pi.transform.rotate90 &&
       (flags & TEGRA_DC_EXT_FLIP_FLAG_BLOCKLINEAR) == 0) {
     ALOGV("plane %u: a quarter turn needs a block-encoded surface", index_);

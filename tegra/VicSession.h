@@ -144,10 +144,11 @@ class VicSession {
      * take ownership -- the caller closes it as it would have anyway. */
     int acquire_fence;
 
-    /* Set when the source is a buffer this composer allocated itself -- a
-     * turned copy, cut from the zone. Then `handle` is null and the words
-     * the engine reads the source by are the ones the library built when
-     * the buffer was born, rather than the allocator's.
+    /* Set when the source is a buffer this composer allocated itself,
+     * cut from the zone. Then `handle` is null and the words the engine
+     * reads the source by are the ones the library built when the buffer
+     * was born, rather than the allocator's. No caller passes one today;
+     * this seat is how a zone buffer would be read.
      *
      * Borrowed: the pool that lent the buffer outlives the frame. */
     const VendorBuffer *vendor = nullptr;

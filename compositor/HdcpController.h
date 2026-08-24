@@ -70,21 +70,6 @@ class HdcpController {
   // hardware to complete authentication.
   void Requested();
 
-  // Verifies the HDCP status on the connector and manages state transitions.
-  //
-  // This function is typically invoked after a timeout during the HDCP
-  // enablement process. It checks if the hardware has successfully enabled
-  // content protection.
-  //
-  // State transitions:
-  // - Success: Transitions to kEnabled. Notifies client with kType1 (or kType0
-  // if retrying).
-  // - Failure:
-  //   - If first attempt: Transitions to kRetry and triggers a retry frame
-  //   (fallback to Type 0).
-  //   - If retry attempt: Transitions to kUndesired and notifies client of
-  //   failure.
-
   // Retrieves the current HDCP state in a thread-safe manner.
   //
   // Returns the current state of the HDCP state machine.

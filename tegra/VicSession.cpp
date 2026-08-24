@@ -252,9 +252,9 @@ VicSession::~VicSession() {
 drm_hwcomposer::SharedFd VicSession::Compose(
     const VendorBuffer &target, const std::vector<Layer> &layers,
     uint32_t width, uint32_t height, int target_ready, uint32_t transform) {
-  /* The layers are still mostly the framework's buffers, and the allocator
-   * is answerable for those; a turned copy among them carries its own
-   * description and needs no one. */
+  /* The layers are the framework's buffers, and the allocator is
+   * answerable for those; a source of this composer's own would carry
+   * its own description and need no one -- none is passed today. */
   auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
   if (gralloc == nullptr) {
     refused_++;
@@ -357,11 +357,11 @@ drm_hwcomposer::SharedFd VicSession::ComposeInto(
     const Layer &layer = layers[i];
 
     /* A layer the framework handed us is described by the allocator that
-     * made it; a turned copy is described by the words the library built
-     * when this composer cut the buffer from its zone. The engine reads
-     * both the same way -- what differs is only who wrote the description,
-     * and a buffer of ours must never be described by anything but the
-     * library's own builder. */
+     * made it; a buffer of this composer's own would be described by the
+     * words the library built when it was cut from the zone. The engine
+     * reads both the same way -- what differs is only who wrote the
+     * description. Every member today is the framework's; the vendor
+     * seat is how one of ours would be read. */
     const void *surfaces = nullptr;
     size_t count = 1;
     if (layer.vendor != nullptr) {
@@ -519,9 +519,9 @@ drm_hwcomposer::SharedFd VicSession::CopyLayer(
     return {};
   }
 
-  /* The layer being turned is the framework's own, described by its
-   * allocator -- but a turned copy of a turned copy would be one of ours,
-   * so the same rule as the group pass applies. */
+  /* The layer being copied is the framework's own, described by its
+   * allocator; a source of ours would carry the library's words -- the
+   * same rule the group pass keeps. */
   const void *surfaces = nullptr;
   size_t count = 1;
   if (layer.vendor != nullptr) {
@@ -591,7 +591,7 @@ drm_hwcomposer::SharedFd VicSession::CopyLayer(
    * fences -- but a changed library generation makes this the first place
    * to look. */
   if (fence_to_fd_("hwc-vic", &done, 1, &fd) != kNvSuccess || fd < 0) {
-    ALOGE("the turned copy has no fence; dropping it");
+    ALOGE("the staged copy has no fence; dropping it");
     refused_++;
     return {};
   }

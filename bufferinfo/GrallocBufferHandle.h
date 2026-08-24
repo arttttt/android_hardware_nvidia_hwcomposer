@@ -24,10 +24,11 @@
 
 namespace android::drm_hwcomposer {
 
-// GrallocBufferHandle manages the lifetime of a buffer_handle_t that has been
-// imported into this process. Its lifetime is expected to be tracked by a
-// shared_ptr<PrimeFdsSharedBase> such that the imported buffer_handle_t can be
-// freed after there are no more BufferInfos using it.
+// GrallocBufferHandle keeps a buffer_handle_t alive for readers that need
+// the allocator's own view of the buffer, tracked by a
+// shared_ptr<PrimeFdsSharedBase>. Adapted from upstream: the handle is
+// kept, not imported -- the import this replaces cannot be spelled on this
+// platform -- so letting go frees nothing but the reference.
 class GrallocBufferHandle : public PrimeFdsSharedBase {
  public:
   static auto Create(buffer_handle_t handle)
