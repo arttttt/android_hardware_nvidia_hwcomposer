@@ -71,12 +71,25 @@ std::unique_ptr<Backend> BackendManager::CreateBackendForDevice(
   if (it == creators_.end()) {
     auto client_it = std::find(kClientDevices.begin(), kClientDevices.end(),
                                name);
-    name = client_it == kClientDevices.end() ? "generic" : "client";
+    if (client_it == kClientDevices.end()) {
+      /* This used to fall through to "generic", which nothing registers;
+       * operator[] then minted an empty function and calling it aborted
+       * the composer. A typo in a property deserves a log line, not a
+       * crash loop. */
+      ALOGE("No backend is registered under '%s'", name.c_str());
+      return nullptr;
+    }
+    it = creators_.find("client");
+    if (it == creators_.end()) {
+      ALOGE("The client backend is not registered");
+      return nullptr;
+    }
+    name = "client";
   }
 
   ALOGI("Creating backend '%s' for device '%s'", name.c_str(),
         device.GetName().c_str());
-  return creators_[name](device);
+  return it->second(device);
 }
 
 }  // namespace android::drm_hwcomposer
