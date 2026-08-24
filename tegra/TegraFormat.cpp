@@ -74,6 +74,18 @@ bool TegraLayoutFromModifier(uint64_t modifier, uint32_t *out_flags,
   *out_block_height_log2 = 0;
 
   if (IsBlockLinear(modifier)) {
+    /* The kind rides bits 12..19: the allocator's name for the memory
+     * arrangement inside the blocks. The display scans only the plain
+     * one -- a compressible kind puts tile records where the controller
+     * expects pixels -- and until here every consumer of the modifier
+     * was blind to it, on the assumption that a compressed buffer never
+     * reaches a bare window. The assumption is now a gate: an unknown
+     * kind sends the layer to the client instead of the glass. */
+    constexpr uint64_t kKindShift = 12;
+    constexpr uint64_t kKindMask = 0xff;
+    constexpr uint64_t kKindGeneric16Bx2 = 0xfe;
+    if (((modifier >> kKindShift) & kKindMask) != kKindGeneric16Bx2)
+      return false;
     *out_flags = TEGRA_DC_EXT_FLIP_FLAG_BLOCKLINEAR;
     *out_block_height_log2 = static_cast<uint8_t>(modifier & kBlockHeightMask);
     return true;
