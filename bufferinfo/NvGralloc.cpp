@@ -96,8 +96,7 @@ bool NvGralloc::Resolve(void *library) {
   return ResolveOne(library, "nvgr_is_valid", &is_valid_) &&
          ResolveOne(library, "nvgr_get_memfd", &get_memfd_) &&
          ResolveOne(library, "nvgr_get_format", &get_format_) &&
-         ResolveOne(library, "nvgr_get_surfaces", &get_surfaces_) &&
-         ResolveOne(library, "nvgr_decompress", &decompress_);
+         ResolveOne(library, "nvgr_get_surfaces", &get_surfaces_);
 }
 
 bool NvGralloc::IsValid(buffer_handle_t handle) const {
@@ -176,29 +175,5 @@ bool NvGralloc::DescribeSurface(buffer_handle_t handle, Surface *out) const {
   return true;
 }
 
-void NvGralloc::PrepareForScanout(buffer_handle_t handle, int acquire_fence,
-                                  SharedFd *out_fence) const {
-  /* A copy, because the allocator takes what it is given: it either hands the
-   * same descriptor straight back, or closes it once it has merged the wait
-   * into a new one. The layer still owns the original and closes it in its
-   * own time. */
-  const int handed = acquire_fence >= 0 ? ::dup(acquire_fence) : -1;
-
-  int produced = -1;
-  const int err = decompress_(handle, handed, &produced);
-
-  if (err != 0) {
-    /* The frame goes up as it is, which is what happened before any of this
-     * was asked for -- a worse picture rather than none. The descriptor
-     * handed over is not closed here: the allocator has left it in a state
-     * only it knows, and letting go of one on a path that should not be taken
-     * beats closing one it is still holding. */
-    ALOGE("buffer %p could not be decompressed: %d", handle, err);
-    *out_fence = nullptr;
-    return;
-  }
-
-  *out_fence = produced >= 0 ? MakeSharedFd(produced) : nullptr;
-}
 
 }  // namespace android::drm_hwcomposer

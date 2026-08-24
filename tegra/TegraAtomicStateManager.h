@@ -377,18 +377,6 @@ class TegraAtomicStateManager : public AtomicStateManager {
 
   bool active_ = true;
 
-  /* What each window was last given, and so what has already been flattened.
-   *
-   * A buffer stays flat until something draws into it again, and a window
-   * handed the same buffer as last time is showing pixels that were flattened
-   * then. Keyed by window rather than by buffer because that is the question
-   * being asked -- what is on this window now against what was on it before.
-   */
-  /* Keyed by the allocator's unique name for the buffer, not the handle
-   * pointer: an address freed and reallocated can come back naming a
-   * different buffer, and a stale match here would show compressed memory
-   * as pixels. Nought names nothing and never matches. */
-  std::map<int32_t, uint64_t> last_flattened_;
 
   /* Whether to keep only one frame in the air.
    *

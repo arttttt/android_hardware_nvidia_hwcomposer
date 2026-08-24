@@ -57,26 +57,6 @@ namespace android::drm_hwcomposer {
 
 namespace {
 
-/* Whether to undo the compression at all.
- *
- * Off, the display reads the compressed arrangement as though it were pixels
- * and shows a regular grid over the picture -- so this is not a way to run,
- * it is a way to measure. What flattening costs cannot be told from a build
- * that always does it, and the question is worth answering directly rather
- * than by inference: everything else about a frame stays exactly the same
- * with this off, so whatever the numbers move by is what it costs.
- *
- * Read once. Answering it per frame would let it be changed without
- * restarting anything, which is worth very little against asking the property
- * store the same question sixty times a second for the life of the device --
- * and a switch that exists to measure with is one that can afford a restart.
- */
-bool FlatteningWanted() {
-  static const bool wanted = property_get_bool("vendor.hwc.tegra.flatten",
-                                               1) != 0;
-  return wanted;
-}
-
 int64_t NowNs() {
   struct timespec ts = {};
   clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -1011,40 +991,13 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   if (cmu_ctm_ && tegra.GetColorMatrix())
     ProgramColorMatrix(*tegra.GetColorMatrix());
 
-  /* Flattened here, and only here, because this is the first point at which
-   * it is known which buffers the display will read -- and the last point
-   * before it reads them.
-   *
-   * What the GPU draws is compressed: beside the pixels it keeps a smaller
-   * record of each tile and writes only that where it can. A display that
-   * understands the arrangement reads both; this one does not, and reads the
-   * record as though it were pixels, which shows as a regular grid laid over
-   * a recognisable picture. So the buffers going to a window are flattened
-   * back, every frame, because every frame is drawn again.
-   *
-   * Only those. A layer the planner sent to the client is composed by the GPU,
-   * which reads the compressed arrangement natively and gains nothing from a
-   * flattened copy -- flattening it is a full pass over the screen thrown
-   * away, and there were several of them in every frame.
-   *
-   * Not done while a plan is merely being weighed, either: the planner asks
-   * whether a frame would go up several times before settling on one, and
-   * doing the work for each of those would be worse than doing it once for
-   * every buffer.
-   */
   std::vector<hwc::DcHead::Window> windows = tegra.GetWindows();
-  const std::vector<buffer_handle_t> &handles = tegra.GetHandles();
-  const std::vector<uint64_t> &ids = tegra.GetHandleIds();
 
   /* What would not fit a window is drawn now, into a buffer of our own, and
    * the window is told to show that instead.
    *
    * Here rather than where the plan was described, because a plan is weighed
    * several times before one is chosen and only one of those becomes a frame.
-   *
-   * The result is left out of the handles beside the windows on purpose: that
-   * list is what the flattening pass below walks, and this buffer was never
-   * drawn by the GPU, so there is nothing in it to flatten.
    */
   SharedFd merged;
   bool merge_reused = false;
@@ -1218,69 +1171,6 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
     ForgetMerge();
   }
 
-  /* Held until the flip has been made. The controller waits on these before
-   * reading, and a fence closed while it is still waited on is a frame shown
-   * before it was finished. */
-  std::vector<SharedFd> flattened;
-  flattened.reserve(windows.size());
-
-  const bool flatten = FlatteningWanted();
-
-  /* Split from the flip that follows it, because between them they are the
-   * whole of what showing a frame costs and they are answerable in different
-   * places -- one is a favour asked of the allocator, the other an ioctl. */
-  const int64_t before_flatten = NowNs();
-  size_t flattened_count = 0;
-
-  for (size_t i = 0; flatten && i < windows.size() && i < handles.size();
-       ++i) {
-    if (handles[i] == nullptr || windows[i].bufferFd == 0)
-      continue;
-
-    /* Only what has been drawn again since it was last flattened.
-     *
-     * Flattening is not a property of showing a buffer, it is a property of
-     * the buffer: once undone it stays undone until something draws into it
-     * again. A window given the same buffer as last time is showing the same
-     * pixels, and those pixels are already flat.
-     *
-     * Most of a frame is like that. The wallpaper is drawn once and stands
-     * still; the status bar changes when the clock does. Flattening them on
-     * every frame is a full pass over the screen, each, for a picture that
-     * did not change -- and there are as many of those passes as there are
-     * windows, on a GPU the application needs for its own drawing.
-     *
-     * The buffer is recognised by the allocator's unique name for it, not
-     * the handle pointer: an application draws into a chain of buffers in
-     * turn, so the same name coming back means that layer stood still --
-     * while the same ADDRESS coming back can name a different buffer
-     * entirely once the old one is freed and the allocation reused, and a
-     * stale match would show compressed memory as pixels. A buffer the
-     * platform could not name is flattened every time: unprovable is not
-     * unchanged.
-     */
-    const uint64_t id = i < ids.size() ? ids[i] : 0;
-    if (id != 0 && last_flattened_[windows[i].index] == id)
-      continue;
-
-    SharedFd ready;
-    NvGralloc::GetInstance()->PrepareForScanout(handles[i],
-                                                windows[i].preFence, &ready);
-
-    last_flattened_[windows[i].index] = id;
-
-    /* Nothing handed back means nothing to wait for beyond what was already
-     * being waited for, so the window keeps the fence it came with. */
-    if (!ready)
-      continue;
-
-    windows[i].preFence = *ready;
-    flattened.push_back(std::move(ready));
-    ++flattened_count;
-  }
-
-  const int64_t after_flatten = NowNs();
-
   /* The pointer, before the frame: the unit latches on the same blank the
    * flip aims at, so telling it first puts sprite and frame up together.
    * Hiding is a duty owed the moment the pointer leaves the scene -- the
@@ -1336,14 +1226,12 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   if (merged && scratch_ != nullptr && post_fence)
     scratch_->Presented(MakeSharedFd(::dup(post_fence.get())));
 
-  /* Only when the two together did not fit comfortably inside a refresh --
-   * the rest is the ordinary case and says nothing. */
+  /* Only when the flip did not fit comfortably inside a refresh -- the
+   * rest is the ordinary case and says nothing. */
   constexpr int64_t kWorthSaying = 3000000;
   const int64_t after_flip = NowNs();
-  if (after_flip - before_flatten > kWorthSaying) {
-    HWC_LOGD("slow present: flattened %zu buffer(s) in %" PRId64
-             "us, flip %" PRId64 "us",
-             flattened_count, (after_flatten - before_flatten) / 1000,
+  if (after_flip - before_flip > kWorthSaying) {
+    HWC_LOGD("slow present: flip %" PRId64 "us",
              (after_flip - before_flip) / 1000);
   }
 

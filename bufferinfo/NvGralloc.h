@@ -89,21 +89,6 @@ class NvGralloc {
   bool GetRawSurfaces(buffer_handle_t handle, const void **out,
                       size_t *count) const;
 
-  /* Puts the buffer into a state the display can read.
-   *
-   * The GPU on this hardware writes colour compressed, and the display
-   * controller cannot read that -- the engine that would decompress it on the
-   * way to the panel arrived a chip generation later. The allocator undoes it
-   * only when something locks the buffer to read it, and scanout locks
-   * nothing, so nothing would ever undo it.
-   *
-   * `acquire_fence` is borrowed. The fence handed back is owned by the caller
-   * and is the one to wait on before reading, whether or not any work turned
-   * out to be needed: it carries the acquire fence's meaning forward, so the
-   * caller should stop using its own once this returns.
-   */
-  void PrepareForScanout(buffer_handle_t handle, int acquire_fence,
-                         SharedFd *out_fence) const;
 
  private:
   NvGralloc() = default;
@@ -114,7 +99,6 @@ class NvGralloc {
   int (*get_memfd_)(buffer_handle_t) = nullptr;
   int (*get_format_)(buffer_handle_t) = nullptr;
   void (*get_surfaces_)(buffer_handle_t, const void **, size_t *) = nullptr;
-  int (*decompress_)(buffer_handle_t, int, int *) = nullptr;
 };
 
 }  // namespace android::drm_hwcomposer
