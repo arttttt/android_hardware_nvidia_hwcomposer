@@ -207,6 +207,17 @@ class VicSession {
    * itself is only knocked on when an allocation is actually asked for. */
   bool OffersZoneBuffers() const;
 
+  /* The zone's row grain, and the one formula for a zone row: the
+   * engine's parser demands rows in this grain for any target it writes,
+   * and a bandwidth proposal must weigh the same rows the flip will
+   * carry -- two formulas here once disagreed on any panel whose width
+   * is not a multiple of sixty-four. */
+  static constexpr uint32_t kZonePitchGrain = 256;
+  static constexpr uint32_t ZonePitchBytes(uint32_t width) {
+    return ((width * 4 + kZonePitchGrain - 1) / kZonePitchGrain) *
+           kZonePitchGrain;
+  }
+
   /* A buffer cut from the composer's own carveout zone: the memory is
    * allocated straight from nvmap under the zone's heap bit, exported as
    * a dma-buf, and handed to the library's own import call -- through this
@@ -236,7 +247,8 @@ class VicSession {
    * Null, having said what failed, if the zone would not give one. */
   std::unique_ptr<VendorBuffer> AllocateZoneTarget(uint32_t width,
                                                    uint32_t height,
-                                                   uint32_t pitch_grain = 256);
+                                                   uint32_t pitch_grain =
+                                                       kZonePitchGrain);
 
   /* Copies one layer into `target`, untransformed. The write is bounded to
    * `width` by `height` from the origin, which the caller sizes to the

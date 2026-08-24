@@ -761,7 +761,8 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
     window = hwc::DcHead::Window{};
     window.index = merge.window;
     window.bufferFd = 1; /* positive is all the proposal reads */
-    window.stride = static_cast<uint32_t>(mode.hdisplay) * 4;
+    window.stride = VicSession::ZonePitchBytes(
+        static_cast<uint32_t>(mode.hdisplay));
     window.pixelFormat = TEGRA_DC_EXT_FMT_R8G8B8A8;
     window.sourceWidth = static_cast<float>(merge.width);
     window.sourceHeight = static_cast<float>(merge.height);

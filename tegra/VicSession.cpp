@@ -633,8 +633,10 @@ std::unique_ptr<VendorBuffer> VicSession::AllocateZoneTarget(
   /* Rows in the grain the reader wants: the engine's parser demands two
    * hundred and fifty-six for a target it writes, the cursor unit reads
    * rows with no padding at all. */
-  const uint32_t grain = pitch_grain;
-  const uint32_t pitch = ((width * 4 + grain - 1) / grain) * grain;
+  const uint32_t pitch = pitch_grain == kZonePitchGrain
+                             ? ZonePitchBytes(width)
+                             : ((width * 4 + pitch_grain - 1) / pitch_grain) *
+                                   pitch_grain;
   const uint64_t raw =
       static_cast<uint64_t>(pitch) * ((height + 3) & ~3u);
   const auto size = static_cast<uint32_t>((raw + 131071) / 131072 * 131072);
