@@ -16,6 +16,7 @@
 
 #include "tegra/VicSession.h"
 
+#include "compositor/LayerData.h"
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/mman.h>
