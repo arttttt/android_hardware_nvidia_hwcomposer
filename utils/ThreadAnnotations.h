@@ -16,36 +16,13 @@
 
 #pragma once
 
-#include <android-base/thread_annotations.h>
-
-#include <mutex>
-
-/* One class this platform's thread annotations do not have yet.
+/* This file used to carry android::base::ScopedLockAssertion, the one class the
+ * platform's thread annotations were missing. Q ships it -- same name, same
+ * namespace, same behaviour, in android-base/thread_annotations.h -- so
+ * defining it here is now a redefinition and the compiler says so.
  *
- * Where a lock is taken through a unique_lock the compiler's thread-safety
- * analysis loses track of it, and this is what tells the analysis the lock is
- * held for the rest of the scope. It generates no code and checks nothing at
- * run time -- it exists so that a warning about reading a guarded member is
- * not raised where the member is in fact guarded.
- *
- * The macros it is written in terms of are all here; only the class arrived
- * in a later release. It is declared where the platform would declare it, so
- * that the code using it needs no change beyond finding this file.
+ * The file stays as a passthrough rather than disappearing: the four callers
+ * include it by this name, and on a release where the platform is the one
+ * missing a piece this is where the piece would go again.
  */
-namespace android {
-namespace base {
-
-class SCOPED_CAPABILITY ScopedLockAssertion {
-public:
-    explicit ScopedLockAssertion(std::mutex &mutex) ACQUIRE(mutex) {
-        (void)mutex;
-    }
-
-    ~ScopedLockAssertion() RELEASE() = default;
-
-    ScopedLockAssertion(const ScopedLockAssertion &) = delete;
-    ScopedLockAssertion &operator=(const ScopedLockAssertion &) = delete;
-};
-
-}  // namespace base
-}  // namespace android
+#include <android-base/thread_annotations.h>
