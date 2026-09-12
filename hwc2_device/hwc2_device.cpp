@@ -34,7 +34,6 @@
 #include "hwc/HwcLayer.h"
 #include "display/FbImporter.h"
 #include "hwc2_device/DrmHwcTwo.h"
-#include "utils/FrameworkTraits.h"
 #include "utils/GraphicsCompat.h"
 #include "utils/Time.h"
 #include "utils/Logging.h"
@@ -200,26 +199,31 @@ static hwc2_function_pointer_t ToHook(T function) {
 }
 
 
-/* Registering a callback is the one entry point whose locking depends on the
- * release this is built for, so it does not go through the ordinary hook.
+/* Registering a callback does not go through the ordinary hook, because the
+ * lock must be let go before the composer announces anything.
  *
- * Where the framework takes the news of a display away and deals with it
- * afterwards -- every release after Android 9 -- the lock is held across the
- * whole call, which is what upstream does and what the ordinary hook would
- * have done.
+ * Announcing a display is a call into the framework, and the framework is
+ * free to call straight back -- on this same thread, before returning. That
+ * is not a quirk of one release: Android 10 delivers the primary display's
+ * hotplug on the thread that is still inside this call and processes it at
+ * once (SurfaceFlinger.cpp, onHotplugReceived: "for the primary display it's
+ * called on the main thread with the state lock already held"), then asks the
+ * composer what kind of display it is. That question arrives as a fresh
+ * transaction on another of this process's threads, so a recursive lock would
+ * not save it either: the thread inside RegisterCallback waits for the
+ * framework to return, and the thread answering the framework waits for the
+ * lock the first one holds.
  *
- * Where it does not, the lock cannot reach that far. Android 9 handles the
- * display appearing while still inside this call, on this same thread, and
- * asks the composer what kind of display it is before returning -- and that
- * question wants this lock. Nor can the news simply be deferred: the same
- * release checks on return that a primary display was announced during the
- * call, and gives up if none was. So there the lock covers the registration
- * and is let go before the composer speaks, which is exactly what the queue
- * those events sit in is for, and what this composer itself did when Android
- * 9 was the current release.
+ * Nor can the announcement simply be deferred until after the hook returns:
+ * SurfaceFlinger::init checks on the way out that a primary display appeared
+ * during the call, and aborts the process if none did.
  *
- * Both are compiled every time. Which one runs is decided by a constant; see
- * utils/FrameworkTraits.h.
+ * So the lock covers the registration and nothing more, and the queue those
+ * events sit in is drained with the lock released but before returning.
+ * Upstream reached the same arrangement from the other side -- it moved the
+ * send out of FinalizeDisplayBinding into a FlushHotplugEvents() called after
+ * the main lock is dropped, and tightened that lock from recursive to plain
+ * while it was there.
  */
 static int32_t RegisterCallbackHook(hwc2_device_t *dev, int32_t descriptor,
                                     hwc2_callback_data_t data,
@@ -229,20 +233,13 @@ static int32_t RegisterCallbackHook(hwc2_device_t *dev, int32_t descriptor,
   auto *hwc = ToDrmHwcTwo(dev);
   int32_t result = 0;
 
-  if (kFrameworkHotplugIsReentrant) {
-    {
-      const std::unique_lock lock(hwc->GetMainLock());
-      result = static_cast<int32_t>(
-          hwc->RegisterCallback(descriptor, data, function));
-    }
-
-    hwc->FlushHotplugEvents();
-  } else {
+  {
     const std::unique_lock lock(hwc->GetMainLock());
     result = static_cast<int32_t>(
         hwc->RegisterCallback(descriptor, data, function));
-    hwc->FlushHotplugEvents();
   }
+
+  hwc->FlushHotplugEvents();
 
   return result;
 }
