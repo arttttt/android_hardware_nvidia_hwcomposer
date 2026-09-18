@@ -132,19 +132,29 @@ auto SysfsBacklightController::CreateInstanceFromName(
     return nullptr;
   }
 
+  /* The scale attribute joined the backlight class long after the kernel this
+   * board runs, so a node without one is saying nothing about itself and must
+   * not cost us the controller: refusing here left the display with no
+   * backlight at all, and every brightness call below it unreachable.
+   *
+   * Absent, the hardware is taken at its word, which is also what the board's
+   * own light service does -- it writes the framework's value to the node
+   * unchanged. Applying a curve here instead would move every step of the
+   * user's slider away from where it sits today. A node that does declare
+   * itself is still believed. */
   std::string scale_path(path.str());
   scale_path += "scale";
-  if (!file_intf->ReadFileToString(scale_path, &file_contents)) {
-    ALOGE("Could not read backlight scale from %s (%d)", scale_path.c_str(),
-          errno);
-    return nullptr;
+  bool hw_handles_encoding = true;
+  if (file_intf->ReadFileToString(scale_path, &file_contents)) {
+    file_contents = ::android::base::Trim(file_contents);
+    // If the scale is "linear", the hardware handles the perceptual encoding.
+    // Otherwise ("non-linear"), the hardware is "passthrough" and we must
+    // apply the HLG OETF in the HAL.
+    hw_handles_encoding = file_contents == "linear";
+  } else {
+    ALOGI("No backlight scale at %s, assuming the hardware encodes",
+          scale_path.c_str());
   }
-  file_contents = ::android::base::Trim(file_contents);
-
-  // If the scale is "linear", the hardware handles the perceptual encoding.
-  // Otherwise (unknown or "non-linear"), the hardware is "passthrough" and we must
-  // apply the HLG OETF in the HAL.
-  bool hw_handles_encoding = file_contents == "linear";
 
   ALOGI("Backlight %s (powered=%s max=%d %s encoding)", path.str().c_str(),
         powered ? "yes" : "no", max,
