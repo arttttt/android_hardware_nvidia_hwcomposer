@@ -148,25 +148,23 @@ class Hwc2DeviceLayer : public FrontendLayerBase {
   auto HandleNextBuffer(buffer_handle_t buffer_handle, int32_t fence_fd,
                         FbImporter &importer)
       -> std::optional<HwcLayer::LayerProperties> {
-    /* A buffer that could not be described is not asked about again -- the
-     * answer would be the same and the asking costs a frame's worth of
-     * calls to the allocator. But it is the BUFFER that is refused, not the
-     * layer: this used to raise a flag on the layer that nothing lowered,
-     * so one buffer the getter did not understand -- the first frame from a
-     * decoder, say, before the getter knew its format -- sent every later
+    /* Every buffer is asked about. There used to be a flag here, raised
+     * the first time the getter could not describe a buffer and lowered by
+     * nothing, so one buffer it did not understand -- the first frame from
+     * a decoder, say, before the getter knew its format -- sent every later
      * buffer of that layer to the framework unasked, for as long as the
-     * layer lived. A layer cycles through a small ring of buffers, and the
-     * next one deserves its own answer. */
-    if (buffer_handle == refused_) {
-      return std::nullopt;
-    }
-
+     * layer lived. Remembering the refused buffer instead was no better:
+     * the handle is a pointer the platform reuses, and a layer's ring of
+     * buffers is small enough that a new, good buffer would have arrived at
+     * the old, refused address. So nothing is remembered. The asking is
+     * cheap where it matters -- a buffer already seen is answered from the
+     * getter's own memory of its shape -- and a buffer refused is refused
+     * again in microseconds, once per frame, which is what it costs to be
+     * asked again the moment the answer changes. */
     auto bo_info = BufferInfoGetter::GetInstance()->GetBoInfo(buffer_handle);
     if (!bo_info) {
-      refused_ = buffer_handle;
       return std::nullopt;
     }
-    refused_ = nullptr;
 
     HwcLayer::LayerProperties lp;
     lp.buffer = HwcLayer::Buffer{
@@ -177,11 +175,6 @@ class Hwc2DeviceLayer : public FrontendLayerBase {
 
     return lp;
   }
-
- private:
-  /* The last buffer the getter could not describe, borrowed: compared by
-   * address only, never read. Null when the last one was understood. */
-  buffer_handle_t refused_ = nullptr;
 };
 
 static auto GetHwc2DeviceLayer(HwcLayer &layer)
@@ -315,6 +308,11 @@ static void HookDevGetCapabilities(hwc2_device_t * /*dev*/, uint32_t *out_count,
  * file was written. The mapping is unchanged. */
 static BufferColorEncoding Hwc2ToColorSpace(int32_t dataspace) {
   switch (dataspace & HAL_DATASPACE_STANDARD_MASK) {
+    /* sRGB names the same primaries and the same luma weights as 709 --
+     * the interface defines it with 709's KR and KB -- so a YUV buffer
+     * tagged sRGB, which a decoder will do, was encoded with 709's matrix.
+     * Left unmapped it read as unknown and was decoded as 601. */
+    case HAL_DATASPACE_STANDARD_SRGB:
     case HAL_DATASPACE_STANDARD_BT709:
       return BufferColorEncoding::kItuRec709;
     case HAL_DATASPACE_STANDARD_BT601_625:
