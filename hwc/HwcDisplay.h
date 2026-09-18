@@ -232,6 +232,16 @@ class HwcDisplay : public ICompositorDisplay {
 
   auto SetBrightness(float brightness) -> bool;
 
+  /* Asks the device tree which display profile is wanted and rebuilds the
+   * matrix if the answer has moved, saying whether it did.
+   *
+   * Asked from two places for one reason each. Before a frame is planned,
+   * because that is where what the controller will be told is decided. And
+   * from the composer's watcher, because a screen showing something still
+   * asks for no frames at all, and a profile chosen while nothing moves
+   * would otherwise wait for the next thing that did. */
+  bool RefreshDisplayProfile();
+
   auto SetContentType(ContentType content_type) {
     content_type_ = content_type;
   }
@@ -399,12 +409,6 @@ class HwcDisplay : public ICompositorDisplay {
   void SetConfigGroupsForActiveConfig();
 
   void UpdateColorTransformMatrix();
-
-  /* Asks the device tree which display profile is wanted and rebuilds the
-   * matrix if the answer has moved. Called where a frame is about to be
-   * planned rather than from a thread of its own: the profile is a setting
-   * changed while the user watches, and the next frame is soon enough. */
-  void RefreshDisplayProfile();
 
   bool Init();
 

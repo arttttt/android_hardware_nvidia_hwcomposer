@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <condition_variable>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -23,6 +24,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "compositor/DisplayInfo.h"
@@ -40,7 +42,7 @@ struct DisplayPipeline;
 class Hwc : public PipelineToFrontendBindingInterface, public StatsProvider {
  public:
   Hwc();
-  ~Hwc() override = default;
+  ~Hwc() override;
 
   // Enum for Display status: Connected, Disconnected, Link Training Failed
   enum DisplayStatus {
@@ -199,6 +201,19 @@ class Hwc : public PipelineToFrontendBindingInterface, public StatsProvider {
   const bool persistent_hdr_enabled_ = Properties::PersistentHdrEnabled();
   const bool external_hdr_enabled_ = Properties::ExternalHdrEnabled();
   const int force_color_mode_ = Properties::ForceColorMode();
+
+  /* Watches for the display profile the device tree's LiveDisplay service
+   * asks for. A thread of its own because a still screen asks for no
+   * frames, and a profile chosen while nothing moves must not wait for the
+   * next thing that moves -- which, on a settings page, is the user
+   * wondering why nothing happened. */
+  void StartDisplayProfileWatcher();
+  void StopDisplayProfileWatcher();
+
+  std::thread profile_watcher_;
+  std::condition_variable profile_watcher_cv_;
+  std::mutex profile_watcher_lock_;
+  bool profile_watcher_exit_ = false;
 
   std::set<std::string> internal_display_names_;
   bool internal_display_names_read_ = false;

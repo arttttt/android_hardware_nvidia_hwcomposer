@@ -17,6 +17,7 @@
 #include "Hwc.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cinttypes>
 #include <cmath>
 #include <cstdint>
@@ -108,6 +109,66 @@ Hwc::Hwc()
     : dump_stats_tracker_(this),
       refresh_rates_reporter_(DisplayRefreshRatesChangedAtomReporter::Create()),
       hdcp_on_hotplug_enabled_(Properties::EnableHdcpOnHotplug()) {
+  StartDisplayProfileWatcher();
+}
+
+Hwc::~Hwc() {
+  StopDisplayProfileWatcher();
+}
+
+void Hwc::StartDisplayProfileWatcher() {
+  /* Started from the constructor of the base, which is the one call that
+   * reaches a derived object before it exists. It is safe here because the
+   * only virtual call below is made per display, and there are no displays
+   * until the client binds one -- which it cannot do until the object it
+   * binds them to has finished being built. */
+  profile_watcher_ = std::thread([this]() {
+    /* Slow on purpose. The answer changes when a person taps a setting,
+     * and nothing downstream of it is worth a tighter loop; a property is
+     * read from shared memory, so even this is close to free. */
+    constexpr auto kInterval = std::chrono::milliseconds(250);
+
+    while (true) {
+      {
+        std::unique_lock<std::mutex> lock(profile_watcher_lock_);
+        profile_watcher_cv_.wait_for(lock, kInterval,
+                                     [this]() { return profile_watcher_exit_; });
+        if (profile_watcher_exit_) {
+          return;
+        }
+      }
+
+      /* The displays are read under the main lock and the client is told
+       * outside it. A callback made while holding this lock is how the
+       * framework and this process reach for each other at once -- the
+       * lesson the hotplug path above already carries, and a refresh is
+       * the same shape of call. */
+      std::vector<DisplayHandle> refreshed;
+      {
+        const std::lock_guard<std::mutex> lock(main_lock_);
+        for (auto &[handle, display] : displays_) {
+          if (display->RefreshDisplayProfile()) {
+            refreshed.push_back(handle);
+          }
+        }
+      }
+
+      for (const auto handle : refreshed) {
+        SendRefreshEventToClient(handle);
+      }
+    }
+  });
+}
+
+void Hwc::StopDisplayProfileWatcher() {
+  {
+    const std::lock_guard<std::mutex> lock(profile_watcher_lock_);
+    profile_watcher_exit_ = true;
+  }
+  profile_watcher_cv_.notify_all();
+  if (profile_watcher_.joinable()) {
+    profile_watcher_.join();
+  }
 }
 
 const std::set<std::string> &Hwc::GetInternalDisplayNames() {

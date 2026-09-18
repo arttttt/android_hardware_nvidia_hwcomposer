@@ -206,10 +206,10 @@ void HwcDisplay::UpdateColorTransformMatrix() {
                                                           profile_matrix_));
 }
 
-void HwcDisplay::RefreshDisplayProfile() {
+bool HwcDisplay::RefreshDisplayProfile() {
   const float wanted = Properties::DisplaySaturation();
   if (wanted == profile_saturation_) {
-    return;
+    return false;
   }
 
   profile_saturation_ = wanted;
@@ -218,6 +218,7 @@ void HwcDisplay::RefreshDisplayProfile() {
   UpdateColorTransformMatrix();
   ALOGI("Display %d profile saturation %.3f", static_cast<int>(handle_),
         static_cast<double>(wanted));
+  return true;
 }
 
 HwcDisplay::~HwcDisplay() {
