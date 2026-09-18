@@ -379,10 +379,15 @@ constexpr CscRow k709Limited = {0x00F0, 0x012A, 0, 0x01CB,
 constexpr CscRow k709Full = {0, 0x0100, 0, 0x0193, 0x03D0, 0x0388, 0x01DB, 0};
 
 hwc::DcHead::Window::Csc CscFor(BufferColorEncoding encoding,
-                                BufferSampleRange range) {
+                                BufferSampleRange range, uint32_t height) {
   const bool full = range == BufferSampleRange::kFullRange;
+  /* A buffer that says nothing about its standard is judged by its size,
+   * which is what the codecs themselves do: standard definition was
+   * encoded with 601, high definition with 709, and the line between them
+   * is 720 rows. */
   const bool hd = encoding == BufferColorEncoding::kItuRec709 ||
-                  encoding == BufferColorEncoding::kItuRec2020;
+                  encoding == BufferColorEncoding::kItuRec2020 ||
+                  (encoding == BufferColorEncoding::kUndefined && height >= 720);
   const CscRow &row = hd ? (full ? k709Full : k709Limited)
                          : (full ? k601Full : k601Limited);
   hwc::DcHead::Window::Csc csc;
@@ -437,7 +442,16 @@ bool DescribeWindow(const LayerData &layer, uint32_t plane_id, uint32_t depth,
   if (DrmFormatIsYuv(bi.format)) {
     /* The chroma plane, as the allocator described it. Zero here would not
      * refuse the flip: the driver would read chroma from the luma's own
-     * start with a row length of nothing, and show it. */
+     * start with a row length of nothing, and show it. So a YUV buffer
+     * that arrived without one is refused here, whatever the format table
+     * says about it -- the table admits only the semi-planar codes today,
+     * and this is what keeps a packed code added there tomorrow from
+     * reaching the flip with chroma from nowhere. */
+    if (bi.pitches[1] == 0) {
+      ALOGE("layer for plane %u: YUV with no chroma plane described",
+            plane_id);
+      return false;
+    }
     out->offsetU = bi.offsets[1];
     out->strideUV = bi.pitches[1];
 
@@ -458,7 +472,7 @@ bool DescribeWindow(const LayerData &layer, uint32_t plane_id, uint32_t depth,
      * seat for a gamut change, and a wrong luma weighting is the smaller
      * error of the two on offer. */
     out->loadCsc = true;
-    out->csc = CscFor(bi.color_encoding, bi.sample_range);
+    out->csc = CscFor(bi.color_encoding, bi.sample_range, bi.height);
   }
 
   /* The layer's own opacity, which a window CAN carry: the controller
