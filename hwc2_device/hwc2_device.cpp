@@ -308,11 +308,11 @@ static void HookDevGetCapabilities(hwc2_device_t * /*dev*/, uint32_t *out_count,
  * file was written. The mapping is unchanged. */
 static BufferColorEncoding Hwc2ToColorSpace(int32_t dataspace) {
   switch (dataspace & HAL_DATASPACE_STANDARD_MASK) {
-    /* sRGB names the same primaries and the same luma weights as 709 --
-     * the interface defines it with 709's KR and KB -- so a YUV buffer
-     * tagged sRGB, which a decoder will do, was encoded with 709's matrix.
-     * Left unmapped it read as unknown and was decoded as 601. */
-    case HAL_DATASPACE_STANDARD_SRGB:
+    /* sRGB is not a standard of its own in this interface: the sRGB
+     * dataspace is 709's standard with sRGB's transfer and full range, so
+     * it arrives here as 709. Only the two legacy sRGB values, which carry
+     * no standard field at all, fall through to unknown -- and unknown is
+     * judged by size where the matrix is chosen. */
     case HAL_DATASPACE_STANDARD_BT709:
       return BufferColorEncoding::kItuRec709;
     case HAL_DATASPACE_STANDARD_BT601_625:
