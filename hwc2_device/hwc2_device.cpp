@@ -20,6 +20,7 @@
 #define LOG_TAG "drmhwc"
 
 #include <cinttypes>
+#include <cmath>
 #include <memory>
 #include <optional>
 
@@ -1073,19 +1074,53 @@ static int32_t SetActiveConfig(hwc2_device_t *device, hwc2_display_t display,
   return ConfigErrorToHWC2(error);
 }
 
-static int32_t GetDisplayBrightnessSupport(hwc2_device_t * /*device*/,
-                                           hwc2_display_t /*display*/,
+static int32_t GetDisplayBrightnessSupport(hwc2_device_t *device,
+                                           hwc2_display_t display,
                                            bool *out_support) {
   ALOGV("GetDisplayBrightnessSupport");
-  *out_support = false;  // Brightness support is not available
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+
+  if (out_support == nullptr) {
+    return static_cast<int32_t>(HWC2::Error::BadParameter);
+  }
+
+  /* Answered honestly although no client of this release asks: the interface
+   * deprecates this call in the same breath as it defines it, and says the
+   * capability list is the only source of truth. Both are answered from the
+   * same question here, so the two cannot come apart for a client that does
+   * ask. */
+  *out_support = idisplay->HasBacklight();
+
   return static_cast<int32_t>(HWC2::Error::None);
 }
 
-static int32_t SetDisplayBrightness(hwc2_device_t * /*device*/,
-                                    hwc2_display_t /*display*/,
-                                    float /*brightness*/) {
+static int32_t SetDisplayBrightness(hwc2_device_t *device,
+                                    hwc2_display_t display, float brightness) {
   ALOGV("SetDisplayBrightness");
-  return static_cast<int32_t>(HWC2::Error::Unsupported);
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+
+  /* One value outside the unit range has a meaning -- kBrightnessUnset turns
+   * the backlight off -- and everything else outside it is a caller's
+   * mistake. The HIDL service above already refuses those, but it is not the
+   * only way in, and the display below reads any negative as the off it was
+   * not asked for. */
+  if (std::isnan(brightness) || brightness > 1.0F ||
+      (brightness < 0.0F && brightness != kBrightnessUnset)) {
+    return static_cast<int32_t>(HWC2::Error::BadParameter);
+  }
+
+  /* A display that cannot do this says so, which is the answer the interface
+   * has for it. A display that can and then fails at the node says the same,
+   * having nothing better to say -- and the client of this release does not
+   * read either, so the capability above must never be claimed on a display
+   * whose brightness does not arrive. */
+  if (!idisplay->SetBrightness(brightness)) {
+    return static_cast<int32_t>(HWC2::Error::Unsupported);
+  }
+
+  return static_cast<int32_t>(HWC2::Error::None);
 }
 
 static int32_t GetRenderIntents(hwc2_device_t *device,
@@ -1285,16 +1320,30 @@ static int32_t GetDisplayCapabilities(hwc2_device_t *device,
    * the branch that happens to have something to say, and a caller that does
    * not clear it beforehand would otherwise size its array from whatever the
    * variable held. */
-  const bool skip_client_ctm = Properties::CmuColorPipeline() ||
-                               ihwc->GetCtmHandling() ==
-                                   CtmHandling::kDrmOrIgnore;
+  uint32_t count = 0;
+  const auto claim = [&](uint32_t capability) {
+    if (out_capabilities != nullptr && *out_num_capabilities > count) {
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
+      out_capabilities[count] = capability;
+    }
+    ++count;
+  };
 
-  if (skip_client_ctm && out_capabilities != nullptr &&
-      *out_num_capabilities > 0) {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
-    out_capabilities[0] = HWC2_DISPLAY_CAPABILITY_SKIP_CLIENT_COLOR_TRANSFORM;
+  if (Properties::CmuColorPipeline() ||
+      ihwc->GetCtmHandling() == CtmHandling::kDrmOrIgnore) {
+    claim(HWC2_DISPLAY_CAPABILITY_SKIP_CLIENT_COLOR_TRANSFORM);
   }
-  *out_num_capabilities = skip_client_ctm ? 1 : 0;
+
+  /* Claimed from the same question SetDisplayBrightness answers, and only
+   * from it. The client reads this list once and never checks what a
+   * brightness call returns, so a claim made where the value would not reach
+   * the panel does not degrade -- it takes the backlight away from the
+   * service that had it and puts it nowhere. */
+  if (idisplay->HasBacklight()) {
+    claim(HWC2_DISPLAY_CAPABILITY_BRIGHTNESS);
+  }
+
+  *out_num_capabilities = count;
 
   return static_cast<int32_t>(HWC2::Error::None);
 }
