@@ -24,7 +24,6 @@
 
 #include <cerrno>
 #include <cstring>
-#include <limits>
 #include <memory>
 #include <optional>
 #include <set>
@@ -126,9 +125,20 @@ auto SysfsBacklightController::CreateInstanceFromName(
           file_contents.c_str(), max_brightness_path.c_str(), errno);
     return nullptr;
   }
-  if (max >= static_cast<int>(std::numeric_limits<float>::max()) - 1) {
-    ALOGE("Max brightness is too large (%s) from %s (%d)",
-          file_contents.c_str(), max_brightness_path.c_str(), errno);
+  /* The ceiling is held as a float below and every value written is derived
+   * from it, so it has to be one a float still counts in whole steps: past
+   * 2^24 the integers there stop being consecutive. And it has to be a
+   * ceiling at all -- nothing at or below zero leaves anything to scale onto.
+   *
+   * What stood here compared against static_cast<int>(numeric_limits<float>::
+   * max()), which is not a conversion the language defines: that value is
+   * some 10^30 times an int's range. Whatever it came out as on this build
+   * was small enough that an ordinary ceiling of 255 was refused as too
+   * large, and the display was left without a backlight. */
+  constexpr int kMaxExactInFloat = 1 << 24;
+  if (max < 1 || max > kMaxExactInFloat) {
+    ALOGE("Max brightness %d from %s is out of range", max,
+          max_brightness_path.c_str());
     return nullptr;
   }
 
