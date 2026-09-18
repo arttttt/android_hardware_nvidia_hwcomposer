@@ -148,15 +148,25 @@ class Hwc2DeviceLayer : public FrontendLayerBase {
   auto HandleNextBuffer(buffer_handle_t buffer_handle, int32_t fence_fd,
                         FbImporter &importer)
       -> std::optional<HwcLayer::LayerProperties> {
-    if (invalid_) {
+    /* A buffer that could not be described is not asked about again -- the
+     * answer would be the same and the asking costs a frame's worth of
+     * calls to the allocator. But it is the BUFFER that is refused, not the
+     * layer: this used to raise a flag on the layer that nothing lowered,
+     * so one buffer the getter did not understand -- the first frame from a
+     * decoder, say, before the getter knew its format -- sent every later
+     * buffer of that layer to the framework unasked, for as long as the
+     * layer lived. A layer cycles through a small ring of buffers, and the
+     * next one deserves its own answer. */
+    if (buffer_handle == refused_) {
       return std::nullopt;
     }
 
     auto bo_info = BufferInfoGetter::GetInstance()->GetBoInfo(buffer_handle);
     if (!bo_info) {
-      invalid_ = true;
+      refused_ = buffer_handle;
       return std::nullopt;
     }
+    refused_ = nullptr;
 
     HwcLayer::LayerProperties lp;
     lp.buffer = HwcLayer::Buffer{
@@ -169,7 +179,9 @@ class Hwc2DeviceLayer : public FrontendLayerBase {
   }
 
  private:
-  bool invalid_{}; /* Layer is invalid and should be skipped */
+  /* The last buffer the getter could not describe, borrowed: compared by
+   * address only, never read. Null when the last one was understood. */
+  buffer_handle_t refused_ = nullptr;
 };
 
 static auto GetHwc2DeviceLayer(HwcLayer &layer)
