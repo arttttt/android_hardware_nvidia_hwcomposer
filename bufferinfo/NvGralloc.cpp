@@ -127,20 +127,43 @@ bool NvGralloc::GetRawSurfaces(buffer_handle_t handle, const void **out,
 }
 
 bool NvGralloc::DescribeSurface(buffer_handle_t handle, Surface *out) const {
-  const void *surfaces = nullptr;
+  Surface surfaces[kMostSurfaces];
   size_t count = 0;
-  get_surfaces_(handle, &surfaces, &count);
+  if (!DescribeSurfaces(handle, surfaces, &count))
+    return false;
+  *out = surfaces[0];
+  return true;
+}
 
-  if (surfaces == nullptr || count == 0) {
+bool NvGralloc::DescribeSurfaces(buffer_handle_t handle, Surface *out,
+                                 size_t *count) const {
+  const void *surfaces = nullptr;
+  size_t found = 0;
+  get_surfaces_(handle, &surfaces, &found);
+
+  if (surfaces == nullptr || found == 0) {
     ALOGE("buffer %p has no surfaces", handle);
     return false;
   }
 
-  /* The first surface only. A second one would carry chroma for a planar
-   * format, and those are not scanned out here yet. */
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+  /* One descriptor after another, each the same length: a second one
+   * carries the chroma of a semi-planar format, a third the second chroma
+   * plane of a fully planar one. Read up to what is scanned out here and
+   * no further; the count says how many were read, and a caller that
+   * needs to know about a plane past that asks the allocator itself. */
   const auto *word = static_cast<const uint32_t *>(surfaces);
+  const size_t take = found < kMostSurfaces ? found : kMostSurfaces;
+  for (size_t i = 0; i < take; ++i) {
+    if (!ReadSurface(word + i * kSurfaceWords, &out[i])) {
+      ALOGE("buffer %p: surface %zu of %zu does not read", handle, i, found);
+      return false;
+    }
+  }
+  *count = take;
+  return true;
+}
 
+bool NvGralloc::ReadSurface(const uint32_t *word, Surface *out) {
   /* Does the reading agree with itself?
    *
    * The word indices above were established against one build of the

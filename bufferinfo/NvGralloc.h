@@ -72,10 +72,31 @@ class NvGralloc {
     kLayoutBlocklinear = 3,
   };
 
+  /* How long one of the allocator's surface descriptors is, in words. A
+   * buffer with more than one surface -- a plane of luma and a plane of
+   * chroma -- keeps them one after another at this stride, and anything
+   * that builds a descriptor of its own for the allocator's other
+   * libraries makes it this long. */
+  static constexpr size_t kSurfaceWords = 64;
+
+  /* The most surfaces one buffer is read for: luma and one plane of chroma
+   * pairs. Fully planar arrangements carry a third, which nothing here
+   * scans out. */
+  static constexpr size_t kMostSurfaces = 2;
+
   /* Fills `out` from the buffer's first surface. False, with the reason
    * logged, if the buffer has none or if what was read does not agree with
    * itself -- see the implementation for why that check is not paranoia. */
   bool DescribeSurface(buffer_handle_t handle, Surface *out) const;
+
+  /* Fills up to kMostSurfaces of `out` from the buffer's surfaces in the
+   * order the allocator keeps them, and says how many it filled. A buffer
+   * with more than that many is described up to the limit, not refused:
+   * whoever reads the count decides what to do with a third plane. False,
+   * with the reason logged, if the first surface fails the same checks
+   * DescribeSurface makes, or any later one does. */
+  bool DescribeSurfaces(buffer_handle_t handle, Surface *out,
+                        size_t *count) const;
 
   /* The allocator's own descriptors, handed on untouched.
    *
@@ -94,6 +115,12 @@ class NvGralloc {
   NvGralloc() = default;
 
   bool Resolve(void *library);
+
+  /* One descriptor, read by word index and checked against itself. The
+   * checks are the same for every surface of a buffer: a chroma plane is
+   * half the size and the same arrangement, and passes them as the luma
+   * does. */
+  static bool ReadSurface(const uint32_t *word, Surface *out);
 
   int (*is_valid_)(buffer_handle_t) = nullptr;
   int (*get_memfd_)(buffer_handle_t) = nullptr;
