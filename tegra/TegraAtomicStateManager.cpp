@@ -350,6 +350,55 @@ const char *SteeringWord(int steering) {
   return kNames[steering];
 }
 
+/* The window converter's matrices for YCbCr to RGB, in the driver's own
+ * fixed point: the luma offset as a signed integer in the low byte, the luma
+ * gain in 2.8, the chroma gains in signed 2.8 for the red and blue rows and
+ * signed 1.8 for the green -- two's complement in the width of each field.
+ * Each row is out = kyrgb * (Y + yof) + k?r/g/b * (C - 128), summed over the
+ * two chroma channels; the 128 is the hardware's own.
+ *
+ * Coefficients are the standard ones times 256, rounded. The limited-range
+ * rows scale chroma by 255/224 and luma by 255/219, which is the studio
+ * swing; the full-range rows scale neither. The 601 limited row is the one
+ * every window boots with, and reads back from the driver's own table.
+ *
+ * Verified twice over, independently, before the first of them reached a
+ * register: the negative entries encode exactly, the positive ones within
+ * half a step of the standard. */
+namespace {
+
+struct CscRow {
+  uint16_t yof, kyrgb, kur, kvr, kug, kvg, kub, kvb;
+};
+
+constexpr CscRow k601Limited = {0x00F0, 0x012A, 0, 0x0198,
+                                0x039B, 0x032F, 0x0204, 0};
+constexpr CscRow k601Full = {0, 0x0100, 0, 0x0167, 0x03A8, 0x0349, 0x01C6, 0};
+constexpr CscRow k709Limited = {0x00F0, 0x012A, 0, 0x01CB,
+                                0x03C9, 0x0378, 0x021D, 0};
+constexpr CscRow k709Full = {0, 0x0100, 0, 0x0193, 0x03D0, 0x0388, 0x01DB, 0};
+
+hwc::DcHead::Window::Csc CscFor(BufferColorEncoding encoding,
+                                BufferSampleRange range) {
+  const bool full = range == BufferSampleRange::kFullRange;
+  const bool hd = encoding == BufferColorEncoding::kItuRec709 ||
+                  encoding == BufferColorEncoding::kItuRec2020;
+  const CscRow &row = hd ? (full ? k709Full : k709Limited)
+                         : (full ? k601Full : k601Limited);
+  hwc::DcHead::Window::Csc csc;
+  csc.yof = row.yof;
+  csc.kyrgb = row.kyrgb;
+  csc.kur = row.kur;
+  csc.kvr = row.kvr;
+  csc.kug = row.kug;
+  csc.kvg = row.kvg;
+  csc.kub = row.kub;
+  csc.kvb = row.kvb;
+  return csc;
+}
+
+}  // namespace
+
 /* Fills one window from one layer of a plan. False if the layer cannot be
  * described to this controller at all, which the planner should already have
  * ruled out by asking the plane -- so it is a fault worth logging rather than
@@ -384,6 +433,33 @@ bool DescribeWindow(const LayerData &layer, uint32_t plane_id, uint32_t depth,
   out->blockHeightLog2 = block_height_log2;
   out->z = depth;
   out->blend = BlendFor(bi.blend_mode);
+
+  if (DrmFormatIsYuv(bi.format)) {
+    /* The chroma plane, as the allocator described it. Zero here would not
+     * refuse the flip: the driver would read chroma from the luma's own
+     * start with a row length of nothing, and show it. */
+    out->offsetU = bi.offsets[1];
+    out->strideUV = bi.pitches[1];
+
+    /* The matrix that turns this layer's encoding into the panel's RGB,
+     * chosen from what the layer said about itself when its dataspace was
+     * set -- the standard and the range -- which until now was recorded
+     * and read by nothing. Sent with every frame of every YUV window: the
+     * converter runs regardless with whatever the window last held, the
+     * window may have held another layer a frame ago, and the driver does
+     * not compose matrices, so this is the whole of what it runs.
+     *
+     * Two standards by primaries, two by range. High-definition content is
+     * almost always the second standard, and a decoder that says nothing
+     * about range is encoding the studio one -- that is what the codecs
+     * assume -- so an unspecified range reads as limited rather than
+     * full, and an unspecified standard as the first. The 2020 primaries
+     * fall to 709 as the nearer of the two: the window's matrix has no
+     * seat for a gamut change, and a wrong luma weighting is the smaller
+     * error of the two on offer. */
+    out->loadCsc = true;
+    out->csc = CscFor(bi.color_encoding, bi.sample_range);
+  }
 
   /* The layer's own opacity, which a window CAN carry: the controller
    * multiplies a global factor over the whole window when the flag says

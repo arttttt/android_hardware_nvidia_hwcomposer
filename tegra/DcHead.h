@@ -66,8 +66,39 @@ public:
         uint32_t offset = 0;
         uint32_t stride = 0;
 
+        /* The chroma plane of a semi-planar format, in the same memory:
+         * where it starts and how long its rows are. Neither is derived by
+         * the driver -- it takes the base from the luma's descriptor and
+         * adds the offset it was given, and writes the row length into the
+         * upper half of the stride register as given. Left at zero for a
+         * format that has no such plane, and read for nothing else. */
+        uint32_t offsetU = 0;
+        uint32_t strideUV = 0;
+
         /* One of the controller's own format codes. */
         uint32_t pixelFormat = 0;
+
+        /* The window's own colour matrix, loaded with this flip when
+         * `loadCsc` says so. The converter runs for every YUV window
+         * whether or not this is sent, with whatever it last held --
+         * BT.601 limited from boot -- so a window showing anything else
+         * says so here, every frame: there is one matrix per window, the
+         * driver keeps the last one written before the frame, and windows
+         * change hands between layers. Fixed point in the driver's own
+         * widths: an integer luma offset, then 2.8 and signed 2.8 / 1.8
+         * gains, which are written to the registers as they are. */
+        struct Csc {
+            uint16_t yof = 0;
+            uint16_t kyrgb = 0;
+            uint16_t kur = 0;
+            uint16_t kvr = 0;
+            uint16_t kug = 0;
+            uint16_t kvg = 0;
+            uint16_t kub = 0;
+            uint16_t kvb = 0;
+        };
+        bool loadCsc = false;
+        Csc csc;
 
         /* Source region, in pixels. Converted to the hardware's fixed point
          * on the way down. */

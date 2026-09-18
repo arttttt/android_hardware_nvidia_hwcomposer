@@ -355,9 +355,27 @@ static std::vector<struct tegra_dc_ext_flip_windowattr> describe(
         dst.buff_id = static_cast<__u32>(src.bufferFd);
         dst.offset = src.offset;
         dst.stride = src.stride;
+        /* Chroma from the same descriptor: the two descriptor fields for
+         * it stay zero, which the driver reads as "take it from buff_id",
+         * and the offset is added to that base. The second chroma plane's
+         * fields stay zero too -- for the semi-planar formats sent here
+         * the driver never writes the register they would go to. */
+        dst.offset_u = src.offsetU;
+        dst.stride_uv = src.strideUV;
         dst.pixformat = src.pixelFormat;
         dst.blend = src.blend;
         dst.flags = src.flags;
+        if (src.loadCsc) {
+            dst.flags |= TEGRA_DC_EXT_FLIP_FLAG_UPDATE_CSC;
+            dst.csc.yof = src.csc.yof;
+            dst.csc.kyrgb = src.csc.kyrgb;
+            dst.csc.kur = src.csc.kur;
+            dst.csc.kvr = src.csc.kvr;
+            dst.csc.kug = src.csc.kug;
+            dst.csc.kvg = src.csc.kvg;
+            dst.csc.kub = src.csc.kub;
+            dst.csc.kvb = src.csc.kvb;
+        }
         /* Read only while the flags carry GLOBAL_ALPHA; the driver writes
          * back 255 the moment they do not. */
         dst.global_alpha = src.globalAlpha;
