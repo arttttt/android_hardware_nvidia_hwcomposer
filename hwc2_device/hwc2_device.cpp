@@ -1271,13 +1271,30 @@ static int32_t GetDisplayCapabilities(hwc2_device_t *device,
     return static_cast<int32_t>(HWC2::Error::BadParameter);
   }
 
-  if (ihwc->GetCtmHandling() == CtmHandling::kDrmOrIgnore) {
-    if (out_capabilities != nullptr && *out_num_capabilities > 0) {
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
-      out_capabilities[0] = HWC2_DISPLAY_CAPABILITY_SKIP_CLIENT_COLOR_TRANSFORM;
-    }
-    *out_num_capabilities = 1;
+  /* The same claim the device makes in HookDevGetCapabilities, repeated per
+   * display, because a client that can ask this way believes this answer and
+   * nothing else: it takes the list verbatim and its own fallback -- read the
+   * device capability, then ask about doze -- never runs. Answering an empty
+   * list here while the device claims the skip would leave the client baking
+   * the colour matrix into what it composes while the CMU applies it as well,
+   * which is the double tint the switch exists to prevent. Doze is absent from
+   * both lists because this display has none, so the fallback the client gives
+   * up had nothing of its own to add.
+   *
+   * The count is written on every path. It is an output of the call, not of
+   * the branch that happens to have something to say, and a caller that does
+   * not clear it beforehand would otherwise size its array from whatever the
+   * variable held. */
+  const bool skip_client_ctm = Properties::CmuColorPipeline() ||
+                               ihwc->GetCtmHandling() ==
+                                   CtmHandling::kDrmOrIgnore;
+
+  if (skip_client_ctm && out_capabilities != nullptr &&
+      *out_num_capabilities > 0) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
+    out_capabilities[0] = HWC2_DISPLAY_CAPABILITY_SKIP_CLIENT_COLOR_TRANSFORM;
   }
+  *out_num_capabilities = skip_client_ctm ? 1 : 0;
 
   return static_cast<int32_t>(HWC2::Error::None);
 }
