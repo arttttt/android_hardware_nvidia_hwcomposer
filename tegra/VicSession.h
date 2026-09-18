@@ -376,7 +376,7 @@ class VicSession {
   /* The allocator's own stride between surfaces, and so the length of a
    * descriptor built here to look like one of its. One definition, kept
    * where the allocator is read. */
-  static constexpr size_t kSurfaceWords = NvGralloc::kSurfaceWords;
+  static constexpr size_t kSurfaceWords = drm_hwcomposer::NvGralloc::kSurfaceWords;
 
   /* libnvrm_graphics -- turning the engine's own fences into descriptors the
    * rest of the system understands, and back. */
