@@ -153,20 +153,47 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
     bi.offsets[0] = shape.offset;
     bi.format = shape.format;
     bi.modifiers[0] = shape.modifier;
+    if (shape.planes > 1) {
+      bi.pitches[1] = shape.pitch_uv;
+      bi.offsets[1] = shape.offset_uv;
+      bi.prime_fds[1] = fd;
+      bi.modifiers[1] = shape.modifier;
+    }
     bi.fds_shared = Import(handle);
     shape_hit_us_ += MicrosSince();
     return bi;
   }
   ++shape_misses_;
 
-  NvGralloc::Surface surface{};
-  if (!gralloc->DescribeSurface(handle, &surface))
+  NvGralloc::Surface surfaces[NvGralloc::kMostSurfaces] = {};
+  size_t planes = 0;
+  if (!gralloc->DescribeSurfaces(handle, surfaces, &planes))
     return {};
 
+  const NvGralloc::Surface &surface = surfaces[0];
   bi.width = surface.width;
   bi.height = surface.height;
   bi.pitches[0] = surface.pitch;
   bi.offsets[0] = surface.offset;
+
+  /* The chroma of a semi-planar buffer: the same memory, further in, at
+   * its own pitch. Both of those the allocator alone can say -- where the
+   * luma ends is a matter of its alignment, and guessing it by multiplying
+   * height by pitch is how a picture goes green from the middle down. The
+   * arrangement has to be the luma's, since the window reads the whole
+   * buffer one way; a buffer whose planes disagree is not one this
+   * controller can show. */
+  if (planes > 1) {
+    const NvGralloc::Surface &chroma = surfaces[1];
+    if (chroma.layout != surface.layout || chroma.kind != surface.kind ||
+        chroma.block_height_log2 != surface.block_height_log2) {
+      ALOGE("buffer %p: chroma arranged unlike its luma", handle);
+      return {};
+    }
+    bi.pitches[1] = chroma.pitch;
+    bi.offsets[1] = chroma.offset;
+    bi.prime_fds[1] = fd;
+  }
 
   const int hal_format = gralloc->GetHalFormat(handle);
   bi.format = ConvertHalFormatToDrm(static_cast<uint32_t>(hal_format));
@@ -192,6 +219,8 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
       bi.modifiers[0] = DRM_FORMAT_MOD_LINEAR;
       break;
   }
+  if (planes > 1)
+    bi.modifiers[1] = bi.modifiers[0];
 
   if (unique_id != 0) {
     if (shapes_.size() >= kMostShapesToRemember) {
@@ -203,7 +232,10 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
                                      .pitch = bi.pitches[0],
                                      .offset = bi.offsets[0],
                                      .format = bi.format,
-                                     .modifier = bi.modifiers[0]};
+                                     .modifier = bi.modifiers[0],
+                                     .planes = static_cast<uint32_t>(planes),
+                                     .pitch_uv = bi.pitches[1],
+                                     .offset_uv = bi.offsets[1]};
   }
 
   shape_miss_us_ += MicrosSince();

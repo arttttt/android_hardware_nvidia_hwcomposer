@@ -75,6 +75,14 @@ class BufferInfoNvidia : public LegacyBufferInfoGetter {
     uint32_t offset;
     uint32_t format;
     uint64_t modifier;
+
+    /* The chroma plane of a semi-planar buffer, where there is one. Kept
+     * here because a shape that forgot it would answer a decoder's second
+     * frame with no chroma at all: the same buffer comes round again
+     * within a few frames, and from then on is answered from memory. */
+    uint32_t planes;
+    uint32_t pitch_uv;
+    uint32_t offset_uv;
   };
 
   /* Cleared whole when full rather than evicted one by one: filling up is
