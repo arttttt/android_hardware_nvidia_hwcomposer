@@ -24,7 +24,6 @@
 
 #include <cutils/native_handle.h>
 
-#include "bufferinfo/NvGralloc.h"
 #include "utils/fd.h"
 
 namespace android {
@@ -373,10 +372,12 @@ class VicSession {
   static constexpr uint32_t kColorTagRgb = 1;
   static constexpr size_t kSurfaceWordMemHandle = 6;
   static constexpr size_t kSurfaceWordSize = 14;
-  /* The allocator's own stride between surfaces, and so the length of a
-   * descriptor built here to look like one of its. One definition, kept
-   * where the allocator is read. */
-  static constexpr size_t kSurfaceWords = drm_hwcomposer::NvGralloc::kSurfaceWords;
+  /* Room for a descriptor built here to look like one of the allocator's.
+   * Generous on purpose: the record itself is twenty words (see the
+   * allocator reader), and the builder is handed more than it will write.
+   * Not the stride between the allocator's own surfaces -- that is the
+   * record length, and lives with the code that walks them. */
+  static constexpr size_t kSurfaceWords = 64;
 
   /* libnvrm_graphics -- turning the engine's own fences into descriptors the
    * rest of the system understands, and back. */

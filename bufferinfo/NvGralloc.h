@@ -72,12 +72,14 @@ class NvGralloc {
     kLayoutBlocklinear = 3,
   };
 
-  /* How long one of the allocator's surface descriptors is, in words. A
-   * buffer with more than one surface -- a plane of luma and a plane of
-   * chroma -- keeps them one after another at this stride, and anything
-   * that builds a descriptor of its own for the allocator's other
-   * libraries makes it this long. */
-  static constexpr size_t kSurfaceWords = 64;
+  /* How long one of the allocator's surface descriptors is, in words: the
+   * stride at which a buffer with more than one surface -- a plane of luma
+   * and a plane of chroma -- keeps them one after another. Twenty words,
+   * eighty bytes, read out of the device's own libnvrm and written down in
+   * docs/nvrm-format-table.txt with the word map beside it. Not the room
+   * the image compositor gives a descriptor it builds itself, which is
+   * more than the record needs and was once mistaken for this. */
+  static constexpr size_t kSurfaceWords = 20;
 
   /* The most surfaces one buffer is read for: luma and one plane of chroma
    * pairs. Fully planar arrangements carry a third, which nothing here
