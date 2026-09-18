@@ -30,6 +30,13 @@ namespace android::drm_hwcomposer {
  */
 uint32_t TegraFormatFromDrm(uint32_t drm_format);
 
+/* Whether a four-character code names a YUV arrangement -- packed, planar or
+ * semi-planar alike. What a video decoder writes, as distinct from what
+ * everything else draws; the two are treated differently in more places
+ * than the format table, and each of those asks here rather than keeping
+ * a list of its own. */
+bool DrmFormatIsYuv(uint32_t drm_format);
+
 /* Turns a format modifier into the flags the controller wants and, where the
  * memory is arranged in blocks, how tall one is. False for an arrangement
  * this controller cannot read.

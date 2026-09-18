@@ -63,8 +63,45 @@ uint32_t TegraFormatFromDrm(uint32_t drm_format) {
       return TEGRA_DC_EXT_FMT_B8G8R8A8;
     case DRM_FORMAT_BGR565:
       return TEGRA_DC_EXT_FMT_B5G6R5;
+    /* The two semi-planar 4:2:0 arrangements: a plane of luma, then one
+     * plane of chroma pairs. They differ only in which of the pair comes
+     * first, and each side names that the same way -- the code is read
+     * off the definition, not matched by eye. */
+    case DRM_FORMAT_NV12:
+      return TEGRA_DC_EXT_FMT_YCbCr420SP;
+    case DRM_FORMAT_NV21:
+      return TEGRA_DC_EXT_FMT_YCrCb420SP;
     default:
       return 0;
+  }
+}
+
+bool DrmFormatIsYuv(uint32_t drm_format) {
+  switch (drm_format) {
+    case DRM_FORMAT_YUYV:
+    case DRM_FORMAT_YVYU:
+    case DRM_FORMAT_UYVY:
+    case DRM_FORMAT_VYUY:
+    case DRM_FORMAT_AYUV:
+    case DRM_FORMAT_NV12:
+    case DRM_FORMAT_NV21:
+    case DRM_FORMAT_NV16:
+    case DRM_FORMAT_NV61:
+    case DRM_FORMAT_NV24:
+    case DRM_FORMAT_NV42:
+    case DRM_FORMAT_YUV410:
+    case DRM_FORMAT_YVU410:
+    case DRM_FORMAT_YUV411:
+    case DRM_FORMAT_YVU411:
+    case DRM_FORMAT_YUV420:
+    case DRM_FORMAT_YVU420:
+    case DRM_FORMAT_YUV422:
+    case DRM_FORMAT_YVU422:
+    case DRM_FORMAT_YUV444:
+    case DRM_FORMAT_YVU444:
+      return true;
+    default:
+      return false;
   }
 }
 
