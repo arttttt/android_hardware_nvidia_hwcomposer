@@ -464,11 +464,12 @@ int DcHead::flip(const std::vector<Window> &windows, UniqueFd *outPostFence) {
     flip.flags = 0;
 
     for (const Window &window : windows) {
-        HWC_LOGD("head %d: win %d buf=%d off=%u stride=%u fmt=0x%x flags=0x%x "
-                 "blockh=%u src=%.1fx%.1f+%.1f+%.1f dst=%dx%d+%d+%d z=%u "
-                 "pre=%d",
+        HWC_LOGD("head %d: win %d buf=%d off=%u stride=%u offU=%u strideUV=%u "
+                 "fmt=0x%x flags=0x%x blockh=%u src=%.1fx%.1f+%.1f+%.1f "
+                 "dst=%dx%d+%d+%d z=%u pre=%d",
                  mIndex, window.index, window.bufferFd, window.offset,
-                 window.stride, window.pixelFormat, window.flags,
+                 window.stride, window.offsetU, window.strideUV,
+                 window.pixelFormat, window.flags,
                  window.blockHeightLog2, window.sourceWidth,
                  window.sourceHeight, window.sourceX, window.sourceY,
                  window.outWidth, window.outHeight, window.outX, window.outY,

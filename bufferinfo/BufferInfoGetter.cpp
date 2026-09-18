@@ -95,6 +95,17 @@ uint32_t LegacyBufferInfoGetter::ConvertHalFormatToDrm(uint32_t hal_format) {
       return DRM_FORMAT_YVU420;
     case HAL_PIXEL_FORMAT_RGBA_1010102:
       return DRM_FORMAT_ABGR2101010;
+    /* What this vendor's H.264 decoder hands over: a code from the range
+     * the interface leaves to the implementation, and the one thing that
+     * kept every frame of video with the framework -- this table did not
+     * know it, no description of the buffer was made, and the layer went
+     * to the framework at validation without a word in the log. Its
+     * allocator publishes no name for it; the number is read off the
+     * decoder's own line when it sets the window up, and it is hexadecimal
+     * there. Semi-planar 4:2:0 with the chroma pair in Cb, Cr order, as
+     * this vendor's decoders have always written it. */
+    case 0x106:
+      return DRM_FORMAT_NV12;
     default:
       ALOGE("Cannot convert hal format to drm format %u", hal_format);
       return DRM_FORMAT_INVALID;
