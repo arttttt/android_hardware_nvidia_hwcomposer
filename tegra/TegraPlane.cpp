@@ -90,6 +90,29 @@ bool TegraPlane::IsValidForLayer(const LayerData *layer) {
             e.src_w, e.src_h, e.dst_w, e.dst_h);
       return false;
     }
+
+    /* Video never joins the merge. A decision, not a finding about the
+     * engine: the merge exists to fold a still stack of drawings into one
+     * scanned buffer so the windows stay free, and a decoder's output is
+     * the opposite of that -- a new picture every frame, which would put
+     * the engine through a full pass each time to save a window that is
+     * not scarce while video is playing. It would also throw away what
+     * the ordinary windows do for such a layer for nothing: their own
+     * converter and their own filter, neither of which the merge's
+     * fixed RGB target can use.
+     *
+     * Judged by format because the format is what tells a decoder's
+     * buffer from a drawing, and because it is the one thing about the
+     * buffer that survives the shape cache. It happens to close the
+     * engine's one hard refusal as well -- a buffer of more than one
+     * surface is turned down at execute time, after the frame was
+     * promised, and every multi-surface arrangement there is happens to
+     * be YUV -- but that is a consequence, not the reason. */
+    if (DrmFormatIsYuv(bi.format)) {
+      ALOGV("plane %u: video does not join the merge (format 0x%x)", index_,
+            bi.format);
+      return false;
+    }
     return true;
   }
 
