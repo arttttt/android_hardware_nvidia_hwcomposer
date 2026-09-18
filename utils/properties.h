@@ -42,6 +42,17 @@ class Properties {
   /* Whether the pipeline's resting state corrects the panel's gamut toward
    * sRGB rather than showing the panel as it is. */
   static auto CalibratedColorMode() -> bool;
+
+  /* The display profile's saturation, as the device tree's LiveDisplay
+   * service writes it: 1.0 is the panel as calibrated, above it a boost.
+   *
+   * Unlike every other switch here this one is NOT read once. The profile
+   * is a setting the user changes while looking at the screen, so it is
+   * asked for on each validate and the matrix rebuilt only when the answer
+   * moves. A property read is a lookup in shared memory, not a message to
+   * another process -- unlike a log line, which is why one is on this path
+   * and the other is not. */
+  static auto DisplaySaturation() -> float;
   static auto GetBackendOverride() -> std::string;
   static auto UseColorPipeline() -> bool;
   static auto ForceColorMode() -> int;

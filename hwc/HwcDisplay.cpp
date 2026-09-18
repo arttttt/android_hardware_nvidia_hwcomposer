@@ -197,8 +197,27 @@ void HwcDisplay::SetColorTransformMatrix(
 }
 
 void HwcDisplay::UpdateColorTransformMatrix() {
+  /* Innermost, so the profile is what the other two are applied to rather
+   * than the other way round: it is the panel's chosen character, and the
+   * client's transform -- night light, calibration, accessibility -- is
+   * what the user asks for on top of whatever character that is. */
   color_matrix_ = ColorUtil::Multiply(render_intent_matrix_,
-                                      client_color_matrix_);
+                                      ColorUtil::Multiply(client_color_matrix_,
+                                                          profile_matrix_));
+}
+
+void HwcDisplay::RefreshDisplayProfile() {
+  const float wanted = Properties::DisplaySaturation();
+  if (wanted == profile_saturation_) {
+    return;
+  }
+
+  profile_saturation_ = wanted;
+  profile_matrix_ = ColorUtil::SaturationMatrix(wanted);
+  MarkPlanInvalid(kColorTransform);
+  UpdateColorTransformMatrix();
+  ALOGI("Display %d profile saturation %.3f", static_cast<int>(handle_),
+        static_cast<double>(wanted));
 }
 
 HwcDisplay::~HwcDisplay() {
@@ -420,6 +439,11 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
   } else {
     flatcon_->NewFrame();
   }
+
+  /* Before the plan is made rather than after: a profile that arrived
+   * between two frames changes what the controller must be told, and the
+   * plan is where that is decided. */
+  RefreshDisplayProfile();
 
   auto validation_result = pipeline_->planner->ValidateDisplay(this);
   validated_composition_.emplace(std::move(validation_result.composition));
@@ -1700,7 +1724,8 @@ std::string HwcDisplay::DumpGroupSelector() const {
 
 std::string HwcDisplay::DumpColorBridge() const {
   std::stringstream ss;
-  ss << "Colour bridge             : intent queries " << render_intent_queries_
+  ss << "Colour bridge             : profile saturation "
+     << profile_saturation_ << ", intent queries " << render_intent_queries_
      << ", mode sets " << color_mode_sets_;
   if (color_mode_sets_ > 0) {
     ss << ", last mode " << last_color_mode_ << " intent "

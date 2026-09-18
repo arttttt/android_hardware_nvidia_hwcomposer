@@ -333,6 +333,38 @@ std::shared_ptr<const HalColorTransformMatrix> ColorUtil::Multiply(
   return out;
 }
 
+std::shared_ptr<const HalColorTransformMatrix> ColorUtil::SaturationMatrix(
+    float saturation) {
+  /* Neutral is the identity every caller already shares, so that the
+   * multiplication above can recognise it by pointer and drop it. */
+  constexpr float kEpsilon = 1e-6F;
+  if (std::abs(saturation - 1.0F) < kEpsilon) {
+    return GetIdentityCtmPtr();
+  }
+
+  /* Rec.709, the weights the panel's own colour space is written in. */
+  constexpr float kLumaR = 0.2126F;
+  constexpr float kLumaG = 0.7152F;
+  constexpr float kLumaB = 0.0722F;
+
+  const float rest = 1.0F - saturation;
+  const float r = rest * kLumaR;
+  const float g = rest * kLumaG;
+  const float b = rest * kLumaB;
+
+  /* Column-major, as the HAL spells a transform: the first four numbers
+   * are what red contributes to red, green and blue. Adding the factor
+   * back on the diagonal is what leaves the neutral axis where it was. */
+  auto out = std::make_shared<HalColorTransformMatrix>(
+      HalColorTransformMatrix{
+          r + saturation, r, r, 0.0F,  //
+          g, g + saturation, g, 0.0F,  //
+          b, b, b + saturation, 0.0F,  //
+          0.0F, 0.0F, 0.0F, 1.0F,
+      });
+  return out;
+}
+
 template <typename T>
 std::shared_ptr<T> ColorUtil::GamutAdjustIfNeeded(
     HwcColorspace src_colorspace, HwcColorspace dest_colorspace,

@@ -16,6 +16,8 @@
 
 #include "properties.h"
 
+#include <cmath>
+#include <cstdlib>
 #include <string>
 
 #include "utils/log.h"
@@ -191,6 +193,36 @@ auto Properties::CalibratedColorMode() -> bool {
   char value[PROPERTY_VALUE_MAX];
   property_get("vendor.hwc.colormode", value, "native");
   return strcmp(value, "srgb") == 0;
+}
+
+auto Properties::DisplaySaturation() -> float {
+  /* Written by the device tree's LiveDisplay service, which owns both the
+   * list of profiles and the number each one stands for. Nothing of the
+   * profile lives here but the arithmetic that turns the number into a
+   * matrix -- add a profile there and this side needs no edit.
+   *
+   * Refused rather than clamped when the text is not a number: a profile
+   * that cannot be read is not a profile to guess at, and 1.0 is the panel
+   * as calibrated. The ceiling is the one the framework's own saturation
+   * control uses, and a floor of zero is grey rather than an inversion. */
+  constexpr float kNeutral = 1.0F;
+  constexpr float kCeiling = 2.0F;
+
+  char value[PROPERTY_VALUE_MAX];
+  property_get("persist.vendor.hwc.display_saturation", value, "");
+  if (value[0] == '\0') {
+    return kNeutral;
+  }
+
+  char *end = nullptr;
+  const float wanted = std::strtof(value, &end);
+  if (end == static_cast<char *>(value) || *end != '\0' ||
+      !std::isfinite(wanted) || wanted < 0.0F || wanted > kCeiling) {
+    ALOGW("Ignoring display saturation '%s'", value);
+    return kNeutral;
+  }
+
+  return wanted;
 }
 
 auto Properties::GetBackendOverride() -> std::string {

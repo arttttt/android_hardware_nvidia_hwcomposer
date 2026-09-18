@@ -400,6 +400,12 @@ class HwcDisplay : public ICompositorDisplay {
 
   void UpdateColorTransformMatrix();
 
+  /* Asks the device tree which display profile is wanted and rebuilds the
+   * matrix if the answer has moved. Called where a frame is about to be
+   * planned rather than from a thread of its own: the profile is a setting
+   * changed while the user watches, and the next frame is soon enough. */
+  void RefreshDisplayProfile();
+
   bool Init();
 
   void SetHdrHeadroom();
@@ -449,6 +455,14 @@ class HwcDisplay : public ICompositorDisplay {
   // ASSERTION: render_intent_matrix_ must never have offset.
   std::shared_ptr<const HalColorTransformMatrix>
       render_intent_matrix_ = GetIdentityCtmPtr();
+  /* The display profile the device tree's LiveDisplay service asked for,
+   * and the number it was built from -- kept so that the matrix is rebuilt
+   * only when the number moves. Like the render intent above, it carries
+   * no offset: it is a saturation, and the controller's colour pipeline
+   * has nowhere to put an addend. */
+  std::shared_ptr<const HalColorTransformMatrix>
+      profile_matrix_ = GetIdentityCtmPtr();
+  float profile_saturation_ = 1.0F;
   /* Colour-bridge telemetry; the query counter is mutable because the
    * query itself is const. */
   mutable uint32_t render_intent_queries_ = 0;

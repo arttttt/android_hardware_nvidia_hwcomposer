@@ -113,6 +113,18 @@ class ColorUtil {
       const std::shared_ptr<const HalColorTransformMatrix> &a,
       const std::shared_ptr<const HalColorTransformMatrix> &b);
 
+  /* A saturation matrix: the colour moved away from its own luminance by
+   * the given factor, where one leaves it alone and nothing above one adds
+   * to it. Built rather than tabulated so that a profile is a number the
+   * device tree can choose, not a matrix it has to spell out.
+   *
+   * S = (1 - s) * L + s * I, with L the projection onto Rec.709 luminance.
+   * Every row sums to one, so white is white at any factor, and there is
+   * no offset column -- which the controller's own colour pipeline needs,
+   * and which the boosted render intent beside it also promises. */
+  static std::shared_ptr<const HalColorTransformMatrix> SaturationMatrix(
+      float saturation);
+
   static HwcColorspace ToHwcColorspace(ColorMode mode) {
     switch (mode) {
       case ColorMode::kNative:
