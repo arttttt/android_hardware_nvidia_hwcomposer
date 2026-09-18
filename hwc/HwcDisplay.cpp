@@ -1264,6 +1264,15 @@ void HwcDisplay::GetHdrCapabilities(std::vector<ui::Hdr> *types,
                                     float *max_average_luminance,
                                     float *min_luminance) const {
   if (IsInHeadlessMode() || !has_hdr_support_) {
+    /* An empty list of types is the honest answer for a panel with no high
+     * dynamic range, and the one the caller above turns into a display that
+     * reports none. The three luminances are part of that answer and were
+     * being left as they were found: a caller that had not cleared them
+     * first would read whatever its own stack held, for a display that has
+     * nothing to say about brightness in nits. */
+    *max_luminance = 0.0F;
+    *max_average_luminance = 0.0F;
+    *min_luminance = 0.0F;
     return;
   }
 
