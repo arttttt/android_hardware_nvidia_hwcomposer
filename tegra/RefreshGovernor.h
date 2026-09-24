@@ -53,7 +53,10 @@ namespace hwc {
 class RefreshGovernor {
  public:
   /* The governor, or null having said why not: a kernel without the
-   * ioctl, or a head that never woke its stretch machinery. */
+   * ioctl, a head that never woke its stretch machinery, or
+   * vendor.hwc.governor set to nought -- read once, here, at start. The
+   * release that probes the kernel is filed either way, so a panel left
+   * slow by a predecessor is raised whether or not a governor follows. */
   static std::unique_ptr<RefreshGovernor> Probe(int dc_fd);
 
   ~RefreshGovernor();

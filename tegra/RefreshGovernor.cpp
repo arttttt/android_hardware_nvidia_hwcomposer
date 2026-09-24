@@ -16,6 +16,7 @@
 
 #include "tegra/RefreshGovernor.h"
 
+#include <cutils/properties.h>
 #include <errno.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -48,6 +49,17 @@ std::unique_ptr<RefreshGovernor> RefreshGovernor::Probe(int dc_fd) {
   if (ioctl(dc_fd, kSetActVfp, &native) != 0) {
     ALOGI("no refresh stretch on this kernel (%s), governor not started",
           strerror(errno));
+    return nullptr;
+  }
+
+  /* Asked after the release above, not instead of it: the healing is
+   * owed whether or not the floor is wanted. Off is for telling apart
+   * what the floor costs -- the first frame after a quiet spell arrives
+   * on a panel still finishing a slowed frame -- from everything else
+   * that makes a first frame late. On unless told otherwise. */
+  if (!property_get_bool("vendor.hwc.governor", 1)) {
+    ALOGI("refresh governor switched off (vendor.hwc.governor), governor not "
+          "started");
     return nullptr;
   }
 

@@ -1588,7 +1588,8 @@ std::string TegraAtomicStateManager::DumpState() {
   if (governor_ != nullptr)
     governor_->AppendDump(ss);
   else
-    ss << "Refresh governor          : not running\n";
+    ss << "Refresh governor          : not running (no stretch in the kernel, "
+          "or vendor.hwc.governor=0, read at start)\n";
 
   /* Quiet when colour was never asked to change: most dumps, on a display
    * that spends its life at the identity. */
