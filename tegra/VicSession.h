@@ -17,8 +17,10 @@
 #ifndef TEGRA_VIC_SESSION_H
 #define TEGRA_VIC_SESSION_H
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -285,8 +287,22 @@ class VicSession {
    * knows what it would not give. */
   uint64_t zone_refusals() const { return zone_refusals_; }
 
+  /* When the engine last took a job from this session -- a merge, a
+   * staging copy, a warm-up -- or nought if it never has. Read from any
+   * thread; what the composition governor decides "cold" by. */
+  int64_t last_use_ns() const { return last_use_ns_.load(); }
+
  private:
   VicSession() = default;
+
+  /* Held across every call into the library: the composer's frame path
+   * and the composition governor's warm-up reach the engine from two
+   * threads, and the library's session is one object with no lock of its
+   * own. The pass held up behind a warm-up is held up for the engine
+   * coming up, which it would have paid for itself. */
+  std::mutex library_mutex_;
+
+  std::atomic<int64_t> last_use_ns_{0};
 
   bool Open();
   bool Resolve();

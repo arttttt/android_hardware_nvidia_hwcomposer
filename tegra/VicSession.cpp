@@ -28,6 +28,7 @@
 
 
 #include "bufferinfo/NvGralloc.h"
+#include "utils/Time.h"
 #include "tegra/nvmap.h"
 #include "utils/log.h"
 
@@ -253,6 +254,8 @@ VicSession::~VicSession() {
 drm_hwcomposer::SharedFd VicSession::Compose(
     const VendorBuffer &target, const std::vector<Layer> &layers,
     uint32_t width, uint32_t height, int target_ready, uint32_t transform) {
+  const std::lock_guard<std::mutex> lock(library_mutex_);
+
   /* The layers are the framework's buffers, and the allocator is
    * answerable for those; a source of this composer's own would carry
    * its own description and need no one -- none is passed today. */
@@ -459,6 +462,7 @@ drm_hwcomposer::SharedFd VicSession::ComposeInto(
     refused_++;
     return {};
   }
+  last_use_ns_.store(drm_hwcomposer::GetTimeMonotonicNs());
 
   int32_t fd = -1;
   /* The library's dispatcher carries only the first three arguments of this
@@ -482,6 +486,8 @@ drm_hwcomposer::SharedFd VicSession::ComposeInto(
 drm_hwcomposer::SharedFd VicSession::CopyLayer(
     const VendorBuffer &target, const Layer &layer,
     uint32_t width, uint32_t height, int target_ready) {
+  const std::lock_guard<std::mutex> lock(library_mutex_);
+
   auto *gralloc = drm_hwcomposer::NvGralloc::GetInstance();
   if (gralloc == nullptr || width == 0 || height == 0) {
     refused_++;
@@ -584,6 +590,7 @@ drm_hwcomposer::SharedFd VicSession::CopyLayer(
     refused_++;
     return {};
   }
+  last_use_ns_.store(drm_hwcomposer::GetTimeMonotonicNs());
 
   int32_t fd = -1;
   /* The library's dispatcher carries only the first three arguments of this
@@ -612,6 +619,8 @@ bool VicSession::OffersZoneBuffers() const {
 
 std::unique_ptr<VendorBuffer> VicSession::AllocateZoneTarget(
     uint32_t width, uint32_t height, uint32_t pitch_grain) {
+  const std::lock_guard<std::mutex> lock(library_mutex_);
+
   if (!OffersZoneBuffers() || width == 0 || height == 0 ||
       pitch_grain == 0) {
     ALOGE("zone buffer: not available in this session");
