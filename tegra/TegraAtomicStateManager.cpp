@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-#define ATRACE_TAG ATRACE_TAG_GRAPHICS
-
 #include "tegra/TegraAtomicStateManager.h"
 
 #include "tegra/CursorPlane.h"
@@ -41,7 +39,6 @@
 #include <vector>
 
 #include <cutils/properties.h>
-#include <cutils/trace.h>
 #include <tegra_dc_ext.h>
 
 #include "bufferinfo/BufferInfo.h"
@@ -52,10 +49,10 @@
 #include "display/FbIdHandle.h"
 #include "display/Plane.h"
 #include "display/PipelineBinding.h"
+#include "tegra/MergeDescription.h"
 #include "tegra/FbDevice.h"
 #include "tegra/TegraFormat.h"
 #include "utils/Logging.h"
-#include "utils/Tracing.h"
 #include "utils/log.h"
 
 namespace android::drm_hwcomposer {
@@ -252,20 +249,6 @@ Due FenceDue(const SharedFd &fence) {
     return Due::kCouldNotAsk;
 
   struct sync_file_info *info = sync_file_info(*fence);
-  if (info == nullptr)
-    return Due::kCouldNotAsk;
-
-  const Due answer = info->status == 1 ? Due::kYes : Due::kNotYet;
-  sync_file_info_free(info);
-  return answer;
-}
-
-/* The same question of a descriptor that is only borrowed. */
-Due FenceDueFd(int fd) {
-  if (fd < 0)
-    return Due::kCouldNotAsk;
-
-  struct sync_file_info *info = sync_file_info(fd);
   if (info == nullptr)
     return Due::kCouldNotAsk;
 
@@ -922,36 +905,12 @@ hwc::governor::Power GovernorPower(PowerMode mode) {
   return hwc::governor::Power::on;
 }
 
-uint32_t SpanOf(float from, float to) {
-  const float span = to - from;
-  return span > 0.0F ? static_cast<uint32_t>(lroundf(span)) : 0;
-}
-
-uint32_t SpanOf(int32_t from, int32_t to) {
-  return to > from ? static_cast<uint32_t>(to - from) : 0;
-}
-
 }  // namespace
 
 void TegraAtomicStateManager::TellGovernor(const TegraAtomicRequest &tegra) {
   const auto &merge = tegra.GetMerge();
-
-  std::vector<hwc::governor::Member> members;
-  members.reserve(merge.layers.size());
-  for (size_t i = 0; i < merge.layers.size(); ++i) {
-    const hwc::VicSession::Layer &l = merge.layers[i];
-    hwc::governor::Member m{};
-    m.src_w = SpanOf(l.source_left, l.source_right);
-    m.src_h = SpanOf(l.source_top, l.source_bottom);
-    m.dst_w = SpanOf(l.display_left, l.display_right);
-    m.dst_h = SpanOf(l.display_top, l.display_bottom);
-    m.format = i < merge.formats.size() ? merge.formats[i] : 0;
-    m.transform = i < merge.transforms.size() ? merge.transforms[i] : 0;
-    m.premultiplied = l.premultiplied;
-    m.acquire_signaled =
-        l.acquire_fence < 0 || FenceDueFd(l.acquire_fence) == Due::kYes;
-    members.push_back(m);
-  }
+  const std::vector<hwc::governor::Member> members =
+      hwc::DescribeMembers(merge);
 
   hwc::governor::Frame frame{};
   frame.seq = ++planned_seq_;
@@ -976,35 +935,6 @@ void TegraAtomicStateManager::TellGovernor(const TegraAtomicRequest &tegra) {
   frame.member_count = static_cast<uint32_t>(members.size());
 
   composition_governor_->FramePlanned(frame);
-}
-
-void TegraAtomicStateManager::MarkMergeForCalibration(
-    const TegraAtomicRequest::Merge &merge) const {
-  if (!ATRACE_ENABLED())
-    return;
-
-  uint64_t src = 0;
-  uint64_t dst = 0;
-  for (const hwc::VicSession::Layer &l : merge.layers) {
-    src += static_cast<uint64_t>(SpanOf(l.source_left, l.source_right)) *
-           SpanOf(l.source_top, l.source_bottom);
-    dst += static_cast<uint64_t>(SpanOf(l.display_left, l.display_right)) *
-           SpanOf(l.display_top, l.display_bottom);
-  }
-  const unsigned turn = merge.transforms.empty() ? 0U : merge.transforms[0];
-
-  char line[224];
-  int n = snprintf(line, sizeof(line),
-                   "hwc_merge_calib seq=%" PRIu64 " n=%zu src=%" PRIu64
-                   " dst=%" PRIu64 " turn=%u fmt=",
-                   planned_seq_, merge.layers.size(), src, dst, turn);
-  for (uint32_t format : merge.formats) {
-    if (n < 0 || static_cast<size_t>(n) >= sizeof(line) - 12)
-      break;
-    n += snprintf(line + n, sizeof(line) - static_cast<size_t>(n), "%08x,",
-                  format);
-  }
-  ATRACE_INSTANT(line);
 }
 
 TegraAtomicStateManager::MergeVerdict TegraAtomicStateManager::JudgeMerge(
@@ -1305,7 +1235,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       }
 
       if (composition_governor_ != nullptr)
-        MarkMergeForCalibration(merge);
+        hwc::MarkMergeForCalibration(merge, planned_seq_);
 
       const int64_t before_merge = GetTimeMonotonicNs();
       /* The same door the turning pass used to answer to, so a code can
@@ -1419,6 +1349,14 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       window.preFence = *merged;
 
       RememberMerge(merge, window, merged);
+
+      /* The governor hears of the merge now, by a copy of the engine's
+       * fence -- the one signal that the engine is done with it, and the
+       * copy is the governor's to close. Now rather than after the flip:
+       * the processor's lift ends with the submit, and the flip is still
+       * a millisecond or two away. */
+      if (composition_governor_ != nullptr)
+        composition_governor_->MergeSubmitted(planned_seq_, DupFd(merged));
     }
   } else {
     /* No group this frame, so no frame of any group was judged: a layer
@@ -1557,15 +1495,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
 
   previous_post_fence_ = std::move(this_post_fence);
 
-  /* The governor hears of the merge by a copy of the engine's fence -- the
-   * fence is the one signal that the engine is done with it, and the copy
-   * is the governor's to close -- and of the flip by number. A frame shown
-   * again from the remembered buffer woke no engine and reports no merge. */
-  if (composition_governor_ != nullptr) {
-    if (merged && !merge_reused)
-      composition_governor_->MergeSubmitted(planned_seq_, DupFd(merged));
+  if (composition_governor_ != nullptr)
     composition_governor_->FramePresented(planned_seq_);
-  }
 
   /* Was it already due when it was given away? */
   if (count_fences_) {

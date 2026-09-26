@@ -26,7 +26,7 @@
 
 #include "display/AtomicStateManager.h"
 #include "display/DrmMode.h"
-#include "governor/CompositionGovernor.h"
+#include "tegra/CompositionGovernor.h"
 #include "tegra/DcHead.h"
 #include "tegra/CursorUnit.h"
 #include "tegra/RefreshGovernor.h"
@@ -384,11 +384,6 @@ class TegraAtomicStateManager : public AtomicStateManager {
 
   /* Describes the accepted frame to the governor in plain numbers. */
   void TellGovernor(const TegraAtomicRequest &tegra);
-
-  /* One trace moment before the merge goes to the engine, carrying what
-   * the merge is made of: the key by which the governor's cost model is
-   * calibrated against the engine's own accounting of the job. */
-  void MarkMergeForCalibration(const TegraAtomicRequest::Merge &merge) const;
 
   /* Frames actually committed, whatever they carried. The counter the
    * cursor's whole promise is judged by: a moving pointer on a still

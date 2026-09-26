@@ -274,8 +274,8 @@ class VicSession {
 
   /* How many sets the engine has refused, and how many it has taken. What
    * decides whether a third way of merging is worth building at all. */
-  uint64_t composed() const { return composed_; }
-  uint64_t refused() const { return refused_; }
+  uint64_t composed() const { return composed_.load(); }
+  uint64_t refused() const { return refused_.load(); }
 
   /* How often the zone would not give a buffer.
    *
@@ -285,7 +285,7 @@ class VicSession {
    * small for the scene, and only the second is a reason to act. The
    * bytes come from the pools, which own the buffers; this side only
    * knows what it would not give. */
-  uint64_t zone_refusals() const { return zone_refusals_; }
+  uint64_t zone_refusals() const { return zone_refusals_.load(); }
 
   /* When the engine last took a job from this session -- a merge, a
    * staging copy, a warm-up -- or nought if it never has. Read from any
@@ -346,9 +346,11 @@ class VicSession {
   void *session_ = nullptr;
   std::vector<uint8_t> config_;
 
-  uint64_t composed_ = 0;
-  uint64_t zone_refusals_ = 0;
-  uint64_t refused_ = 0;
+  /* Written under the library lock from two threads, read by the dump
+   * without it. */
+  std::atomic<uint64_t> composed_{0};
+  std::atomic<uint64_t> zone_refusals_{0};
+  std::atomic<uint64_t> refused_{0};
 
   /* See last_target_probe(). */
   std::string last_target_probe_;

@@ -26,7 +26,7 @@
 #include "tegra/DcHead.h"
 #include "tegra/FbDevice.h"
 #include "tegra/RefreshGovernor.h"
-#include "governor/CompositionGovernor.h"
+#include "tegra/CompositionGovernor.h"
 #include "tegra/TegraConnector.h"
 #include "tegra/TegraCrtc.h"
 #include "tegra/TegraPlane.h"

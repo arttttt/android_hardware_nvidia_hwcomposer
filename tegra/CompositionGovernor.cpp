@@ -16,9 +16,8 @@
 
 #define ATRACE_TAG ATRACE_TAG_GRAPHICS
 
-#include "governor/CompositionGovernor.h"
+#include "tegra/CompositionGovernor.h"
 
-#include <dlfcn.h>
 #include <unistd.h>
 
 #include <cutils/trace.h>
@@ -32,14 +31,6 @@ namespace hwc {
 
 namespace {
 
-/* Fixed by name: which library runs is not a per-device choice. Looked for
- * beside the composer first, by full path: a vendor process's linker
- * searches the vendor library directory itself, not its module
- * subdirectory, and the composer's own modules live in the latter. */
-constexpr const char *libraryName = "hwcgovernor.tegra.so";
-constexpr const char *libraryPaths[] = {"/vendor/lib/hw/hwcgovernor.tegra.so",
-                                         "hwcgovernor.tegra.so"};
-
 /* The warm-up pass's extent. The engine's coming up costs the same
  * whatever the job's size, so the job is as small as the zone's row grain
  * lets it be. */
@@ -52,68 +43,46 @@ std::unique_ptr<CompositionGovernor> CompositionGovernor::Load(
   if (vic == nullptr)
     return nullptr;
 
-  void *library = nullptr;
-  for (const char *path : libraryPaths) {
-    library = dlopen(path, RTLD_NOW);
-    if (library != nullptr)
-      break;
-  }
-  if (library == nullptr) {
-    /* The usual answer on a device that ships no policy, so said quietly. */
-    ALOGI("composition governor: no %s (%s), running without", libraryName,
-          dlerror());
+  std::unique_ptr<GovernorLibrary> library = GovernorLibrary::Open();
+  if (!library)
     return nullptr;
-  }
 
-  auto governor =
-      std::unique_ptr<CompositionGovernor>(new CompositionGovernor(library, vic));
+  auto governor = std::unique_ptr<CompositionGovernor>(
+      new CompositionGovernor(std::move(library), vic));
   if (!governor->Start())
     return nullptr;
 
-  ALOGI("composition governor: %s loaded", libraryName);
+  ALOGI("composition governor: loaded");
   return governor;
 }
 
-CompositionGovernor::CompositionGovernor(void *library, VicSession *vic)
-    : library_(library), vic_(vic) {
+CompositionGovernor::CompositionGovernor(
+    std::unique_ptr<GovernorLibrary> library, VicSession *vic)
+    : library_(std::move(library)), vic_(vic) {
+}
+
+void CompositionGovernor::AllocateWarmBuffers() {
+  warm_source_ = vic_->AllocateZoneTarget(warmSide, warmSide);
+  warm_target_ = vic_->AllocateZoneTarget(warmSide, warmSide);
+  if (warm_source_ && warm_target_)
+    return;
+
+  /* Not fatal: the governor can still raise the clock, it just cannot
+   * wake the engine early. */
+  ALOGW("composition governor: the zone would not give the warm-up "
+        "buffers; the engine will not be warmed");
+  warm_source_.reset();
+  warm_target_.reset();
 }
 
 bool CompositionGovernor::Start() {
-  auto *version = reinterpret_cast<uint32_t (*)()>(
-      dlsym(library_, "hwc_governor_api_version"));
-  auto *create = reinterpret_cast<governor::Governor *(*)(governor::GovernorHost *)>(
-      dlsym(library_, "hwc_governor_create"));
-  destroy_ = reinterpret_cast<void (*)(governor::Governor *)>(
-      dlsym(library_, "hwc_governor_destroy"));
-  if (version == nullptr || create == nullptr || destroy_ == nullptr) {
-    ALOGE("composition governor: %s lacks the entry points", libraryName);
-    return false;
-  }
-
-  const uint32_t offered = version();
-  if (offered != governor::apiVersion) {
-    ALOGE("composition governor: %s speaks API %u, this composer %u",
-          libraryName, offered, governor::apiVersion);
-    return false;
-  }
-
   /* Before the library exists, so a warm-up it asks for on its first
-   * breath finds them ready. Not fatal without them: the governor can
-   * still raise the clock, it just cannot wake the engine early. */
-  warm_source_ = vic_->AllocateZoneTarget(warmSide, warmSide);
-  warm_target_ = vic_->AllocateZoneTarget(warmSide, warmSide);
-  if (!warm_source_ || !warm_target_) {
-    ALOGW("composition governor: the zone would not give the warm-up "
-          "buffers; the engine will not be warmed");
-    warm_source_.reset();
-    warm_target_.reset();
-  }
+   * breath finds them ready. */
+  AllocateWarmBuffers();
 
-  governor::Governor *created = create(this);
-  if (created == nullptr) {
-    ALOGE("composition governor: %s declined to start", libraryName);
+  governor::Governor *created = library_->Create(this);
+  if (created == nullptr)
     return false;
-  }
 
   const std::lock_guard<std::mutex> lock(callback_mutex_);
   governor_ = created;
@@ -134,14 +103,11 @@ CompositionGovernor::~CompositionGovernor() {
    * and that thread may be inside WarmEngine, which needs no lock of ours
    * but does need the engine -- which the pipeline keeps alive until this
    * destructor has returned. */
-  if (governor != nullptr && destroy_ != nullptr)
-    destroy_(governor);
+  if (governor != nullptr)
+    library_->Destroy(governor);
 
   warm_target_.reset();
   warm_source_.reset();
-
-  if (library_ != nullptr)
-    dlclose(library_);
 }
 
 void CompositionGovernor::FramePlanned(const governor::Frame &frame) {

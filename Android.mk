@@ -112,7 +112,7 @@ LOCAL_SRC_FILES := \
     display/DrmMode.cpp \
     display/DrmProperty.cpp \
     display/VSyncWorker.cpp \
-    governor/CompositionGovernor.cpp \
+    governor/GovernorLibrary.cpp \
     stats/CompositionStatsAtomReporter.cpp \
     stats/CountActiveDisplaysReporter.cpp \
     stats/DisplayConfigurationResultReporter.cpp \
@@ -139,11 +139,13 @@ LOCAL_SRC_FILES := \
     tegra/TegraBackend.cpp \
     tegra/TegraDevice.cpp \
     tegra/TegraFormat.cpp \
+    tegra/CompositionGovernor.cpp \
     tegra/CursorPlane.cpp \
     tegra/CursorUnit.cpp \
     tegra/RefreshGovernor.cpp \
     tegra/TegraPlane.cpp \
     tegra/FbDevice.cpp \
+    tegra/MergeDescription.cpp \
     tegra/TegraDisplayPipeline.cpp \
     tegra/TegraVSyncSource.cpp \
     tegra/ScratchPool.cpp \
@@ -176,6 +178,14 @@ LOCAL_SHARED_LIBRARIES := \
     libcutils
 
 LOCAL_SRC_FILES := \
-    governor/TegraGovernor.cpp
+    governor/CpuFloor.cpp \
+    governor/EngineClock.cpp \
+    governor/MergePlan.cpp \
+    governor/PerfProfile.cpp \
+    governor/TegraGovernor.cpp \
+    governor/Tuning.cpp
+
+# The model is checked on the workstation, not on the device:
+# governor/tests/merge_plan_test.cpp says how.
 
 include $(BUILD_SHARED_LIBRARY)

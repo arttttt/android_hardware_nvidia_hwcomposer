@@ -14,83 +14,24 @@
  * limitations under the License.
  */
 
-/* The composition load governor for Tegra K1: hwcgovernor.tegra.so.
- *
- * What it decides, once per planned merge: whether to wake a powered-down
- * engine ahead of the merge, what clock floor to ask of the engine for the
- * merge's duration, and whether to lift the processor's floor for the few
- * milliseconds between the plan and the submit. The kernel does the rest --
- * the memory clock follows the engine's floor, and the display's isochronous
- * share follows the engine being on.
- *
- * Everything that may sleep -- the clock request, the warm-up pass, the
- * processor floor -- runs on this library's own thread. The composer's
- * threads only drop a snapshot in a mailbox and ring an eventfd. The thread
- * waits in one place, poll(), on that eventfd and on the fences of merges
- * in flight, so a merge finishing and a frame being planned are the same
- * kind of wake-up.
- *
- * The engine is reached through /dev/nvhost-vic, opened once for the life
- * of the library: the per-descriptor clock request is the one kernel entry
- * point that also pulls the memory clock along, and it lives only as long
- * as the descriptor does. The processor floor goes through /dev/cpu_freq_min,
- * a pm_qos request held while that descriptor is open.
- */
+#include "governor/TegraGovernor.h"
 
 #include <errno.h>
-#include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
-#include <stdarg.h>
-#include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/eventfd.h>
-#include <sys/ioctl.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <algorithm>
-#include <atomic>
-#include <mutex>
-#include <optional>
-#include <thread>
-#include <vector>
 
 #include <android/log.h>
-#include <cutils/properties.h>
 
-#include "governor/HwcGovernor.h"
+namespace android::hwc::governor::tegra {
 
 namespace {
-
-using android::hwc::governor::Frame;
-using android::hwc::governor::Governor;
-using android::hwc::governor::GovernorHost;
-using android::hwc::governor::Member;
-using android::hwc::governor::Power;
-
-constexpr int64_t nsPerMs = 1000000LL;
-constexpr int64_t nsPerUs = 1000LL;
-constexpr int64_t nsPerSec = 1000000000LL;
-
-/* nvhost's per-descriptor clock request, spelled out rather than taken from
- * the kernel's header: that header is GPL and is not exported. Rate in
- * hertz, module nought for the engine's own clock. Nought as the rate lifts
- * the request, and the descriptor falls back to what devfreq asks. */
-struct ClockRateArgs {
-  uint32_t rate;
-  uint32_t moduleid;
-};
-constexpr unsigned long ioctlGetClockRate = _IOWR('H', 9, ClockRateArgs);
-constexpr unsigned long ioctlSetClockRate = _IOW('H', 10, ClockRateArgs);
-
-/* The engine's clock steps on this chip, megahertz. The kernel rounds a
- * request to one of these itself; the table is here so the decision can
- * be traced in the same terms, and so "one step above" means one step. */
-constexpr uint32_t clockStepsMhz[] = {180, 258, 336, 378, 420, 462,
-                                      504, 552, 600, 684, 720, 756};
-constexpr uint32_t topStepMhz = 756;
 
 int64_t NowNs() {
   struct timespec ts = {};
@@ -98,260 +39,33 @@ int64_t NowNs() {
   return int64_t(ts.tv_sec) * nsPerSec + int64_t(ts.tv_nsec);
 }
 
-/* What the policy is tuned by.
- *
- * The defaults are the measured ones and live here. A file on the device,
- * /vendor/etc/hwc_governor.conf, overrides any of them with lines of
- * `name=value` -- the names are the fields below, verbatim -- read once
- * when the library starts. No file is the usual answer; a line that names
- * nothing is said once in the log and skipped. */
-constexpr const char *tuningPath = "/vendor/etc/hwc_governor.conf";
-
-struct Tuning {
-  /* The model's safety margin, per cent. Underestimating the merge by a
-   * third loses nearly every rescue; overestimating by a third keeps them
-   * at the cost of a few needless requests. */
-  uint32_t factor_pct = 125;
-
-  /* Pixels the engine moves per clock. Two on this chip. */
-  uint32_t pixels_per_clock = 2;
-
-  /* The floor asked of a cold engine when the model wants less: until the
-   * model is calibrated its underestimates are covered from here. Nought
-   * trusts the model. */
-  uint32_t min_cold_mhz = 504;
-
-  /* How long the floor outlives the last merge's fence, so the merges of
-   * one transition do not each pay for the clock coming and going. */
-  uint32_t hold_ms = 17;
-
-  /* After which the engine is taken to have powered down. The kernel's
-   * powergate delay. */
-  uint32_t powergate_ms = 500;
-
-  /* The processor floor's step, kilohertz, and how long it may be held.
-   * Nought as the step lifts the processor never. */
-  uint32_t cpu_khz = 1044000;
-  uint32_t cpu_cap_ms = 5;
-
-  /* The path from validate to the submit, measured: the composer's lead
-   * and the submit itself on a warm engine, on a cold one with the
-   * processor lifted, and on a cold one without. */
-  uint32_t lead_us = 1500;
-  uint32_t submit_warm_us = 250;
-  uint32_t submit_cold_us = 1600;
-  uint32_t submit_cold_slow_us = 4000;
-
-  /* How far before the latch the merge has to be done. */
-  uint32_t latch_margin_us = 700;
-
-  /* Fallbacks for a frame planned before the composer has a vsync phase. */
-  uint32_t budget_empty_us = 7200;
-  uint32_t budget_waited_us = 23000;
-
-  /* How long a fence is waited for before it is given up on, and how long a
-   * floor is kept when the merge it was raised for never reports. */
-  uint32_t fence_patience_ms = 500;
-  uint32_t orphan_ms = 100;
-
-  /* How often the performance profile is asked for. */
-  uint32_t profile_poll_ms = 250;
-};
-
-struct TuningKey {
-  const char *name;
-  uint32_t Tuning::*field;
-};
-
-constexpr TuningKey tuningKeys[] = {
-    {"factor_pct", &Tuning::factor_pct},
-    {"pixels_per_clock", &Tuning::pixels_per_clock},
-    {"min_cold_mhz", &Tuning::min_cold_mhz},
-    {"hold_ms", &Tuning::hold_ms},
-    {"powergate_ms", &Tuning::powergate_ms},
-    {"cpu_khz", &Tuning::cpu_khz},
-    {"cpu_cap_ms", &Tuning::cpu_cap_ms},
-    {"lead_us", &Tuning::lead_us},
-    {"submit_warm_us", &Tuning::submit_warm_us},
-    {"submit_cold_us", &Tuning::submit_cold_us},
-    {"submit_cold_slow_us", &Tuning::submit_cold_slow_us},
-    {"latch_margin_us", &Tuning::latch_margin_us},
-    {"budget_empty_us", &Tuning::budget_empty_us},
-    {"budget_waited_us", &Tuning::budget_waited_us},
-    {"fence_patience_ms", &Tuning::fence_patience_ms},
-    {"orphan_ms", &Tuning::orphan_ms},
-    {"profile_poll_ms", &Tuning::profile_poll_ms},
-};
-
-/* Strips blanks and a trailing comment; returns the first byte of what is
- * left, which is a NUL for a line with nothing on it. */
-char *Trim(char *line) {
-  char *hash = strchr(line, '#');
-  if (hash != nullptr)
-    *hash = '\0';
-  while (*line == ' ' || *line == '\t')
-    ++line;
-  char *end = line + strlen(line);
-  while (end > line && (end[-1] == ' ' || end[-1] == '\t' ||
-                        end[-1] == '\n' || end[-1] == '\r'))
-    *--end = '\0';
-  return line;
+void CloseAll(const std::vector<Watched> &fences) {
+  for (const Watched &w : fences)
+    if (w.fd >= 0)
+      close(w.fd);
 }
 
-/* A snapshot as the thread keeps it: the frame with its members copied
- * alongside, since the frame's own pointer dies with the call. */
-struct Planned {
-  Frame frame;
-  std::vector<Member> members;
-};
+}  // namespace
 
-struct Submitted {
-  uint64_t seq;
-  int fd;
-};
-
-/* A merge fence the thread is watching. */
-struct Watched {
-  int fd;
-  uint64_t seq;
-  int64_t since_ns;
-};
-
-class TegraGovernor final : public Governor {
- public:
-  explicit TegraGovernor(GovernorHost *host);
-  ~TegraGovernor() override;
-
-  bool Start();
-
-  void FramePlanned(const Frame &frame) override;
-  void MergeSubmitted(uint64_t seq, int merge_fence_fd) override;
-  void FramePresented(uint64_t seq) override;
-  void PowerMode(Power mode) override;
-
- private:
-  void Ring();
-  void ThreadFn();
-  void ReadTuning();
-  void Decide(const Planned &planned, int64_t now);
-  void Warm(int64_t now);
-  bool SetFloor(uint32_t mhz);
-  std::optional<uint32_t> CurrentMhz();
-  void LiftCpu(int64_t now);
-  void DropCpu();
-  void ReleaseFloor();
-  void DropEverything();
-  int ReadProfile(int64_t now);
-  void Log(int prio, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
-
-  GovernorHost *const host_;
-  Tuning tuning_;
-
-  int vic_fd_ = -1;
-  int cpu_fd_ = -1;
-  int event_fd_ = -1;
-
-  /* The mailbox. Written by the composer's threads, emptied by ours. */
-  std::mutex mailbox_mutex_;
-  std::optional<Planned> pending_;
-  std::vector<Submitted> submitted_;
-  Power power_ = Power::on;
-  bool stop_ = false;
-
-  std::thread thread_;
-
-  /* Thread-only state from here down. */
-  std::vector<Watched> watched_;
-  uint32_t floor_mhz_ = 0;
-  int64_t release_due_ns_ = 0;  /* when the floor may go, nought if not yet */
-  int64_t orphan_due_ns_ = 0;   /* floor raised, no merge reported by then */
-  int64_t cpu_until_ns_ = 0;    /* processor floor held until, nought if not */
-  int64_t last_warm_ns_ = 0;
-  int64_t profile_read_ns_ = 0;
-  int profile_ = -1;
-  bool disabled_ = false;       /* the kernel refused us; a witness now */
-  bool warm_refused_logged_ = false;
-};
-
-TegraGovernor::TegraGovernor(GovernorHost *host) : host_(host) {
-}
-
-void TegraGovernor::ReadTuning() {
-  FILE *file = fopen(tuningPath, "re");
-  if (file == nullptr)
-    return;
-
-  char line[160];
-  unsigned number = 0;
-  while (fgets(line, sizeof(line), file) != nullptr) {
-    ++number;
-    char *text = Trim(line);
-    if (*text == '\0')
-      continue;
-
-    char *equals = strchr(text, '=');
-    if (equals == nullptr) {
-      Log(ANDROID_LOG_WARN, "%s:%u: not a name=value line", tuningPath,
-          number);
-      continue;
-    }
-    *equals = '\0';
-    const char *name = Trim(text);
-    const char *value = Trim(equals + 1);
-
-    char *rest = nullptr;
-    const unsigned long parsed = strtoul(value, &rest, 10);
-    if (rest == value || *rest != '\0' || parsed > UINT32_MAX) {
-      Log(ANDROID_LOG_WARN, "%s:%u: %s: not a number: %s", tuningPath,
-          number, name, value);
-      continue;
-    }
-
-    bool known = false;
-    for (const TuningKey &key : tuningKeys) {
-      if (strcmp(key.name, name) == 0) {
-        tuning_.*key.field = static_cast<uint32_t>(parsed);
-        known = true;
-        break;
-      }
-    }
-    if (!known)
-      Log(ANDROID_LOG_WARN, "%s:%u: no such setting: %s", tuningPath, number,
-          name);
-  }
-  fclose(file);
-
-  if (tuning_.factor_pct == 0)
-    tuning_.factor_pct = 100;
-  if (tuning_.pixels_per_clock == 0)
-    tuning_.pixels_per_clock = 1;
-  Log(ANDROID_LOG_INFO, "tuning read from %s", tuningPath);
+TegraGovernor::TegraGovernor(GovernorHost &host)
+    : host_(host), engine_(host), cpu_(host) {
 }
 
 bool TegraGovernor::Start() {
-  ReadTuning();
+  if (ReadTuningFile(tuningPath, &tuning_, host_))
+    host_.Log(ANDROID_LOG_INFO, "tuning read from the device");
 
   event_fd_ = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
   if (event_fd_ < 0) {
-    Log(ANDROID_LOG_ERROR, "eventfd: %s", strerror(errno));
+    char msg[96];
+    snprintf(msg, sizeof(msg), "eventfd: %s", strerror(errno));
+    host_.Log(ANDROID_LOG_ERROR, msg);
     return false;
   }
 
-  /* Once, for good: the clock request lives as long as this descriptor,
-   * and an empty descriptor holds neither power nor a channel. */
-  vic_fd_ = open("/dev/nvhost-vic", O_RDWR | O_CLOEXEC);
-  if (vic_fd_ < 0) {
-    Log(ANDROID_LOG_ERROR, "/dev/nvhost-vic: %s; running as a witness",
-        strerror(errno));
-    disabled_ = true;
-  }
-
-  /* Optional: without it the processor is simply not lifted. The device's
-   * policy has to allow the composer this node. */
-  cpu_fd_ = open("/dev/cpu_freq_min", O_WRONLY | O_CLOEXEC);
-  if (cpu_fd_ < 0)
-    Log(ANDROID_LOG_WARN, "/dev/cpu_freq_min: %s; the processor will not be "
-        "lifted", strerror(errno));
+  if (!engine_.Open())
+    host_.Log(ANDROID_LOG_ERROR, "no engine clock; running as a witness");
+  cpu_.Open();
 
   thread_ = std::thread(&TegraGovernor::ThreadFn, this);
   return true;
@@ -368,35 +82,20 @@ TegraGovernor::~TegraGovernor() {
 
   /* Whatever arrived after the thread emptied the mailbox for the last
    * time is ours to close. */
-  for (const Submitted &s : submitted_)
-    if (s.fd >= 0)
-      close(s.fd);
+  CloseAll(submitted_);
   submitted_.clear();
 
-  if (cpu_fd_ >= 0)
-    close(cpu_fd_);
-  if (vic_fd_ >= 0)
-    close(vic_fd_);
   if (event_fd_ >= 0)
     close(event_fd_);
-}
-
-void TegraGovernor::Log(int prio, const char *fmt, ...) {
-  char msg[256];
-  va_list ap;
-  va_start(ap, fmt);
-  vsnprintf(msg, sizeof(msg), fmt, ap);
-  va_end(ap);
-  host_->Log(prio, msg);
 }
 
 void TegraGovernor::Ring() {
   const uint64_t one = 1;
   if (write(event_fd_, &one, sizeof(one)) < 0 && errno != EAGAIN)
-    Log(ANDROID_LOG_WARN, "eventfd write: %s", strerror(errno));
+    host_.Log(ANDROID_LOG_WARN, "eventfd write failed");
 }
 
-/* The composer's side: copy, drop in the mailbox, ring, return. */
+/* The composer's side. */
 
 void TegraGovernor::FramePlanned(const Frame &frame) {
   Planned planned;
@@ -416,7 +115,7 @@ void TegraGovernor::FramePlanned(const Frame &frame) {
 void TegraGovernor::MergeSubmitted(uint64_t seq, int merge_fence_fd) {
   {
     const std::lock_guard<std::mutex> lock(mailbox_mutex_);
-    submitted_.push_back(Submitted{seq, merge_fence_fd});
+    submitted_.push_back(Watched{merge_fence_fd, seq, 0});
   }
   Ring();
 }
@@ -439,223 +138,182 @@ void TegraGovernor::PowerMode(Power mode) {
 
 /* The thread. */
 
+TegraGovernor::Mail TegraGovernor::TakeMail(bool rung) {
+  Mail mail;
+  const std::lock_guard<std::mutex> lock(mailbox_mutex_);
+  if (rung) {
+    uint64_t drained = 0;
+    if (read(event_fd_, &drained, sizeof(drained)) < 0 && errno != EAGAIN)
+      host_.Log(ANDROID_LOG_WARN, "eventfd read failed");
+  }
+  mail.planned = std::move(pending_);
+  pending_.reset();
+  mail.submitted.swap(submitted_);
+  mail.power = power_;
+  mail.stop = stop_;
+  return mail;
+}
+
+int TegraGovernor::TimeoutMs(int64_t now) const {
+  int64_t due = -1;
+  auto consider = [&due](int64_t when) {
+    if (when > 0 && (due < 0 || when < due))
+      due = when;
+  };
+  consider(cpu_until_ns_);
+  consider(release_due_ns_);
+  consider(orphan_due_ns_);
+  for (const Watched &w : watched_)
+    consider(w.since_ns + int64_t(tuning_.fence_patience_ms) * nsPerMs);
+
+  if (due < 0)
+    return -1;
+  if (due <= now)
+    return 0;
+  return int((due - now + nsPerMs - 1) / nsPerMs);
+}
+
 void TegraGovernor::ThreadFn() {
   pthread_setname_np(pthread_self(), "hwc-governor");
 
   std::vector<struct pollfd> fds;
-
   for (;;) {
+    /* The poll set: the eventfd first, then the watched fences in the
+     * list's order -- which is what JudgeFences relies on. */
     fds.clear();
     fds.push_back(pollfd{event_fd_, POLLIN, 0});
     for (const Watched &w : watched_)
       fds.push_back(pollfd{w.fd, POLLIN, 0});
 
-    /* Sleep until something is due, or for good if nothing is. */
-    int64_t now = NowNs();
-    int64_t due = -1;
-    auto consider = [&](int64_t when) {
-      if (when > 0 && (due < 0 || when < due))
-        due = when;
-    };
-    consider(cpu_until_ns_);
-    consider(release_due_ns_);
-    consider(orphan_due_ns_);
-    for (const Watched &w : watched_)
-      consider(w.since_ns + int64_t(tuning_.fence_patience_ms) * nsPerMs);
-
-    int timeout_ms = -1;
-    if (due >= 0)
-      timeout_ms = due <= now ? 0 : int((due - now + nsPerMs - 1) / nsPerMs);
-
-    if (poll(fds.data(), fds.size(), timeout_ms) < 0 && errno != EINTR) {
-      Log(ANDROID_LOG_ERROR, "poll: %s", strerror(errno));
+    if (poll(fds.data(), fds.size(), TimeoutMs(NowNs())) < 0 &&
+        errno != EINTR) {
+      host_.Log(ANDROID_LOG_ERROR, "poll failed; the governor stops");
       break;
     }
-    now = NowNs();
+    const int64_t now = NowNs();
 
-    /* Empty the mailbox. */
-    std::optional<Planned> planned;
-    std::vector<Submitted> submitted;
-    Power power = Power::on;
-    bool stop = false;
-    {
-      const std::lock_guard<std::mutex> lock(mailbox_mutex_);
-      if (fds[0].revents & POLLIN) {
-        uint64_t drained = 0;
-        if (read(event_fd_, &drained, sizeof(drained)) < 0 && errno != EAGAIN)
-          Log(ANDROID_LOG_WARN, "eventfd read: %s", strerror(errno));
-      }
-      planned = std::move(pending_);
-      pending_.reset();
-      submitted.swap(submitted_);
-      power = power_;
-      stop = stop_;
-    }
-
-    if (stop) {
-      for (const Submitted &s : submitted)
-        if (s.fd >= 0)
-          close(s.fd);
+    Mail mail = TakeMail((fds[0].revents & POLLIN) != 0);
+    if (mail.stop) {
+      CloseAll(mail.submitted);
       DropEverything();
       break;
     }
 
-    if (power != Power::on) {
+    if (mail.power != Power::on) {
       /* A display going dark drops everything: no merge is coming, and
        * a floor left standing would hold the memory clock up through the
        * doze. */
-      for (const Submitted &s : submitted)
-        if (s.fd >= 0)
-          close(s.fd);
+      CloseAll(mail.submitted);
       DropEverything();
       continue;
     }
 
     /* Merges that went to the engine: the processor has done its part,
      * the fence is now what says when the engine has done its. */
-    for (const Submitted &s : submitted) {
-      if (s.fd >= 0)
-        watched_.push_back(Watched{s.fd, s.seq, now});
+    if (!mail.submitted.empty()) {
       orphan_due_ns_ = 0;
+      cpu_.Drop();
+      cpu_until_ns_ = 0;
     }
-    if (!submitted.empty())
-      DropCpu();
 
-    if (planned)
-      Decide(*planned, now);
+    JudgeFences(fds, now);
 
-    /* Fences that came due, or that were waited on long enough. */
-    bool any_done = false;
-    for (size_t i = 0; i < watched_.size();) {
-      const short revents = i + 1 < fds.size() && fds[i + 1].fd == watched_[i].fd
-                                ? fds[i + 1].revents
-                                : 0;
-      const bool signaled = (revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)) != 0;
-      const bool given_up =
-          now - watched_[i].since_ns >= int64_t(tuning_.fence_patience_ms) * nsPerMs;
-      if (!signaled && !given_up) {
-        ++i;
+    /* On the list after this round's fences were judged, so the poll set
+     * built before the sleep still matched the head of the list. */
+    for (Watched &w : mail.submitted) {
+      if (w.fd < 0)
         continue;
-      }
-      close(watched_[i].fd);
-      watched_.erase(watched_.begin() + i);
-      any_done = true;
-    }
-    if (any_done && watched_.empty() && floor_mhz_ != 0) {
-      release_due_ns_ = now + int64_t(tuning_.hold_ms) * nsPerMs;
-      orphan_due_ns_ = 0;
+      w.since_ns = now;
+      watched_.push_back(w);
     }
 
-    if (floor_mhz_ != 0 && watched_.empty()) {
-      if (release_due_ns_ != 0 && now >= release_due_ns_)
-        ReleaseFloor();
-      else if (release_due_ns_ == 0 && orphan_due_ns_ != 0 &&
-               now >= orphan_due_ns_)
-        ReleaseFloor();
-    }
+    if (mail.planned)
+      Decide(*mail.planned, now);
 
-    if (cpu_until_ns_ != 0 && now >= cpu_until_ns_)
-      DropCpu();
+    JudgeRelease(now);
+
+    if (cpu_until_ns_ != 0 && now >= cpu_until_ns_) {
+      cpu_.Drop();
+      cpu_until_ns_ = 0;
+    }
   }
 }
 
-int TegraGovernor::ReadProfile(int64_t now) {
-  if (profile_read_ns_ != 0 &&
-      now - profile_read_ns_ < int64_t(tuning_.profile_poll_ms) * nsPerMs)
-    return profile_;
-
-  profile_read_ns_ = now;
-  char value[PROPERTY_VALUE_MAX] = {};
-  if (property_get("sys.perf.profile", value, "") <= 0) {
-    profile_ = -1;
-    return profile_;
+void TegraGovernor::JudgeFences(const std::vector<struct pollfd> &fds,
+                                int64_t now) {
+  bool any_done = false;
+  std::vector<Watched> kept;
+  for (size_t i = 0; i < watched_.size(); ++i) {
+    const bool polled = i + 1 < fds.size();
+    const bool signaled =
+        polled &&
+        (fds[i + 1].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)) != 0;
+    const bool given_up = now - watched_[i].since_ns >=
+                          int64_t(tuning_.fence_patience_ms) * nsPerMs;
+    if (signaled || given_up) {
+      close(watched_[i].fd);
+      any_done = true;
+    } else {
+      kept.push_back(watched_[i]);
+    }
   }
-  profile_ = atoi(value);
-  return profile_;
+  watched_.swap(kept);
+
+  /* The floor outlives the last fence by the hold -- unless a frame has
+   * been planned whose merge has not reported yet: that merge is what the
+   * floor stands for now, and the orphan timer covers it instead. */
+  if (any_done && watched_.empty() && engine_.floor_mhz() != 0 &&
+      orphan_due_ns_ == 0)
+    release_due_ns_ = now + int64_t(tuning_.hold_ms) * nsPerMs;
+}
+
+void TegraGovernor::JudgeRelease(int64_t now) {
+  if (engine_.floor_mhz() == 0 || !watched_.empty())
+    return;
+  const bool held_long_enough = release_due_ns_ != 0 && now >= release_due_ns_;
+  const bool orphaned = orphan_due_ns_ != 0 && now >= orphan_due_ns_;
+  if (held_long_enough || orphaned) {
+    release_due_ns_ = 0;
+    orphan_due_ns_ = 0;
+    engine_.Release();
+  }
+}
+
+void TegraGovernor::KeepFloorFor(int64_t now) {
+  release_due_ns_ = 0;
+  orphan_due_ns_ = now + int64_t(tuning_.orphan_ms) * nsPerMs;
+}
+
+void TegraGovernor::Trace(const MergeEstimate &e, bool cold, int profile) {
+  host_.TraceInt("hwc_gov_est_kcycles", int32_t(e.cycles / 1000.0));
+  host_.TraceInt("hwc_gov_budget_us", int32_t(e.budget_ns / nsPerUs));
+  host_.TraceInt("hwc_gov_need_mhz", int32_t(e.need_mhz));
+  host_.TraceInt("hwc_gov_step_mhz", int32_t(e.step_mhz));
+  host_.TraceInt("hwc_gov_cold", cold ? 1 : 0);
+  host_.TraceInt("hwc_gov_late", (e.late || e.beyond) ? 1 : 0);
+  host_.TraceInt("hwc_gov_profile", profile);
 }
 
 void TegraGovernor::Decide(const Planned &planned, int64_t now) {
   const Frame &f = planned.frame;
 
   if (!f.merge_planned || f.merge_reuse_predicted) {
-    host_->TraceInt("hwc_gov_need_mhz", 0);
+    host_.TraceInt("hwc_gov_need_mhz", 0);
     return;
   }
 
-  const int profile = ReadProfile(now);
-  const bool power_save = profile == 0;
-
-  const int64_t last_use = std::max(f.last_engine_use_ns, last_warm_ns_);
-  const bool cold =
-      last_use == 0 || now - last_use > int64_t(tuning_.powergate_ms) * nsPerMs;
-
-  /* The model: half a clock per pixel, over the larger of what is read
-   * and what is written, per member. */
-  uint64_t area = 0;
-  for (const Member &m : planned.members) {
-    const uint64_t src = uint64_t(m.src_w) * m.src_h;
-    const uint64_t dst = uint64_t(m.dst_w) * m.dst_h;
-    area += std::max(src, dst);
-  }
-  const double cycles = double(area) / tuning_.pixels_per_clock *
-                        tuning_.factor_pct / 100.0;
-
-  /* The latch this frame is aiming at. With the previous flip landed the
-   * frame targets the nearest vsync; otherwise it waits for that one to
-   * carry the previous frame and targets the one after. */
-  int64_t deadline = 0;
-  if (f.last_vsync_ns > 0 && f.vsync_period_ns > 0) {
-    const int64_t elapsed = now - f.last_vsync_ns;
-    const int64_t periods = elapsed >= 0 ? elapsed / f.vsync_period_ns : -1;
-    int64_t next = f.last_vsync_ns + (periods + 1) * f.vsync_period_ns;
-    if (!f.previous_flip_landed)
-      next += f.vsync_period_ns;
-    deadline = next - int64_t(tuning_.latch_margin_us) * nsPerUs;
-  } else {
-    deadline = now + int64_t(f.previous_flip_landed ? tuning_.budget_empty_us
-                                                    : tuning_.budget_waited_us) *
-                         nsPerUs;
-  }
-
+  const int profile =
+      profile_.Read(now, int64_t(tuning_.profile_poll_ms) * nsPerMs);
+  const bool power_save = profile == PerfProfile::powerSave;
+  const bool cold = EngineCold(f, last_warm_ns_, now, tuning_);
   const bool lift_cpu = cold && f.previous_flip_landed && !power_save &&
-                        cpu_fd_ >= 0 && tuning_.cpu_khz != 0 && !disabled_;
-  const int64_t submit_us =
-      cold ? (lift_cpu ? tuning_.submit_cold_us : tuning_.submit_cold_slow_us)
-           : tuning_.submit_warm_us;
-  const int64_t submit_end =
-      now + (int64_t(tuning_.lead_us) + submit_us) * nsPerUs;
+                        cpu_.available() && tuning_.cpu_khz != 0 &&
+                        engine_.usable();
 
-  int64_t budget = deadline - submit_end;
-  bool late = false;
-  if (budget < nsPerMs) {
-    budget = nsPerMs;
-    late = true;
-  }
-
-  const double need_hz = cycles * double(nsPerSec) / double(budget);
-  uint32_t need_mhz = uint32_t(std::min<double>(need_hz / 1e6, 4000.0));
-
-  uint32_t step = 0;
-  for (uint32_t s : clockStepsMhz) {
-    if (s >= need_mhz) {
-      step = s;
-      break;
-    }
-  }
-  const bool beyond = step == 0;
-  if (beyond)
-    step = topStepMhz;
-  if (cold && step < tuning_.min_cold_mhz)
-    step = tuning_.min_cold_mhz;
-
-  host_->TraceInt("hwc_gov_est_kcycles", int32_t(cycles / 1000.0));
-  host_->TraceInt("hwc_gov_budget_us", int32_t(budget / nsPerUs));
-  host_->TraceInt("hwc_gov_need_mhz", int32_t(need_mhz));
-  host_->TraceInt("hwc_gov_cold", cold ? 1 : 0);
-  host_->TraceInt("hwc_gov_late", (late || beyond) ? 1 : 0);
-  host_->TraceInt("hwc_gov_profile", profile);
-
-  host_->TraceInt("hwc_gov_step_mhz", int32_t(step));
+  const MergeEstimate estimate =
+      EstimateMerge(f, planned.members.data(), planned.members.size(), now,
+                    tuning_, cold, lift_cpu);
+  Trace(estimate, cold, profile);
 
   if (power_save) {
     /* The one thing allowed here: a cold engine is woken, nothing is
@@ -666,8 +324,8 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now) {
   }
 
   if (cold) {
-    if (lift_cpu)
-      LiftCpu(now);
+    if (lift_cpu && cpu_.Lift(tuning_.cpu_khz))
+      cpu_until_ns_ = now + int64_t(tuning_.cpu_cap_ms) * nsPerMs;
     /* Before the floor, and it has to be: a floor filed against a
      * powered-down engine is applied as it comes up, and coming up
      * straight onto the top step cost tens of milliseconds of sleeping in
@@ -676,33 +334,29 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now) {
     Warm(now);
   }
 
-  if (disabled_)
+  if (!engine_.usable())
     return;
 
-  const std::optional<uint32_t> current = CurrentMhz();
-  const uint32_t have = std::max(current.value_or(0), floor_mhz_);
-  if (step <= have) {
-    /* Already there, by devfreq's doing or by a floor still standing from
-     * the previous merge. A standing floor is kept standing: this merge's
-     * fence will extend it. */
-    if (floor_mhz_ != 0) {
-      release_due_ns_ = 0;
-      orphan_due_ns_ = now + int64_t(tuning_.orphan_ms) * nsPerMs;
-    }
+  /* Only upward from what the engine is already doing, by devfreq's doing
+   * or by a floor still standing from the previous merge. A standing
+   * floor is kept standing: this merge's fence will extend it. */
+  const uint32_t have =
+      std::max(engine_.CurrentMhz().value_or(0), engine_.floor_mhz());
+  if (estimate.step_mhz <= have) {
+    if (engine_.floor_mhz() != 0)
+      KeepFloorFor(now);
     return;
   }
 
-  if (SetFloor(step)) {
-    release_due_ns_ = 0;
-    orphan_due_ns_ = now + int64_t(tuning_.orphan_ms) * nsPerMs;
-  }
+  if (engine_.SetFloor(estimate.step_mhz))
+    KeepFloorFor(now);
 }
 
 void TegraGovernor::Warm(int64_t now) {
-  const int fd = host_->WarmEngine();
+  const int fd = host_.WarmEngine();
   if (fd < 0) {
     if (!warm_refused_logged_) {
-      Log(ANDROID_LOG_WARN, "the engine would not take the warm-up pass");
+      host_.Log(ANDROID_LOG_WARN, "the engine would not take the warm-up pass");
       warm_refused_logged_ = true;
     }
     return;
@@ -711,93 +365,27 @@ void TegraGovernor::Warm(int64_t now) {
    * engine up, and the merge queues behind it on the same channel. */
   close(fd);
   last_warm_ns_ = now;
-  host_->TraceInt("hwc_gov_warm", 1);
-  host_->TraceInt("hwc_gov_warm", 0);
-}
-
-std::optional<uint32_t> TegraGovernor::CurrentMhz() {
-  if (vic_fd_ < 0)
-    return std::nullopt;
-  ClockRateArgs args = {0, 0};
-  if (ioctl(vic_fd_, ioctlGetClockRate, &args) < 0)
-    return std::nullopt;
-  return args.rate / 1000000U;
-}
-
-bool TegraGovernor::SetFloor(uint32_t mhz) {
-  if (vic_fd_ < 0 || disabled_)
-    return false;
-
-  ClockRateArgs args = {mhz * 1000000U, 0};
-  if (ioctl(vic_fd_, ioctlSetClockRate, &args) < 0) {
-    const int err = errno;
-    if (err == EPERM || err == ENODEV || err == EACCES) {
-      Log(ANDROID_LOG_ERROR, "engine clock request refused (%s); a witness "
-          "from here on", strerror(err));
-      disabled_ = true;
-    } else {
-      Log(ANDROID_LOG_WARN, "engine clock request %u MHz: %s", mhz,
-          strerror(err));
-    }
-    return false;
-  }
-
-  floor_mhz_ = mhz;
-  host_->TraceInt("hwc_vic_floor", int32_t(mhz));
-  return true;
-}
-
-void TegraGovernor::ReleaseFloor() {
-  release_due_ns_ = 0;
-  orphan_due_ns_ = 0;
-  if (floor_mhz_ == 0)
-    return;
-  floor_mhz_ = 0;
-  if (vic_fd_ < 0)
-    return;
-  ClockRateArgs args = {0, 0};
-  if (ioctl(vic_fd_, ioctlSetClockRate, &args) < 0)
-    Log(ANDROID_LOG_WARN, "engine clock release: %s", strerror(errno));
-  host_->TraceInt("hwc_vic_floor", 0);
-}
-
-void TegraGovernor::LiftCpu(int64_t now) {
-  if (cpu_fd_ < 0)
-    return;
-  /* Text, with a line break: the node reads exactly four bytes as a binary
-   * word, and anything else as decimal. */
-  char text[24];
-  const int n = snprintf(text, sizeof(text), "%u\n", tuning_.cpu_khz);
-  if (write(cpu_fd_, text, size_t(n)) < 0) {
-    Log(ANDROID_LOG_WARN, "processor floor: %s", strerror(errno));
-    close(cpu_fd_);
-    cpu_fd_ = -1;
-    return;
-  }
-  cpu_until_ns_ = now + int64_t(tuning_.cpu_cap_ms) * nsPerMs;
-  host_->TraceInt("hwc_cpu_floor_khz", int32_t(tuning_.cpu_khz));
-}
-
-void TegraGovernor::DropCpu() {
-  if (cpu_until_ns_ == 0)
-    return;
-  cpu_until_ns_ = 0;
-  if (cpu_fd_ < 0)
-    return;
-  if (write(cpu_fd_, "0\n", 2) < 0)
-    Log(ANDROID_LOG_WARN, "processor floor release: %s", strerror(errno));
-  host_->TraceInt("hwc_cpu_floor_khz", 0);
+  host_.TraceInt("hwc_gov_warm", 1);
+  host_.TraceInt("hwc_gov_warm", 0);
 }
 
 void TegraGovernor::DropEverything() {
-  for (const Watched &w : watched_)
-    close(w.fd);
+  CloseAll(watched_);
   watched_.clear();
-  ReleaseFloor();
-  DropCpu();
+  release_due_ns_ = 0;
+  orphan_due_ns_ = 0;
+  engine_.Release();
+  cpu_.Drop();
+  cpu_until_ns_ = 0;
 }
 
-}  // namespace
+}  // namespace android::hwc::governor::tegra
+
+/* The library's entry points. */
+
+using android::hwc::governor::Governor;
+using android::hwc::governor::GovernorHost;
+using android::hwc::governor::tegra::TegraGovernor;
 
 extern "C" uint32_t hwc_governor_api_version() {
   return android::hwc::governor::apiVersion;
@@ -806,7 +394,7 @@ extern "C" uint32_t hwc_governor_api_version() {
 extern "C" Governor *hwc_governor_create(GovernorHost *host) {
   if (host == nullptr)
     return nullptr;
-  auto *governor = new TegraGovernor(host);
+  auto *governor = new TegraGovernor(*host);
   if (!governor->Start()) {
     delete governor;
     return nullptr;

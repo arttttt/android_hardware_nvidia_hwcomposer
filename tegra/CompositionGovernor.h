@@ -19,6 +19,7 @@
 #include <memory>
 #include <mutex>
 
+#include "governor/GovernorLibrary.h"
 #include "governor/HwcGovernor.h"
 #include "tegra/VicSession.h"
 
@@ -27,15 +28,16 @@ namespace hwc {
 
 /* The composer's end of the composition load governor.
  *
- * Loads the policy library once, hands it the composer's services, and
- * forwards the frame events to it. Every call into the library goes through
- * one lock, and the same lock is what makes destruction safe: once the
- * library is being taken down, nothing further is forwarded, and the
- * library's own thread is joined before the engine it may still be warming
- * is closed. Owned by the pipeline, which destroys it before the engine.
+ * Hands the policy library the composer's services -- the warm-up pass,
+ * tracing, the log -- and forwards the frame events to it. Every call into
+ * the library goes through one lock, and the same lock is what makes
+ * destruction safe: once the library is being taken down, nothing further
+ * is forwarded, and the library's own thread is joined before the engine
+ * it may still be warming is closed. Owned by the pipeline, which destroys
+ * it before the engine.
  *
- * Null where the library is absent or answers with another API version --
- * the composer then runs exactly as it did without one.
+ * Null where there is no library to load -- the composer then runs exactly
+ * as it did without one.
  */
 class CompositionGovernor final : public governor::GovernorHost {
  public:
@@ -61,11 +63,13 @@ class CompositionGovernor final : public governor::GovernorHost {
   void Log(int prio, const char *msg) override;
 
  private:
-  CompositionGovernor(void *library, VicSession *vic);
+  CompositionGovernor(std::unique_ptr<GovernorLibrary> library,
+                      VicSession *vic);
 
   bool Start();
+  void AllocateWarmBuffers();
 
-  void *library_ = nullptr;
+  std::unique_ptr<GovernorLibrary> library_;
   VicSession *const vic_;
 
   /* The two buffers the warm-up pass copies between. Allocated on the
@@ -80,7 +84,6 @@ class CompositionGovernor final : public governor::GovernorHost {
    * nothing to call. */
   std::mutex callback_mutex_;
   governor::Governor *governor_ = nullptr;
-  void (*destroy_)(governor::Governor *) = nullptr;
 };
 
 }  // namespace hwc
