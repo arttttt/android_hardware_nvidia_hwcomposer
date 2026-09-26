@@ -138,19 +138,17 @@ void TegraGovernor::ThreadFn() {
     const int64_t now = NowNs();
 
     Mailbox::Contents mail = mailbox_.Take((fds[0].revents & POLLIN) != 0);
-    if (mail.stop) {
-      DropEverything();
-      break;
-    }
-
-    if (mail.power != Power::on) {
-      /* A display going dark drops everything: no merge is coming, and
-       * a floor left standing would hold the memory clock up through the
-       * doze. The fences it reported are closed unwatched. */
+    if (mail.stop || mail.power != Power::on) {
+      /* Stopping, or a display going dark, drops everything: no merge is
+       * coming, and a floor left standing would hold the memory clock up
+       * through the doze. The fences just taken are ours to close, and
+       * are closed unwatched. */
       for (const Watched &w : mail.submitted)
         if (w.fd >= 0)
           close(w.fd);
       DropEverything();
+      if (mail.stop)
+        break;
       continue;
     }
 
