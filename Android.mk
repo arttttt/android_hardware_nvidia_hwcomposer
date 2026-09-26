@@ -150,3 +150,32 @@ LOCAL_SRC_FILES := \
     tegra/VicSession.cpp
 
 include $(BUILD_SHARED_LIBRARY)
+
+# The composition load governor's policy, as its own library. The composer
+# above loads it by this name from the same directory, through the interface
+# in governor/HwcGovernor.h, and runs without it if it is absent. Kept apart
+# so the policy -- engine clocks, nvhost, pm_qos, all of it platform -- can be
+# replaced or removed without touching the composer.
+include $(CLEAR_VARS)
+
+LOCAL_MODULE := hwcgovernor.$(TARGET_BOARD_PLATFORM)
+LOCAL_MODULE_RELATIVE_PATH := hw
+LOCAL_MODULE_TAGS := optional
+LOCAL_PROPRIETARY_MODULE := true
+
+LOCAL_CFLAGS := \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -std=c++17
+
+LOCAL_C_INCLUDES := $(LOCAL_PATH)
+
+LOCAL_SHARED_LIBRARIES := \
+    liblog \
+    libcutils
+
+LOCAL_SRC_FILES := \
+    governor/TegraGovernor.cpp
+
+include $(BUILD_SHARED_LIBRARY)
