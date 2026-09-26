@@ -19,8 +19,9 @@
 #include <memory>
 #include <mutex>
 
-#include "governor/GovernorLibrary.h"
 #include "governor/HwcGovernor.h"
+#include "tegra/EngineWarmer.h"
+#include "tegra/GovernorLibrary.h"
 #include "tegra/VicSession.h"
 
 namespace android {
@@ -67,17 +68,13 @@ class CompositionGovernor final : public governor::GovernorHost {
                       VicSession *vic);
 
   bool Start();
-  void AllocateWarmBuffers();
 
   std::unique_ptr<GovernorLibrary> library_;
   VicSession *const vic_;
 
-  /* The two buffers the warm-up pass copies between. Allocated on the
-   * main thread at creation, deliberately: the zone opens its device on
-   * the first allocation, and two threads asking at once would race for
-   * it. */
-  std::unique_ptr<VendorBuffer> warm_source_;
-  std::unique_ptr<VendorBuffer> warm_target_;
+  /* Null where the zone would not give its buffers; the governor then
+   * cannot wake the engine early, and is told so by the pass refusing. */
+  std::unique_ptr<EngineWarmer> warmer_;
 
   /* Held across every call into the library. Cleared under the lock before
    * the library is destroyed, so a callback racing the teardown finds

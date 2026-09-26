@@ -112,7 +112,6 @@ LOCAL_SRC_FILES := \
     display/DrmMode.cpp \
     display/DrmProperty.cpp \
     display/VSyncWorker.cpp \
-    governor/GovernorLibrary.cpp \
     stats/CompositionStatsAtomReporter.cpp \
     stats/CountActiveDisplaysReporter.cpp \
     stats/DisplayConfigurationResultReporter.cpp \
@@ -144,7 +143,9 @@ LOCAL_SRC_FILES := \
     tegra/CursorUnit.cpp \
     tegra/RefreshGovernor.cpp \
     tegra/TegraPlane.cpp \
+    tegra/EngineWarmer.cpp \
     tegra/FbDevice.cpp \
+    tegra/GovernorLibrary.cpp \
     tegra/MergeDescription.cpp \
     tegra/TegraDisplayPipeline.cpp \
     tegra/TegraVSyncSource.cpp \
@@ -180,6 +181,9 @@ LOCAL_SHARED_LIBRARIES := \
 LOCAL_SRC_FILES := \
     governor/CpuFloor.cpp \
     governor/EngineClock.cpp \
+    governor/FenceWatch.cpp \
+    governor/Log.cpp \
+    governor/Mailbox.cpp \
     governor/MergePlan.cpp \
     governor/PerfProfile.cpp \
     governor/TegraGovernor.cpp \

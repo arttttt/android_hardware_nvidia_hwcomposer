@@ -18,14 +18,14 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <stdio.h>
-#include <string.h>
 #include <sys/ioctl.h>
+#include <string.h>
 #include <unistd.h>
 
 #include <android/log.h>
 
 #include "governor/HwcGovernor.h"
+#include "governor/Log.h"
 
 namespace android::hwc::governor::tegra {
 
@@ -55,9 +55,7 @@ EngineClock::~EngineClock() {
 bool EngineClock::Open() {
   fd_ = open(devicePath, O_RDWR | O_CLOEXEC);
   if (fd_ < 0) {
-    char msg[128];
-    snprintf(msg, sizeof(msg), "%s: %s", devicePath, strerror(errno));
-    host_.Log(ANDROID_LOG_ERROR, msg);
+    LogErrno(host_, ANDROID_LOG_ERROR, devicePath, errno);
     return false;
   }
   return true;
@@ -81,15 +79,12 @@ bool EngineClock::Request(uint32_t rate_hz, const char *what) {
     return true;
 
   const int err = errno;
-  char msg[160];
   if (err == EPERM || err == EACCES || err == ENODEV) {
     refused_ = true;
-    snprintf(msg, sizeof(msg), "%s refused (%s); a witness from here on",
-             what, strerror(err));
-    host_.Log(ANDROID_LOG_ERROR, msg);
+    Logf(host_, ANDROID_LOG_ERROR, "%s refused (%s); a witness from here on",
+         what, strerror(err));
   } else {
-    snprintf(msg, sizeof(msg), "%s: %s", what, strerror(err));
-    host_.Log(ANDROID_LOG_WARN, msg);
+    LogErrno(host_, ANDROID_LOG_WARN, what, err);
   }
   return false;
 }

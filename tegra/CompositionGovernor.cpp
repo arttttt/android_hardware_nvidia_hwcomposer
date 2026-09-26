@@ -23,20 +23,10 @@
 #include <cutils/trace.h>
 #include <log/log.h>
 
-#include "utils/fd.h"
 #include "utils/log.h"
 
 namespace android {
 namespace hwc {
-
-namespace {
-
-/* The warm-up pass's extent. The engine's coming up costs the same
- * whatever the job's size, so the job is as small as the zone's row grain
- * lets it be. */
-constexpr uint32_t warmSide = 8;
-
-}  // namespace
 
 std::unique_ptr<CompositionGovernor> CompositionGovernor::Load(
     VicSession *vic) {
@@ -61,24 +51,11 @@ CompositionGovernor::CompositionGovernor(
     : library_(std::move(library)), vic_(vic) {
 }
 
-void CompositionGovernor::AllocateWarmBuffers() {
-  warm_source_ = vic_->AllocateZoneTarget(warmSide, warmSide);
-  warm_target_ = vic_->AllocateZoneTarget(warmSide, warmSide);
-  if (warm_source_ && warm_target_)
-    return;
-
-  /* Not fatal: the governor can still raise the clock, it just cannot
-   * wake the engine early. */
-  ALOGW("composition governor: the zone would not give the warm-up "
-        "buffers; the engine will not be warmed");
-  warm_source_.reset();
-  warm_target_.reset();
-}
-
 bool CompositionGovernor::Start() {
   /* Before the library exists, so a warm-up it asks for on its first
-   * breath finds them ready. */
-  AllocateWarmBuffers();
+   * breath finds the buffers ready; on this thread, so the zone's device
+   * is opened by one thread only. */
+  warmer_ = EngineWarmer::Create(vic_);
 
   governor::Governor *created = library_->Create(this);
   if (created == nullptr)
@@ -105,9 +82,6 @@ CompositionGovernor::~CompositionGovernor() {
    * destructor has returned. */
   if (governor != nullptr)
     library_->Destroy(governor);
-
-  warm_target_.reset();
-  warm_source_.reset();
 }
 
 void CompositionGovernor::FramePlanned(const governor::Frame &frame) {
@@ -139,29 +113,7 @@ void CompositionGovernor::PowerMode(governor::Power mode) {
 }
 
 int CompositionGovernor::WarmEngine() {
-  if (!warm_source_ || !warm_target_)
-    return -1;
-
-  /* A source of the composer's own: the engine reads it by the words the
-   * library built when the buffer was born, which is what the `vendor`
-   * seat is for. Verbatim, unturned, nothing to wait on. */
-  VicSession::Layer layer = {};
-  layer.handle = nullptr;
-  layer.vendor = warm_source_.get();
-  layer.source_right = static_cast<float>(warmSide);
-  layer.source_bottom = static_cast<float>(warmSide);
-  layer.display_right = static_cast<int32_t>(warmSide);
-  layer.display_bottom = static_cast<int32_t>(warmSide);
-  layer.premultiplied = true;
-  layer.alpha = 1.0F;
-  layer.acquire_fence = -1;
-
-  const drm_hwcomposer::SharedFd done =
-      vic_->CopyLayer(*warm_target_, layer, warmSide, warmSide);
-  if (!done)
-    return -1;
-
-  return drm_hwcomposer::DupFd(done);
+  return warmer_ ? warmer_->Run() : -1;
 }
 
 void CompositionGovernor::TraceInt(const char *name, int32_t value) {

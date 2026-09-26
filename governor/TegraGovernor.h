@@ -18,14 +18,15 @@
 
 #include <stdint.h>
 
-#include <mutex>
-#include <optional>
+#include <atomic>
 #include <thread>
 #include <vector>
 
 #include "governor/CpuFloor.h"
 #include "governor/EngineClock.h"
+#include "governor/FenceWatch.h"
 #include "governor/HwcGovernor.h"
+#include "governor/Mailbox.h"
 #include "governor/MergePlan.h"
 #include "governor/PerfProfile.h"
 #include "governor/Tuning.h"
@@ -42,32 +43,18 @@
  * The parts: the model (MergePlan) turns a snapshot into a step; the engine
  * clock (EngineClock) and the processor floor (CpuFloor) are the two doors
  * into the kernel; the profile (PerfProfile) says whether the device is
- * saving power; the tuning (Tuning) holds the numbers. This class is the
- * thread that joins them: it keeps the mailbox the composer drops snapshots
- * in, the fences of merges in flight, and the timers that let the floor go.
+ * saving power; the tuning (Tuning) holds the numbers; the mailbox
+ * (Mailbox) is where the composer's threads leave their news, and the
+ * fence watch (FenceWatch) is how merges in flight are followed. This class
+ * is the thread that joins them and the timers that let the floor go.
  *
  * Everything that may sleep -- the clock request, the warm-up pass, the
- * processor floor -- runs on this thread. The composer's threads only drop
- * a snapshot in the mailbox and ring an eventfd. The thread waits in one
- * place, poll(), on that eventfd and on the fences of merges in flight, so
- * a merge finishing and a frame being planned are the same kind of wake-up.
+ * processor floor -- runs on this thread. The thread waits in one place,
+ * poll(), on the mailbox's descriptor and on the fences, so a merge
+ * finishing and a frame being planned are the same kind of wake-up.
  */
 
 namespace android::hwc::governor::tegra {
-
-/* A snapshot as the thread keeps it: the frame with its members copied
- * alongside, since the frame's own pointer dies with the call. */
-struct Planned {
-  Frame frame;
-  std::vector<Member> members;
-};
-
-/* A merge fence the thread is watching. */
-struct Watched {
-  int fd;
-  uint64_t seq;
-  int64_t since_ns;
-};
 
 class TegraGovernor final : public Governor {
  public:
@@ -78,57 +65,44 @@ class TegraGovernor final : public Governor {
   TegraGovernor &operator=(const TegraGovernor &) = delete;
 
   /* Reads the tuning, opens the kernel's doors and starts the thread.
-   * False only if the thread has nothing to wait on. */
+   * False only if the thread would have nothing to wait on. */
   bool Start();
 
-  /* Governor: the composer's side. Each copies, drops in the mailbox,
-   * rings and returns. */
+  /* Governor: the composer's side. Each leaves its news in the mailbox
+   * and returns. */
   void FramePlanned(const Frame &frame) override;
   void MergeSubmitted(uint64_t seq, int merge_fence_fd) override;
   void FramePresented(uint64_t seq) override;
   void PowerMode(Power mode) override;
 
  private:
-  /* What the thread takes out of the mailbox in one go. */
-  struct Mail {
-    std::optional<Planned> planned;
-    std::vector<Watched> submitted;
-    Power power;
-    bool stop;
-  };
-
-  void Ring();
   void ThreadFn();
-  Mail TakeMail(bool rung);
   int TimeoutMs(int64_t now) const;
-  void JudgeFences(const std::vector<struct pollfd> &fds, int64_t now);
-  void JudgeRelease(int64_t now);
-
   void Decide(const Planned &planned, int64_t now);
   void Trace(const MergeEstimate &estimate, bool cold, int profile);
   void Warm(int64_t now);
   void KeepFloorFor(int64_t now);
+  void JudgeRelease(int64_t now);
+  void DropCpu();
   void DropEverything();
 
   GovernorHost &host_;
   Tuning tuning_;
+
+  /* Set by the thread on its way out after a failure: from then on plans
+   * are ignored and fences are closed on arrival, since nobody would
+   * take them out of the mailbox. */
+  std::atomic<bool> dead_{false};
+
+  Mailbox mailbox_;
   EngineClock engine_;
   CpuFloor cpu_;
   PerfProfile profile_;
 
-  int event_fd_ = -1;
-
-  /* The mailbox. Written by the composer's threads, emptied by ours. */
-  std::mutex mailbox_mutex_;
-  std::optional<Planned> pending_;
-  std::vector<Watched> submitted_;
-  Power power_ = Power::on;
-  bool stop_ = false;
-
   std::thread thread_;
 
   /* Thread-only state from here down. */
-  std::vector<Watched> watched_;
+  FenceWatch fences_;
   int64_t release_due_ns_ = 0;  /* when the floor may go, nought if not yet */
   int64_t orphan_due_ns_ = 0;   /* floor raised, no merge reported by then */
   int64_t cpu_until_ns_ = 0;    /* processor lifted until, nought if not */

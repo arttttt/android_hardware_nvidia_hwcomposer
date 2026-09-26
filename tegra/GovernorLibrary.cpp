@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "governor/GovernorLibrary.h"
+#include "tegra/GovernorLibrary.h"
 
 #include <dlfcn.h>
 

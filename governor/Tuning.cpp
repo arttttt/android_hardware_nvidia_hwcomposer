@@ -23,6 +23,7 @@
 #include <android/log.h>
 
 #include "governor/HwcGovernor.h"
+#include "governor/Log.h"
 
 namespace android::hwc::governor::tegra {
 
@@ -70,10 +71,8 @@ char *Trim(char *line) {
 
 void Complain(GovernorHost &log, const char *path, unsigned line,
               const char *what, const char *detail) {
-  char msg[200];
-  snprintf(msg, sizeof(msg), "%s:%u: %s%s%s", path, line, what,
-           detail != nullptr ? ": " : "", detail != nullptr ? detail : "");
-  log.Log(ANDROID_LOG_WARN, msg);
+  Logf(log, ANDROID_LOG_WARN, "%s:%u: %s%s%s", path, line, what,
+       detail != nullptr ? ": " : "", detail != nullptr ? detail : "");
 }
 
 }  // namespace
@@ -100,9 +99,11 @@ bool ReadTuningFile(const char *path, Tuning *tuning, GovernorHost &log) {
     const char *name = Trim(text);
     const char *value = Trim(equals + 1);
 
+    /* strtoul takes a sign and wraps; a setting here is never negative. */
     char *rest = nullptr;
     const unsigned long parsed = strtoul(value, &rest, 10);
-    if (rest == value || *rest != '\0' || parsed > UINT32_MAX) {
+    if (*value == '-' || *value == '+' || rest == value || *rest != '\0' ||
+        parsed > UINT32_MAX) {
       Complain(log, path, number, "not a number", value);
       continue;
     }

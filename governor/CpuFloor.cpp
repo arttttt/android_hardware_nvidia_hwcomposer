@@ -18,13 +18,13 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <stdio.h>
-#include <string.h>
+#include <stdint.h>
 #include <unistd.h>
 
 #include <android/log.h>
 
 #include "governor/HwcGovernor.h"
+#include "governor/Log.h"
 
 namespace android::hwc::governor::tegra {
 
@@ -42,10 +42,8 @@ CpuFloor::~CpuFloor() {
 bool CpuFloor::Open() {
   fd_ = open(nodePath, O_WRONLY | O_CLOEXEC);
   if (fd_ < 0) {
-    char msg[128];
-    snprintf(msg, sizeof(msg), "%s: %s; the processor will not be lifted",
-             nodePath, strerror(errno));
-    host_.Log(ANDROID_LOG_WARN, msg);
+    LogErrno(host_, ANDROID_LOG_WARN, nodePath, errno);
+    host_.Log(ANDROID_LOG_WARN, "the processor will not be lifted");
     return false;
   }
   return true;
@@ -55,17 +53,15 @@ bool CpuFloor::Write(uint32_t khz) {
   if (fd_ < 0)
     return false;
 
-  /* Text, with a line break: the node reads exactly four bytes as a binary
-   * word, and anything else as decimal. */
-  char text[24];
-  const int n = snprintf(text, sizeof(text), "%u\n", khz);
-  if (write(fd_, text, static_cast<size_t>(n)) >= 0)
+  /* Exactly four bytes: the node takes those as a binary word, and
+   * anything else as hexadecimal text -- which is not what a rate written
+   * in decimal means. The word is what is meant, with nothing to parse. */
+  const int32_t word = static_cast<int32_t>(khz);
+  if (write(fd_, &word, sizeof(word)) == static_cast<ssize_t>(sizeof(word)))
     return true;
 
-  char msg[128];
-  snprintf(msg, sizeof(msg), "%s: %s; giving the node up", nodePath,
-           strerror(errno));
-  host_.Log(ANDROID_LOG_WARN, msg);
+  LogErrno(host_, ANDROID_LOG_WARN, nodePath, errno);
+  host_.Log(ANDROID_LOG_WARN, "giving the processor floor up");
   close(fd_);
   fd_ = -1;
   lifted_ = false;

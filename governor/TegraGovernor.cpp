@@ -19,15 +19,14 @@
 #include <errno.h>
 #include <poll.h>
 #include <pthread.h>
-#include <stdio.h>
-#include <string.h>
-#include <sys/eventfd.h>
 #include <time.h>
 #include <unistd.h>
 
 #include <algorithm>
 
 #include <android/log.h>
+
+#include "governor/Log.h"
 
 namespace android::hwc::governor::tegra {
 
@@ -37,12 +36,6 @@ int64_t NowNs() {
   struct timespec ts = {};
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return int64_t(ts.tv_sec) * nsPerSec + int64_t(ts.tv_nsec);
-}
-
-void CloseAll(const std::vector<Watched> &fences) {
-  for (const Watched &w : fences)
-    if (w.fd >= 0)
-      close(w.fd);
 }
 
 }  // namespace
@@ -55,11 +48,8 @@ bool TegraGovernor::Start() {
   if (ReadTuningFile(tuningPath, &tuning_, host_))
     host_.Log(ANDROID_LOG_INFO, "tuning read from the device");
 
-  event_fd_ = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
-  if (event_fd_ < 0) {
-    char msg[96];
-    snprintf(msg, sizeof(msg), "eventfd: %s", strerror(errno));
-    host_.Log(ANDROID_LOG_ERROR, msg);
+  if (!mailbox_.Open()) {
+    LogErrno(host_, ANDROID_LOG_ERROR, "eventfd", errno);
     return false;
   }
 
@@ -72,52 +62,28 @@ bool TegraGovernor::Start() {
 }
 
 TegraGovernor::~TegraGovernor() {
-  {
-    const std::lock_guard<std::mutex> lock(mailbox_mutex_);
-    stop_ = true;
-  }
-  Ring();
+  mailbox_.Stop();
   if (thread_.joinable())
     thread_.join();
-
-  /* Whatever arrived after the thread emptied the mailbox for the last
-   * time is ours to close. */
-  CloseAll(submitted_);
-  submitted_.clear();
-
-  if (event_fd_ >= 0)
-    close(event_fd_);
-}
-
-void TegraGovernor::Ring() {
-  const uint64_t one = 1;
-  if (write(event_fd_, &one, sizeof(one)) < 0 && errno != EAGAIN)
-    host_.Log(ANDROID_LOG_WARN, "eventfd write failed");
+  /* Whatever arrived after the thread's last take is the mailbox's to
+   * close, on its way out. */
 }
 
 /* The composer's side. */
 
 void TegraGovernor::FramePlanned(const Frame &frame) {
-  Planned planned;
-  planned.frame = frame;
-  if (frame.members != nullptr && frame.member_count > 0)
-    planned.members.assign(frame.members, frame.members + frame.member_count);
-  planned.frame.members = nullptr;
-  planned.frame.member_count = 0;
-
-  {
-    const std::lock_guard<std::mutex> lock(mailbox_mutex_);
-    pending_ = std::move(planned);
-  }
-  Ring();
+  if (dead_.load())
+    return;
+  mailbox_.Plan(frame);
 }
 
 void TegraGovernor::MergeSubmitted(uint64_t seq, int merge_fence_fd) {
-  {
-    const std::lock_guard<std::mutex> lock(mailbox_mutex_);
-    submitted_.push_back(Watched{merge_fence_fd, seq, 0});
+  if (dead_.load()) {
+    if (merge_fence_fd >= 0)
+      close(merge_fence_fd);
+    return;
   }
-  Ring();
+  mailbox_.Submit(seq, merge_fence_fd);
 }
 
 void TegraGovernor::FramePresented(uint64_t /*seq*/) {
@@ -127,46 +93,23 @@ void TegraGovernor::FramePresented(uint64_t /*seq*/) {
 }
 
 void TegraGovernor::PowerMode(Power mode) {
-  {
-    const std::lock_guard<std::mutex> lock(mailbox_mutex_);
-    power_ = mode;
-    if (mode != Power::on)
-      pending_.reset();
-  }
-  Ring();
+  mailbox_.SetPower(mode);
 }
 
 /* The thread. */
 
-TegraGovernor::Mail TegraGovernor::TakeMail(bool rung) {
-  Mail mail;
-  const std::lock_guard<std::mutex> lock(mailbox_mutex_);
-  if (rung) {
-    uint64_t drained = 0;
-    if (read(event_fd_, &drained, sizeof(drained)) < 0 && errno != EAGAIN)
-      host_.Log(ANDROID_LOG_WARN, "eventfd read failed");
-  }
-  mail.planned = std::move(pending_);
-  pending_.reset();
-  mail.submitted.swap(submitted_);
-  mail.power = power_;
-  mail.stop = stop_;
-  return mail;
-}
-
 int TegraGovernor::TimeoutMs(int64_t now) const {
-  int64_t due = -1;
+  int64_t due = 0;
   auto consider = [&due](int64_t when) {
-    if (when > 0 && (due < 0 || when < due))
+    if (when > 0 && (due == 0 || when < due))
       due = when;
   };
   consider(cpu_until_ns_);
   consider(release_due_ns_);
   consider(orphan_due_ns_);
-  for (const Watched &w : watched_)
-    consider(w.since_ns + int64_t(tuning_.fence_patience_ms) * nsPerMs);
+  consider(fences_.NextGiveUpNs(int64_t(tuning_.fence_patience_ms) * nsPerMs));
 
-  if (due < 0)
+  if (due == 0)
     return -1;
   if (due <= now)
     return 0;
@@ -178,23 +121,24 @@ void TegraGovernor::ThreadFn() {
 
   std::vector<struct pollfd> fds;
   for (;;) {
-    /* The poll set: the eventfd first, then the watched fences in the
-     * list's order -- which is what JudgeFences relies on. */
+    /* The poll set: the mailbox first, then the fences in their order. */
     fds.clear();
-    fds.push_back(pollfd{event_fd_, POLLIN, 0});
-    for (const Watched &w : watched_)
-      fds.push_back(pollfd{w.fd, POLLIN, 0});
+    fds.push_back(pollfd{mailbox_.fd(), POLLIN, 0});
+    fences_.AppendPollSet(&fds);
 
     if (poll(fds.data(), fds.size(), TimeoutMs(NowNs())) < 0 &&
         errno != EINTR) {
-      host_.Log(ANDROID_LOG_ERROR, "poll failed; the governor stops");
+      /* Nothing stands after the thread: the floors go, and what the
+       * composer sends from now on is closed at the door. */
+      LogErrno(host_, ANDROID_LOG_ERROR, "poll; the governor stops", errno);
+      dead_.store(true);
+      DropEverything();
       break;
     }
     const int64_t now = NowNs();
 
-    Mail mail = TakeMail((fds[0].revents & POLLIN) != 0);
+    Mailbox::Contents mail = mailbox_.Take((fds[0].revents & POLLIN) != 0);
     if (mail.stop) {
-      CloseAll(mail.submitted);
       DropEverything();
       break;
     }
@@ -202,8 +146,10 @@ void TegraGovernor::ThreadFn() {
     if (mail.power != Power::on) {
       /* A display going dark drops everything: no merge is coming, and
        * a floor left standing would hold the memory clock up through the
-       * doze. */
-      CloseAll(mail.submitted);
+       * doze. The fences it reported are closed unwatched. */
+      for (const Watched &w : mail.submitted)
+        if (w.fd >= 0)
+          close(w.fd);
       DropEverything();
       continue;
     }
@@ -212,63 +158,35 @@ void TegraGovernor::ThreadFn() {
      * the fence is now what says when the engine has done its. */
     if (!mail.submitted.empty()) {
       orphan_due_ns_ = 0;
-      cpu_.Drop();
-      cpu_until_ns_ = 0;
+      DropCpu();
     }
 
-    JudgeFences(fds, now);
+    /* Judged against the slots built before the sleep; only then are the
+     * merges reported this round added, after those slots. */
+    const bool any_done =
+        fences_.Judge(fds, 1, now, int64_t(tuning_.fence_patience_ms) * nsPerMs);
+    for (const Watched &w : mail.submitted)
+      fences_.Add(w.fd, w.seq, now);
 
-    /* On the list after this round's fences were judged, so the poll set
-     * built before the sleep still matched the head of the list. */
-    for (Watched &w : mail.submitted) {
-      if (w.fd < 0)
-        continue;
-      w.since_ns = now;
-      watched_.push_back(w);
-    }
+    /* The floor outlives the last fence by the hold -- unless a frame has
+     * been planned whose merge has not reported yet: that merge is what
+     * the floor stands for now, and the orphan timer covers it instead. */
+    if (any_done && fences_.empty() && engine_.floor_mhz() != 0 &&
+        orphan_due_ns_ == 0)
+      release_due_ns_ = now + int64_t(tuning_.hold_ms) * nsPerMs;
 
     if (mail.planned)
       Decide(*mail.planned, now);
 
     JudgeRelease(now);
 
-    if (cpu_until_ns_ != 0 && now >= cpu_until_ns_) {
-      cpu_.Drop();
-      cpu_until_ns_ = 0;
-    }
+    if (cpu_until_ns_ != 0 && now >= cpu_until_ns_)
+      DropCpu();
   }
-}
-
-void TegraGovernor::JudgeFences(const std::vector<struct pollfd> &fds,
-                                int64_t now) {
-  bool any_done = false;
-  std::vector<Watched> kept;
-  for (size_t i = 0; i < watched_.size(); ++i) {
-    const bool polled = i + 1 < fds.size();
-    const bool signaled =
-        polled &&
-        (fds[i + 1].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)) != 0;
-    const bool given_up = now - watched_[i].since_ns >=
-                          int64_t(tuning_.fence_patience_ms) * nsPerMs;
-    if (signaled || given_up) {
-      close(watched_[i].fd);
-      any_done = true;
-    } else {
-      kept.push_back(watched_[i]);
-    }
-  }
-  watched_.swap(kept);
-
-  /* The floor outlives the last fence by the hold -- unless a frame has
-   * been planned whose merge has not reported yet: that merge is what the
-   * floor stands for now, and the orphan timer covers it instead. */
-  if (any_done && watched_.empty() && engine_.floor_mhz() != 0 &&
-      orphan_due_ns_ == 0)
-    release_due_ns_ = now + int64_t(tuning_.hold_ms) * nsPerMs;
 }
 
 void TegraGovernor::JudgeRelease(int64_t now) {
-  if (engine_.floor_mhz() == 0 || !watched_.empty())
+  if (engine_.floor_mhz() == 0 || !fences_.empty())
     return;
   const bool held_long_enough = release_due_ns_ != 0 && now >= release_due_ns_;
   const bool orphaned = orphan_due_ns_ != 0 && now >= orphan_due_ns_;
@@ -282,6 +200,11 @@ void TegraGovernor::JudgeRelease(int64_t now) {
 void TegraGovernor::KeepFloorFor(int64_t now) {
   release_due_ns_ = 0;
   orphan_due_ns_ = now + int64_t(tuning_.orphan_ms) * nsPerMs;
+}
+
+void TegraGovernor::DropCpu() {
+  cpu_until_ns_ = 0;
+  cpu_.Drop();
 }
 
 void TegraGovernor::Trace(const MergeEstimate &e, bool cold, int profile) {
@@ -370,13 +293,11 @@ void TegraGovernor::Warm(int64_t now) {
 }
 
 void TegraGovernor::DropEverything() {
-  CloseAll(watched_);
-  watched_.clear();
+  fences_.DropAll();
   release_due_ns_ = 0;
   orphan_due_ns_ = 0;
   engine_.Release();
-  cpu_.Drop();
-  cpu_until_ns_ = 0;
+  DropCpu();
 }
 
 }  // namespace android::hwc::governor::tegra
