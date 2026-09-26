@@ -152,13 +152,19 @@ TegraDisplayPipeline::TegraDisplayPipeline(TegraConnector &tegraConnector,
      * needs only the head's descriptor and the quiet. */
     mGovernor = RefreshGovernor::Probe(mHead->fd());
 
+    /* After the engine and its pool, on this thread: the governor's
+     * warm-up buffers come from the zone, whose device is opened on the
+     * first ask. Null is the ordinary answer on a device without the
+     * policy library. */
+    mCompositionGovernor = CompositionGovernor::Load(mVic.get());
+
     /* After the engine, and it has to be: the state manager is handed both
      * and would otherwise be handed nothing on the very boot where they were
      * wanted. */
     atomic_state_manager =
         std::make_unique<drm_hwcomposer::TegraAtomicStateManager>(
             *mHead, tegraConnector.GetModes(), mVic.get(), mScratch.get(),
-            mCursorUnit.get(), mGovernor.get());
+            mCursorUnit.get(), mGovernor.get(), mCompositionGovernor.get());
 
     /* The planner is not built here. Which one runs is a decision the backend
      * makes from a property, and a pipeline has no business overriding it. */
@@ -186,6 +192,9 @@ TegraDisplayPipeline::~TegraDisplayPipeline() {
      * through: letting go restores the native rate over the head's
      * descriptor. */
     mGovernor.reset();
+    /* Before the engine, and it has to be: the policy library's thread is
+     * joined here, and it may be inside a warm-up pass on that engine. */
+    mCompositionGovernor.reset();
     mVic.reset();
     mScratch.reset();
     planner.reset();

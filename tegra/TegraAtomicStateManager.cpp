@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#define ATRACE_TAG ATRACE_TAG_GRAPHICS
+
 #include "tegra/TegraAtomicStateManager.h"
 
 #include "tegra/CursorPlane.h"
@@ -39,6 +41,7 @@
 #include <vector>
 
 #include <cutils/properties.h>
+#include <cutils/trace.h>
 #include <tegra_dc_ext.h>
 
 #include "bufferinfo/BufferInfo.h"
@@ -52,6 +55,7 @@
 #include "tegra/FbDevice.h"
 #include "tegra/TegraFormat.h"
 #include "utils/Logging.h"
+#include "utils/Tracing.h"
 #include "utils/log.h"
 
 namespace android::drm_hwcomposer {
@@ -248,6 +252,20 @@ Due FenceDue(const SharedFd &fence) {
     return Due::kCouldNotAsk;
 
   struct sync_file_info *info = sync_file_info(*fence);
+  if (info == nullptr)
+    return Due::kCouldNotAsk;
+
+  const Due answer = info->status == 1 ? Due::kYes : Due::kNotYet;
+  sync_file_info_free(info);
+  return answer;
+}
+
+/* The same question of a descriptor that is only borrowed. */
+Due FenceDueFd(int fd) {
+  if (fd < 0)
+    return Due::kCouldNotAsk;
+
+  struct sync_file_info *info = sync_file_info(fd);
   if (info == nullptr)
     return Due::kCouldNotAsk;
 
@@ -775,6 +793,8 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
                                        ? joining.layer.bi->unique_id
                                        : 0);
         merge.transforms.push_back(TransformBits(joining.layer.pi.transform));
+        merge.formats.push_back(joining.layer.bi ? joining.layer.bi->format
+                                                 : 0);
         continue;
       }
 
@@ -864,25 +884,133 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
     window.blend = TEGRA_DC_EXT_BLEND_PREMULT;
   }
 
-  return std::make_unique<TegraAtomicRequest>(std::move(windows),
-                                              args.composition != nullptr,
-                                              args.power_mode,
-                                              std::move(merge),
-                                              args.color_matrix,
-                                              cursor,
-                                              std::move(note));
+  return std::make_unique<TegraAtomicRequest>(
+      std::move(windows), args.composition != nullptr, args.power_mode,
+      std::move(merge), args.color_matrix, cursor, std::move(note),
+      TegraAtomicRequest::Timing{args.last_vsync_ns, args.vsync_period_ns});
 }
 
 bool TegraAtomicStateManager::Test(const AtomicRequest &request) {
   const auto &tegra = static_cast<const TegraAtomicRequest &>(request);
-  return head_.test(tegra.GetWindows()) == 0;
+  if (head_.test(tegra.GetWindows()) != 0)
+    return false;
+
+  /* After the controller's yes, and only then: the planner asks about
+   * plans it will not commit, and a refused plan tells the governor
+   * nothing. Asked twice in one validate, the last accepted plan is the
+   * one the governor hears about, which is the one that will be shown. */
+  if (composition_governor_ != nullptr)
+    TellGovernor(tegra);
+  return true;
 }
 
-bool TegraAtomicStateManager::RecognisesMerge(
-    const TegraAtomicRequest::Merge &merge) {
+namespace {
+
+hwc::governor::Power GovernorPower(PowerMode mode) {
+  switch (mode) {
+    case PowerMode::kOff:
+      return hwc::governor::Power::off;
+    case PowerMode::kDoze:
+      return hwc::governor::Power::doze;
+    case PowerMode::kDozeSuspend:
+      return hwc::governor::Power::dozeSuspend;
+    case PowerMode::kSuspend:
+      return hwc::governor::Power::suspend;
+    case PowerMode::kOn:
+      break;
+  }
+  return hwc::governor::Power::on;
+}
+
+uint32_t SpanOf(float from, float to) {
+  const float span = to - from;
+  return span > 0.0F ? static_cast<uint32_t>(lroundf(span)) : 0;
+}
+
+uint32_t SpanOf(int32_t from, int32_t to) {
+  return to > from ? static_cast<uint32_t>(to - from) : 0;
+}
+
+}  // namespace
+
+void TegraAtomicStateManager::TellGovernor(const TegraAtomicRequest &tegra) {
+  const auto &merge = tegra.GetMerge();
+
+  std::vector<hwc::governor::Member> members;
+  members.reserve(merge.layers.size());
+  for (size_t i = 0; i < merge.layers.size(); ++i) {
+    const hwc::VicSession::Layer &l = merge.layers[i];
+    hwc::governor::Member m{};
+    m.src_w = SpanOf(l.source_left, l.source_right);
+    m.src_h = SpanOf(l.source_top, l.source_bottom);
+    m.dst_w = SpanOf(l.display_left, l.display_right);
+    m.dst_h = SpanOf(l.display_top, l.display_bottom);
+    m.format = i < merge.formats.size() ? merge.formats[i] : 0;
+    m.transform = i < merge.transforms.size() ? merge.transforms[i] : 0;
+    m.premultiplied = l.premultiplied;
+    m.acquire_signaled =
+        l.acquire_fence < 0 || FenceDueFd(l.acquire_fence) == Due::kYes;
+    members.push_back(m);
+  }
+
+  hwc::governor::Frame frame{};
+  frame.seq = ++planned_seq_;
+  frame.now_ns = GetTimeMonotonicNs();
+  frame.last_vsync_ns = tegra.GetTiming().last_vsync_ns;
+  frame.vsync_period_ns = tegra.GetTiming().vsync_period_ns;
+  frame.last_engine_use_ns = vic_ != nullptr ? vic_->last_use_ns() : 0;
+  frame.merge_planned = !merge.layers.empty();
+  /* The verdict execute will reach, predicted from the same key. Only a
+   * prediction: the client target can still arrive between now and then,
+   * and a wrong guess costs a floor or a warm-up, never a frame. */
+  frame.merge_reuse_predicted = frame.merge_planned && merge_cache_ &&
+                                JudgeMerge(merge) == MergeVerdict::kSame;
+  /* Whether the previous flip has landed decides which latch this frame
+   * can make: with the fence due, the nearest; otherwise the one after,
+   * since the present will first wait for it. */
+  frame.previous_flip_landed = FenceDue(previous_post_fence_) == Due::kYes;
+  frame.power_mode = static_cast<uint8_t>(GovernorPower(power_mode_seen_));
+  frame.target_w = merge.width;
+  frame.target_h = merge.height;
+  frame.members = members.data();
+  frame.member_count = static_cast<uint32_t>(members.size());
+
+  composition_governor_->FramePlanned(frame);
+}
+
+void TegraAtomicStateManager::MarkMergeForCalibration(
+    const TegraAtomicRequest::Merge &merge) const {
+  if (!ATRACE_ENABLED())
+    return;
+
+  uint64_t src = 0;
+  uint64_t dst = 0;
+  for (const hwc::VicSession::Layer &l : merge.layers) {
+    src += static_cast<uint64_t>(SpanOf(l.source_left, l.source_right)) *
+           SpanOf(l.source_top, l.source_bottom);
+    dst += static_cast<uint64_t>(SpanOf(l.display_left, l.display_right)) *
+           SpanOf(l.display_top, l.display_bottom);
+  }
+  const unsigned turn = merge.transforms.empty() ? 0U : merge.transforms[0];
+
+  char line[224];
+  int n = snprintf(line, sizeof(line),
+                   "hwc_merge_calib seq=%" PRIu64 " n=%zu src=%" PRIu64
+                   " dst=%" PRIu64 " turn=%u fmt=",
+                   planned_seq_, merge.layers.size(), src, dst, turn);
+  for (uint32_t format : merge.formats) {
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(line) - 12)
+      break;
+    n += snprintf(line + n, sizeof(line) - static_cast<size_t>(n), "%08x,",
+                  format);
+  }
+  ATRACE_INSTANT(line);
+}
+
+TegraAtomicStateManager::MergeVerdict TegraAtomicStateManager::JudgeMerge(
+    const TegraAtomicRequest::Merge &merge) const {
   if (last_merge_window_ < 0) {
-    merges_.first_sight++;
-    return false;
+    return MergeVerdict::kFirstSight;
   }
 
   if (merge.window != last_merge_window_ ||
@@ -890,8 +1018,7 @@ bool TegraAtomicStateManager::RecognisesMerge(
       merge.layers.size() != last_merge_sources_.size() ||
       merge.source_ids.size() != merge.layers.size() ||
       merge.transforms.size() != merge.layers.size()) {
-    merges_.changed_shape++;
-    return false;
+    return MergeVerdict::kChangedShape;
   }
 
   /* The group's size -- a resize really is a different picture. Its PLACE
@@ -903,8 +1030,7 @@ bool TegraAtomicStateManager::RecognisesMerge(
    * redrawing, stops waking the engine. */
   if (merge.width != last_merge_width_ ||
       merge.height != last_merge_height_) {
-    merges_.changed_size++;
-    return false;
+    return MergeVerdict::kChangedSize;
   }
 
   for (size_t i = 0; i < merge.layers.size(); ++i) {
@@ -912,12 +1038,10 @@ bool TegraAtomicStateManager::RecognisesMerge(
     const MergedSource &s = last_merge_sources_[i];
 
     if (merge.source_ids[i] == 0) {
-      merges_.nameless++;
-      return false;
+      return MergeVerdict::kNameless;
     }
     if (merge.source_ids[i] != s.id) {
-      merges_.changed_identity++;
-      return false;
+      return MergeVerdict::kChangedIdentity;
     }
 
     /* Exact comparison on purpose, floats included: both sides came out of
@@ -929,20 +1053,50 @@ bool TegraAtomicStateManager::RecognisesMerge(
         l.display_left != s.display_left || l.display_top != s.display_top ||
         l.display_right != s.display_right ||
         l.display_bottom != s.display_bottom) {
-      merges_.changed_geometry++;
-      return false;
+      return MergeVerdict::kChangedGeometry;
     }
     if (l.premultiplied != s.premultiplied || l.alpha != s.alpha) {
-      merges_.changed_blend++;
-      return false;
+      return MergeVerdict::kChangedBlend;
     }
     if (merge.transforms[i] != s.transform) {
-      merges_.changed_transform++;
-      return false;
+      return MergeVerdict::kChangedTransform;
     }
   }
 
-  return true;
+  return MergeVerdict::kSame;
+}
+
+bool TegraAtomicStateManager::RecognisesMerge(
+    const TegraAtomicRequest::Merge &merge) {
+  switch (JudgeMerge(merge)) {
+    case MergeVerdict::kSame:
+      return true;
+    case MergeVerdict::kFirstSight:
+      merges_.first_sight++;
+      return false;
+    case MergeVerdict::kChangedShape:
+      merges_.changed_shape++;
+      return false;
+    case MergeVerdict::kChangedSize:
+      merges_.changed_size++;
+      return false;
+    case MergeVerdict::kNameless:
+      merges_.nameless++;
+      return false;
+    case MergeVerdict::kChangedIdentity:
+      merges_.changed_identity++;
+      return false;
+    case MergeVerdict::kChangedGeometry:
+      merges_.changed_geometry++;
+      return false;
+    case MergeVerdict::kChangedBlend:
+      merges_.changed_blend++;
+      return false;
+    case MergeVerdict::kChangedTransform:
+      merges_.changed_transform++;
+      return false;
+  }
+  return false;
 }
 
 void TegraAtomicStateManager::RememberMerge(
@@ -1056,6 +1210,12 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   if (governor_ != nullptr)
     governor_->NoteActivity();
 
+  if (tegra.GetPowerMode() && *tegra.GetPowerMode() != power_mode_seen_) {
+    power_mode_seen_ = *tegra.GetPowerMode();
+    if (composition_governor_ != nullptr)
+      composition_governor_->PowerMode(GovernorPower(power_mode_seen_));
+  }
+
   /* Lighting the panel comes before showing anything on it: a frame posted
    * to a display that is not scanning out never appears, and nothing later
    * repeats it. Going dark is the other way round for the same reason -- the
@@ -1143,6 +1303,9 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         ForgetMerge();
         return -EINVAL;
       }
+
+      if (composition_governor_ != nullptr)
+        MarkMergeForCalibration(merge);
 
       const int64_t before_merge = GetTimeMonotonicNs();
       /* The same door the turning pass used to answer to, so a code can
@@ -1393,6 +1556,16 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   }
 
   previous_post_fence_ = std::move(this_post_fence);
+
+  /* The governor hears of the merge by a copy of the engine's fence -- the
+   * fence is the one signal that the engine is done with it, and the copy
+   * is the governor's to close -- and of the flip by number. A frame shown
+   * again from the remembered buffer woke no engine and reports no merge. */
+  if (composition_governor_ != nullptr) {
+    if (merged && !merge_reused)
+      composition_governor_->MergeSubmitted(planned_seq_, DupFd(merged));
+    composition_governor_->FramePresented(planned_seq_);
+  }
 
   /* Was it already due when it was given away? */
   if (count_fences_) {

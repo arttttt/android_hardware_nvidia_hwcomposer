@@ -26,6 +26,7 @@
 
 #include "display/AtomicStateManager.h"
 #include "display/DrmMode.h"
+#include "governor/CompositionGovernor.h"
 #include "tegra/DcHead.h"
 #include "tegra/CursorUnit.h"
 #include "tegra/RefreshGovernor.h"
@@ -110,6 +111,12 @@ class TegraAtomicRequest : public AtomicRequest {
      * by. */
     std::vector<uint8_t> transforms;
 
+    /* Each member's pixel format, in step with `layers`: the DRM code the
+     * buffer describes itself by. The engine takes it from the buffer's
+     * own descriptor; this copy is for the composition governor's trace,
+     * where a merge's cost is calibrated against what it was made of. */
+    std::vector<uint32_t> formats;
+
     /* The group's own frame of reference. The layers' rectangles are held
      * relative to this corner, and the engine draws them from the buffer's
      * origin -- where the group sits on the panel is the window's business
@@ -157,6 +164,15 @@ class TegraAtomicRequest : public AtomicRequest {
     SharedFd acquire;
   };
 
+  /* The panel's phase as the display knew it when the frame was built,
+   * for the composition governor: the last vsync at full precision --
+   * nought before the first -- and the period. Uninitialised like the
+   * Merge fields above, for the same reason. */
+  struct Timing {
+    int64_t last_vsync_ns;
+    int64_t vsync_period_ns;
+  };
+
   TegraAtomicRequest(std::vector<hwc::DcHead::Window> windows,
                      bool has_composition,
                      std::optional<PowerMode> power_mode,
@@ -164,18 +180,24 @@ class TegraAtomicRequest : public AtomicRequest {
                      std::shared_ptr<const HalColorTransformMatrix>
                          color_matrix = nullptr,
                      Cursor cursor = {},
-                     FrameNote note = {})
+                     FrameNote note = {},
+                     Timing timing = {})
       : windows_(std::move(windows)),
         has_composition_(has_composition),
         power_mode_(power_mode),
         merge_(std::move(merge)),
         color_matrix_(std::move(color_matrix)),
         cursor_(cursor),
-        note_(std::move(note)) {
+        note_(std::move(note)),
+        timing_(timing) {
   }
 
   const Merge &GetMerge() const {
     return merge_;
+  }
+
+  const Timing &GetTiming() const {
+    return timing_;
   }
 
   const Cursor &GetCursor() const {
@@ -220,6 +242,7 @@ class TegraAtomicRequest : public AtomicRequest {
   const std::shared_ptr<const HalColorTransformMatrix> color_matrix_;
   const Cursor cursor_;
   const FrameNote note_;
+  const Timing timing_;
 };
 
 /* Turns plans into frames on this controller.
@@ -239,9 +262,11 @@ class TegraAtomicStateManager : public AtomicStateManager {
                           const std::vector<DrmMode> &modes,
                           hwc::VicSession *vic, hwc::ScratchPool *scratch,
                           hwc::CursorUnit *cursor,
-                          hwc::RefreshGovernor *governor)
+                          hwc::RefreshGovernor *governor,
+                          hwc::CompositionGovernor *composition_governor)
       : head_(head), modes_(modes), vic_(vic), scratch_(scratch),
-        cursor_(cursor), governor_(governor) {
+        cursor_(cursor), governor_(governor),
+        composition_governor_(composition_governor) {
     count_fences_ = CountFencesFromProperty();
     throttle_to_one_frame_ = ThrottleFromProperty();
     report_engine_reads_ = EngineReadsFromProperty();
@@ -340,6 +365,30 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * no such door. Owned by the pipeline, told of life from here: frames,
    * pointer moves, and the framework's own vsync confession. */
   hwc::RefreshGovernor *const governor_ = nullptr;
+
+  /* Raises the engine's clock ahead of a merge, or null where no policy
+   * library was found. Owned by the pipeline. Told of each frame the
+   * controller accepted at validate, of each merge that went to the
+   * engine, of each flip, and of the power mode. */
+  hwc::CompositionGovernor *const composition_governor_ = nullptr;
+
+  /* The number of the last frame the controller accepted at validate,
+   * which is what the governor's events are keyed by. A present without
+   * a validate before it repeats the number; that is the contract. */
+  uint64_t planned_seq_ = 0;
+
+  /* The power mode as last committed, for the governor's snapshot and for
+   * telling it only of changes. On before anything is said otherwise,
+   * which is how the display starts. */
+  PowerMode power_mode_seen_ = PowerMode::kOn;
+
+  /* Describes the accepted frame to the governor in plain numbers. */
+  void TellGovernor(const TegraAtomicRequest &tegra);
+
+  /* One trace moment before the merge goes to the engine, carrying what
+   * the merge is made of: the key by which the governor's cost model is
+   * calibrated against the engine's own accounting of the job. */
+  void MarkMergeForCalibration(const TegraAtomicRequest::Merge &merge) const;
 
   /* Frames actually committed, whatever they carried. The counter the
    * cursor's whole promise is judged by: a moving pointer on a still
@@ -483,7 +532,24 @@ class TegraAtomicStateManager : public AtomicStateManager {
   hwc::DcHead::Window last_merge_described_{};
   SharedFd last_merge_fence_;
 
-  /* Does this group name the frame already on the window? Counts the reason
+  /* Does this group name the frame already on the window? The judgement
+   * is separate from the counting: it is asked at validate as well, where
+   * the governor wants to know whether the engine will be woken, and a
+   * frame judged twice must not be counted twice. */
+  enum class MergeVerdict {
+    kSame,
+    kFirstSight,
+    kChangedShape,
+    kChangedSize,
+    kNameless,
+    kChangedIdentity,
+    kChangedGeometry,
+    kChangedBlend,
+    kChangedTransform,
+  };
+  MergeVerdict JudgeMerge(const TegraAtomicRequest::Merge &merge) const;
+
+  /* The same question, asked once per frame at execute: counts the reason
    * whenever the answer is no. */
   bool RecognisesMerge(const TegraAtomicRequest::Merge &merge);
   void RememberMerge(const TegraAtomicRequest::Merge &merge,

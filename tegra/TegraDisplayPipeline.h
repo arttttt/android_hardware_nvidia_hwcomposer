@@ -26,6 +26,7 @@
 #include "tegra/DcHead.h"
 #include "tegra/FbDevice.h"
 #include "tegra/RefreshGovernor.h"
+#include "governor/CompositionGovernor.h"
 #include "tegra/TegraConnector.h"
 #include "tegra/TegraCrtc.h"
 #include "tegra/TegraPlane.h"
@@ -112,6 +113,11 @@ private:
      * because letting go restores the native rate through the head's
      * descriptor. */
     std::unique_ptr<RefreshGovernor> mGovernor;
+
+    /* Raises the engine's clock ahead of a merge, through a policy library
+     * loaded by name. Null without the engine or the library. Destroyed
+     * before the engine: its thread may be warming it. */
+    std::unique_ptr<CompositionGovernor> mCompositionGovernor;
 };
 
 }  // namespace hwc

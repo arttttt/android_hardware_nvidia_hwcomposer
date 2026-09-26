@@ -112,6 +112,7 @@ LOCAL_SRC_FILES := \
     display/DrmMode.cpp \
     display/DrmProperty.cpp \
     display/VSyncWorker.cpp \
+    governor/CompositionGovernor.cpp \
     stats/CompositionStatsAtomReporter.cpp \
     stats/CountActiveDisplaysReporter.cpp \
     stats/DisplayConfigurationResultReporter.cpp \
