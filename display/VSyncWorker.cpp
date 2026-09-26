@@ -126,6 +126,11 @@ uint32_t VSyncWorker::GetLastVsyncTimestamp() {
   return last_timestamp_is_fresh_ ? last_timestamp_.value_or(0) : 0;
 }
 
+int64_t VSyncWorker::LastVsyncNs() {
+  const std::lock_guard<std::mutex> lock(mutex_);
+  return last_timestamp_.value_or(0);
+}
+
 void VSyncWorker::UpdateLastVsyncTimeWithPresentTime() {
   if (enabled_) {
     last_present_fence_.reset();

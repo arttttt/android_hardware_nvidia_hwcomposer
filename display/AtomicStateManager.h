@@ -67,6 +67,13 @@ struct AtomicCommitArgs {
   std::shared_ptr<FbIdHandle> writeback_fb;
   SharedFd writeback_release_fence;
 
+  /* The panel's phase as the display knew it when the frame was built:
+   * the last vsync at full precision, nought if none yet, and the period.
+   * Read by the composition governor to place the latch a merge is aiming
+   * at; nothing in the commit itself depends on them. */
+  int64_t last_vsync_ns = 0;
+  int64_t vsync_period_ns = 0;
+
   /* helpers */
   auto HasInputs() const -> bool {
     return display_mode || power_mode || composition;

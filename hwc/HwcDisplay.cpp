@@ -1522,6 +1522,8 @@ std::optional<AtomicCommitArgs> HwcDisplay::CreateFrameUpdateCommit(
   AtomicCommitArgs a_args;
   a_args.brightness = brightness_;
   a_args.color_matrix = color_matrix_;
+  a_args.last_vsync_ns = vsync_worker_ ? vsync_worker_->LastVsyncNs() : 0;
+  a_args.vsync_period_ns = GetCurrentVsyncPeriodNs();
   a_args.content_type = content_type_;
   a_args.colorspace = colorspace_;
   a_args.transfer_func = transfer_func_;

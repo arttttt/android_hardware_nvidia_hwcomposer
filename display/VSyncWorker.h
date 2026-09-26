@@ -61,6 +61,13 @@ class VSyncWorker {
   void SetVsyncTimestampTracking(bool enabled);
   uint32_t GetLastVsyncTimestamp();
 
+  /* The last vsync at full precision, or nought before the first. Not
+   * gated on freshness like the one above: that gate serves the
+   * framework's mode-switch event, while this answers "what phase is the
+   * panel in", which a present fence keeps current when the framework
+   * has vsync switched off. */
+  int64_t LastVsyncNs();
+
   void AddLastPresentFence(SharedFd &fence);
 
   // Get the next predicted vsync timestamp after |time|, based on the last
