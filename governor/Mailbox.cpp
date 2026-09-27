@@ -100,6 +100,11 @@ Mailbox::Contents Mailbox::Take(bool rung) {
   return contents;
 }
 
+bool Mailbox::HasSubmitted() {
+  const std::lock_guard<std::mutex> lock(mutex_);
+  return !submitted_.empty();
+}
+
 void Mailbox::Discard() {
   const std::lock_guard<std::mutex> lock(mutex_);
   for (const Watched &w : submitted_)

@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <pthread.h>
+#include <sched.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -119,6 +120,17 @@ int TegraGovernor::TimeoutMs(int64_t now) const {
 void TegraGovernor::ThreadFn() {
   pthread_setname_np(pthread_self(), "hwc-governor");
 
+  /* Real-time, like the composer's own binder threads: a plan is worth
+   * acting on within the millisecond and a half before the composer's
+   * submit, and a fair-share thread in a busy transition waited two to
+   * four milliseconds for a processor -- and decided after the merge had
+   * gone. The work is short and the sleeps are in the kernel's own
+   * scaling; the priority is the lowest real-time one. */
+  struct sched_param param = {};
+  param.sched_priority = 2;
+  if (sched_setscheduler(0, SCHED_FIFO, &param) != 0)
+    LogErrno(host_, ANDROID_LOG_WARN, "real-time priority", errno);
+
   std::vector<struct pollfd> fds;
   for (;;) {
     /* The poll set: the mailbox first, then the fences in their order. */
@@ -173,8 +185,13 @@ void TegraGovernor::ThreadFn() {
         orphan_due_ns_ == 0)
       release_due_ns_ = now + int64_t(tuning_.hold_ms) * nsPerMs;
 
-    if (mail.planned)
-      Decide(*mail.planned, now);
+    if (mail.planned) {
+      const uint64_t seq = mail.planned->frame.seq;
+      bool reported = false;
+      for (const Watched &w : mail.submitted)
+        reported = reported || w.seq >= seq;
+      Decide(*mail.planned, now, reported);
+    }
 
     JudgeRelease(now);
 
@@ -205,17 +222,21 @@ void TegraGovernor::DropCpu() {
   cpu_.Drop();
 }
 
-void TegraGovernor::Trace(const MergeEstimate &e, bool cold, int profile) {
+void TegraGovernor::Trace(const MergeEstimate &e, bool cold, int profile,
+                          int64_t lag_ns) {
+  host_.TraceInt("hwc_gov_lag_us", int32_t(lag_ns / nsPerUs));
   host_.TraceInt("hwc_gov_est_kcycles", int32_t(e.cycles / 1000.0));
   host_.TraceInt("hwc_gov_budget_us", int32_t(e.budget_ns / nsPerUs));
   host_.TraceInt("hwc_gov_need_mhz", int32_t(e.need_mhz));
   host_.TraceInt("hwc_gov_step_mhz", int32_t(e.step_mhz));
   host_.TraceInt("hwc_gov_cold", cold ? 1 : 0);
   host_.TraceInt("hwc_gov_late", (e.late || e.beyond) ? 1 : 0);
+  host_.TraceInt("hwc_gov_slip", e.slipped ? 1 : 0);
   host_.TraceInt("hwc_gov_profile", profile);
 }
 
-void TegraGovernor::Decide(const Planned &planned, int64_t now) {
+void TegraGovernor::Decide(const Planned &planned, int64_t now,
+                           bool merge_reported) {
   const Frame &f = planned.frame;
 
   if (!f.merge_planned || f.merge_reuse_predicted) {
@@ -227,50 +248,54 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now) {
       profile_.Read(now, int64_t(tuning_.profile_poll_ms) * nsPerMs);
   const bool power_save = profile == PerfProfile::powerSave;
   const bool cold = EngineCold(f, last_warm_ns_, now, tuning_);
-  const bool lift_cpu = cold && f.previous_flip_landed && !power_save &&
-                        cpu_.available() && tuning_.cpu_khz != 0 &&
-                        engine_.usable();
+  /* Lifting the processor is for the composer's submit; once the submit
+   * has happened there is nothing left to lift it for. */
+  const bool lift_cpu = cold && !merge_reported && f.previous_flip_landed &&
+                        !power_save && cpu_.available() &&
+                        tuning_.cpu_khz != 0 && engine_.usable();
 
   const MergeEstimate estimate =
       EstimateMerge(f, planned.members.data(), planned.members.size(), now,
                     tuning_, cold, lift_cpu);
-  Trace(estimate, cold, profile);
+  Trace(estimate, cold, profile, now - f.now_ns);
 
   if (power_save) {
     /* The one thing allowed here: a cold engine is woken, nothing is
      * raised. */
-    if (cold)
+    if (cold && !merge_reported)
       Warm(now);
     return;
   }
 
-  if (cold) {
-    if (lift_cpu && cpu_.Lift(tuning_.cpu_khz))
-      cpu_until_ns_ = now + int64_t(tuning_.cpu_cap_ms) * nsPerMs;
-    /* Before the floor, and it has to be: a floor filed against a
-     * powered-down engine is applied as it comes up, and coming up
-     * straight onto the top step cost tens of milliseconds of sleeping in
-     * the kernel's voltage scaling. The warm-up comes up at whatever the
-     * engine idles at; the floor follows once it is awake. */
+  /* Before the floor, and it has to be: a floor filed against a
+   * powered-down engine is applied as it comes up, and coming up straight
+   * onto the top step cost tens of milliseconds of sleeping in the
+   * kernel's voltage scaling. The warm-up comes up at whatever the engine
+   * idles at; the floor follows once it is awake. A merge already sent
+   * has woken the engine itself. */
+  if (cold && !merge_reported)
     Warm(now);
-  }
-
-  if (!engine_.usable())
-    return;
 
   /* Only upward from what the engine is already doing, by devfreq's doing
    * or by a floor still standing from the previous merge. A standing
    * floor is kept standing: this merge's fence will extend it. */
-  const uint32_t have =
-      std::max(engine_.CurrentMhz().value_or(0), engine_.floor_mhz());
-  if (estimate.step_mhz <= have) {
-    if (engine_.floor_mhz() != 0)
+  if (engine_.usable()) {
+    const uint32_t have =
+        std::max(engine_.CurrentMhz().value_or(0), engine_.floor_mhz());
+    if (estimate.step_mhz > have) {
+      if (engine_.SetFloor(estimate.step_mhz))
+        KeepFloorFor(now);
+    } else if (engine_.floor_mhz() != 0) {
       KeepFloorFor(now);
-    return;
+    }
   }
 
-  if (engine_.SetFloor(estimate.step_mhz))
-    KeepFloorFor(now);
+  /* Last, and only if the submit is still ahead: the request runs the
+   * processor's whole scaling step on this thread -- three milliseconds
+   * when the processor was idling -- and put first it held the warm-up and
+   * the floor behind it until the composer had submitted anyway. */
+  if (lift_cpu && !mailbox_.HasSubmitted() && cpu_.Lift(tuning_.cpu_khz))
+    cpu_until_ns_ = now + int64_t(tuning_.cpu_cap_ms) * nsPerMs;
 }
 
 void TegraGovernor::Warm(int64_t now) {

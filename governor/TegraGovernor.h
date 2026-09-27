@@ -78,8 +78,13 @@ class TegraGovernor final : public Governor {
  private:
   void ThreadFn();
   int TimeoutMs(int64_t now) const;
-  void Decide(const Planned &planned, int64_t now);
-  void Trace(const MergeEstimate &estimate, bool cold, int profile);
+  /* `merge_reported` says the composer had already sent this frame's
+   * merge to the engine when the plan was taken out of the mailbox: too
+   * late to wake the engine or lift the processor, not too late for the
+   * floor. */
+  void Decide(const Planned &planned, int64_t now, bool merge_reported);
+  void Trace(const MergeEstimate &estimate, bool cold, int profile,
+             int64_t lag_ns);
   void Warm(int64_t now);
   void KeepFloorFor(int64_t now);
   void JudgeRelease(int64_t now);

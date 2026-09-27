@@ -59,6 +59,27 @@ double MergeCycles(const Member *members, size_t count,
   return double(area) / tuning.pixels_per_clock * tuning.factor_pct / 100.0;
 }
 
+namespace {
+
+/* The estimate against one deadline. */
+void Estimate(MergeEstimate *e, int64_t deadline_ns, int64_t submit_end_ns) {
+  e->budget_ns = deadline_ns - submit_end_ns;
+  e->late = e->budget_ns < nsPerMs;
+  if (e->late)
+    e->budget_ns = nsPerMs;
+
+  const double need_hz = e->cycles * double(nsPerSec) / double(e->budget_ns);
+  e->need_mhz =
+      uint32_t(std::ceil(std::min<double>(need_hz / 1e6, 4.0 * topStepMhz)));
+
+  e->step_mhz = StepAtLeast(e->need_mhz);
+  e->beyond = e->step_mhz == 0;
+  if (e->beyond)
+    e->step_mhz = topStepMhz;
+}
+
+}  // namespace
+
 MergeEstimate EstimateMerge(const Frame &frame, const Member *members,
                             size_t count, int64_t now_ns,
                             const Tuning &tuning, bool cold,
@@ -72,20 +93,14 @@ MergeEstimate EstimateMerge(const Frame &frame, const Member *members,
   const int64_t submit_end =
       now_ns + int64_t(tuning.lead_us + submit_us) * nsPerUs;
 
-  e.budget_ns = LatchDeadline(frame, now_ns, tuning) - submit_end;
-  if (e.budget_ns < nsPerMs) {
-    e.budget_ns = nsPerMs;
-    e.late = true;
+  const int64_t deadline = LatchDeadline(frame, now_ns, tuning);
+  Estimate(&e, deadline, submit_end);
+
+  if (e.beyond && frame.last_vsync_ns > 0 && frame.vsync_period_ns > 0) {
+    Estimate(&e, deadline + frame.vsync_period_ns, submit_end);
+    e.slipped = true;
   }
 
-  const double need_hz = e.cycles * double(nsPerSec) / double(e.budget_ns);
-  e.need_mhz =
-      uint32_t(std::ceil(std::min<double>(need_hz / 1e6, 4.0 * topStepMhz)));
-
-  e.step_mhz = StepAtLeast(e.need_mhz);
-  e.beyond = e.step_mhz == 0;
-  if (e.beyond)
-    e.step_mhz = topStepMhz;
   if (cold && e.step_mhz < tuning.min_cold_mhz)
     e.step_mhz = tuning.min_cold_mhz;
   return e;

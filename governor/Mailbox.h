@@ -68,6 +68,9 @@ class Mailbox {
    * to be drained. */
   Contents Take(bool rung);
 
+  /* Whether a merge has been reported since the last take. */
+  bool HasSubmitted();
+
   /* Closes what was submitted and never taken. */
   void Discard();
 

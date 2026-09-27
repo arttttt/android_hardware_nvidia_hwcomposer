@@ -58,10 +58,16 @@ struct MergeEstimate {
   uint32_t step_mhz;   /* the step to ask for */
   bool late;           /* the budget had to be clamped to its minimum */
   bool beyond;         /* the need is above the top step */
+  bool slipped;        /* aimed at the latch after the nearest one */
 };
 
 /* `cold` says the engine will pay for coming up; `cpu_lifted` that the
- * processor will be lifted for the submit, which shortens it. */
+ * processor will be lifted for the submit, which shortens it.
+ *
+ * A latch the merge cannot make even at the top step is not the latch the
+ * frame will land on: with the phase known, the estimate slips to the
+ * following latch once, and says so. Asking the top step for a merge that
+ * will take the next latch anyway buys nothing. */
 MergeEstimate EstimateMerge(const Frame &frame, const Member *members,
                             size_t count, int64_t now_ns,
                             const Tuning &tuning, bool cold, bool cpu_lifted);

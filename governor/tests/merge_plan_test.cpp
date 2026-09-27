@@ -154,17 +154,44 @@ void WarmMergeWithAFrameOfBudgetNeedsAModestStep() {
   CHECK(e.step_mhz == 180);
 }
 
-void EmptyPipelineLateInTheFrameNeedsTheTop() {
+void EmptyPipelineLateInTheFrameSlipsToTheNextLatch() {
   Tuning t;
   Member members[3] = {FullScreen(), FullScreen(), FullScreen()};
   /* Ten milliseconds into the frame with the previous flip landed: the
-   * nearest latch is ~6 ms away, ~1.75 ms of that goes to the submit. */
+   * nearest latch is ~6 ms away, ~1.75 ms of that goes to the submit, and
+   * 5.9 M cycles do not fit even at the top step. The frame will take the
+   * latch after, and the estimate says so. */
   const Frame f = Planned(t0, t0 - 10 * nsPerMs, true);
   const MergeEstimate e = EstimateMerge(f, members, 3, t0, t, false, false);
+  CHECK(e.slipped);
+  CHECK(!e.beyond);
   CHECK(!e.late);
+  /* ~5.9 M cycles over ~20.5 ms: under 336 MHz. */
+  CHECK(e.step_mhz == 336);
+  CHECK(e.budget_ns > 20 * nsPerMs);
+}
+
+void SlipsOnceOnly() {
+  Tuning t;
+  /* A merge no latch can hold: slipped once, still beyond. */
+  Member huge = FullScreen();
+  huge.src_w = huge.dst_w = 8192;
+  huge.src_h = huge.dst_h = 8192;
+  const Frame f = Planned(t0, t0 - 10 * nsPerMs, true);
+  const MergeEstimate e = EstimateMerge(f, &huge, 1, t0, t, false, false);
+  CHECK(e.slipped);
   CHECK(e.beyond);
   CHECK(e.step_mhz == topStepMhz);
-  CHECK(e.need_mhz > topStepMhz);
+}
+
+void WithoutAPhaseNothingSlips() {
+  Tuning t;
+  Member members[3] = {FullScreen(), FullScreen(), FullScreen()};
+  const Frame f = Planned(t0, 0, true);
+  const MergeEstimate e = EstimateMerge(f, members, 3, t0, t, false, false);
+  CHECK(!e.slipped);
+  CHECK(e.beyond);
+  CHECK(e.step_mhz == topStepMhz);
 }
 
 void ColdEngineGetsTheSafetyFloor() {
@@ -199,15 +226,17 @@ void ColdSubmitEatsMoreBudgetUnlessTheProcessorIsLifted() {
         int64_t(t.submit_cold_slow_us - t.submit_cold_us) * nsPerUs);
 }
 
-void NoBudgetLeftIsClampedAndMarkedLate() {
+void NoBudgetLeftSlipsRatherThanAskingTheTop() {
   Tuning t;
   Member m = FullScreen();
-  /* Planned right at the latch with the previous flip landed. */
+  /* Planned right at the latch with the previous flip landed: the nearest
+   * latch is gone, the one after has a frame's worth of budget. */
   const Frame f = Planned(t0, t0 - period + 500 * nsPerUs, true);
   const MergeEstimate e = EstimateMerge(f, &m, 1, t0, t, false, false);
-  CHECK(e.late);
-  CHECK(e.budget_ns == nsPerMs);
-  CHECK(e.step_mhz == topStepMhz);
+  CHECK(e.slipped);
+  CHECK(!e.late);
+  CHECK(e.budget_ns > 14 * nsPerMs);
+  CHECK(e.step_mhz == 180);
 }
 
 }  // namespace
@@ -218,10 +247,12 @@ int main() {
   DeadlineFollowsThePhase();
   CyclesAreHalfAClockPerPixelWithMargin();
   WarmMergeWithAFrameOfBudgetNeedsAModestStep();
-  EmptyPipelineLateInTheFrameNeedsTheTop();
+  EmptyPipelineLateInTheFrameSlipsToTheNextLatch();
+  SlipsOnceOnly();
+  WithoutAPhaseNothingSlips();
   ColdEngineGetsTheSafetyFloor();
   ColdSubmitEatsMoreBudgetUnlessTheProcessorIsLifted();
-  NoBudgetLeftIsClampedAndMarkedLate();
+  NoBudgetLeftSlipsRatherThanAskingTheTop();
 
   if (failures != 0) {
     fprintf(stderr, "%d check(s) failed\n", failures);
