@@ -261,8 +261,21 @@ void VSyncWorker::ThreadFn() {
       if (thread_exit_)
         break;
 
-      if (!enabled_)
-        cv_.wait(lock);
+      if (!enabled_) {
+        /* Told to the source before sleeping, outside the lock: the
+         * source may talk to the driver, and nobody should wait on this
+         * lock for that. An enable that lands in between is answered by
+         * the next wait, which asks the source for blanks again. */
+        if (source_ != nullptr) {
+          lock.unlock();
+          source_->stop();
+          lock.lock();
+        }
+        if (thread_exit_)
+          break;
+        if (!enabled_)
+          cv_.wait(lock);
+      }
 
       if (!enabled_)
         continue;

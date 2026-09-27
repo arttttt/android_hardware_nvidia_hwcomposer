@@ -47,6 +47,13 @@ public:
     /* Waits for the next vertical blank and reports when it happened.
      * Returns 0, or a negative errno if no blank was seen. */
     virtual int waitForVSync(int64_t *outTimestampNs) = 0;
+
+    /* The caller has no use for blanks for a while. Whatever the source did
+     * to make them arrive may be undone, and whatever has arrived unread
+     * may be thrown away; the next wait asks again. Called on the waiting
+     * thread, between waits, so an implementation need not lock against
+     * its own wait. Nothing to do by default. */
+    virtual void stop() {}
 };
 
 }  // namespace hwc

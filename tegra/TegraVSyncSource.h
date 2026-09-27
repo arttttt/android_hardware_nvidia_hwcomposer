@@ -67,7 +67,15 @@ public:
 
     int waitForVSync(int64_t *outTimestampNs) override;
 
+    /* Reporting off and the queue read dry. The controller's interrupt is
+     * masked while nobody is waiting, and the kernel is not left holding a
+     * growing list of blanks nobody will read. */
+    void stop() override;
+
 private:
+    /* Reads everything queued without waiting and throws it away. */
+    void discardQueued();
+
     TegraVSyncSource(std::unique_ptr<DcControl> control, DcHead &head,
                      uint32_t headHandle)
         : mControl(std::move(control)), mHead(head), mHeadHandle(headHandle) {}
@@ -76,7 +84,8 @@ private:
     DcHead &mHead;
     const uint32_t mHeadHandle;
 
-    /* Whether the controller was reporting blanks as of the last wait.
+    /* Whether the controller was reporting blanks as of the last wait, or
+     * granted the request to at the start of this one.
      *
      * What it decides is whether the request has to be made again: while
      * blanks are arriving it plainly still holds, and while they are not
@@ -91,6 +100,15 @@ private:
      *
      * Only the reading thread touches it. */
     bool mReporting = false;
+
+    /* Whether the last wait that trusted a grant came up empty. The driver
+     * answers the request from a flag of its own, which it clears only when
+     * the head is turned off through it; a grant given while the head was
+     * on its way off is repeated for as long as the head stays off, and a
+     * wait that trusted it would time out over and over, at a sixth of the
+     * panel's rate. So a grant is trusted until it fails once, and after
+     * that a blank has to be seen before a wait is worth its timeout. */
+    bool mTimedOutWhileGranted = false;
 };
 
 }  // namespace hwc

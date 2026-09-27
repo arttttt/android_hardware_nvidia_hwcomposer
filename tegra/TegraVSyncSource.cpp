@@ -57,6 +57,14 @@ constexpr int kNoWaitMs = 0;
 
 constexpr int64_t kOneSecondNs = 1'000'000'000;
 
+/* Older than this, a blank is not an answer to a wait. The freshest honest
+ * blank is younger than a period plus the interrupt's wakeup: under 17 ms at
+ * the panel's rate, under 34 at half of it. Three periods is past both with
+ * room, and short of anything that could only have been queued while nobody
+ * was reading -- an interrupt already raised when reporting was turned off,
+ * a tail not read dry -- and would otherwise be taken for the present. */
+constexpr int64_t kStaleNs = 50'000'000;
+
 int64_t now() {
     struct timespec ts = {};
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -96,22 +104,47 @@ int TegraVSyncSource::waitForVSync(int64_t *outTimestampNs) {
      * assumed to hold. The driver drops the request when the head is turned
      * off and says nothing about having done so, so the only honest reading
      * of a silent stream is that the request may no longer be in force. When
-     * it is, this costs one call the driver answers from a flag. */
+     * it is, this costs one call the driver answers from a flag.
+     *
+     * The driver answers the request itself: granted means the head is on
+     * and blanks are coming, so this wait is worth its timeout; refused
+     * means the head is off, and the wait only looks. A grant is trusted
+     * until a wait times out on one; from then on a blank has to be seen
+     * first, because the driver's answer can be stale (see the flag). */
     if (!mReporting)
-        mHead.setVBlankReporting(true);
+        mReporting = mHead.setVBlankReporting(true) == 0 &&
+                     !mTimedOutWhileGranted;
 
     struct pollfd fd = {};
     fd.fd = mControl->fd();
     fd.events = POLLIN;
 
+    bool found = false;
+    int64_t timestampNs = 0;
+
     /* Loops because the stream carries more than this display's blanks, and
-     * an event that is not the one waited for is not an answer. */
+     * an event that is not the one waited for is not an answer.
+     *
+     * And loops on past the first answer, because the stream may hold more
+     * than one. Every blank since the last read is queued, and after a
+     * spell of not reading -- the framework asks for blanks only while it
+     * has a use for them -- the queue holds a tail of them, each dated when
+     * it happened. Handed out one per wait, the tail would arrive within a
+     * few milliseconds as a burst of blanks from the past, and the
+     * framework's model of the panel's phase, which locks on the first few
+     * it sees, would lock on them and wake the compositor on the latch
+     * instead of ahead of it. So once a blank is in hand the queue is read
+     * dry without waiting, and the newest is the answer: the rest happened,
+     * but are not news. */
     while (true) {
         fd.revents = 0;
 
-        int ready = poll(&fd, 1, mReporting ? kWaitTimeoutMs : kNoWaitMs);
+        int ready = poll(&fd, 1, found || !mReporting ? kNoWaitMs
+                                                      : kWaitTimeoutMs);
 
         if (ready < 0) {
+            if (found)
+                break;
             /* Handed straight back rather than retried: a wait interrupted
              * by a signal is how the caller's thread is asked to look at
              * whether it should still be running. */
@@ -119,12 +152,25 @@ int TegraVSyncSource::waitForVSync(int64_t *outTimestampNs) {
         }
 
         if (ready == 0) {
+            if (found)
+                break;
             if (mReporting) {
                 mReporting = false;
+                mTimedOutWhileGranted = true;
                 HWC_LOGW("head %u stopped reporting blanks; asking again on "
                          "every wait from here", mHeadHandle);
             }
             return -ETIMEDOUT;
+        }
+
+        if (fd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            /* A descriptor that only reports trouble would otherwise be
+             * polled without pause. */
+            if (found)
+                break;
+            HWC_LOGE("head %u: control node reports 0x%x", mHeadHandle,
+                     fd.revents);
+            return -EIO;
         }
 
         if (!(fd.revents & POLLIN))
@@ -133,6 +179,8 @@ int TegraVSyncSource::waitForVSync(int64_t *outTimestampNs) {
         DcControl::Event event;
         int err = mControl->readEvent(&event);
         if (err) {
+            if (found)
+                break;
             HWC_LOGE("readEvent: %s", strerror(-err));
             return err;
         }
@@ -141,7 +189,10 @@ int TegraVSyncSource::waitForVSync(int64_t *outTimestampNs) {
             continue;
         if (event.handle != mHeadHandle)
             continue;
+        if (event.timestampNs != 0 && event.timestampNs < now() - kStaleNs)
+            continue;
 
+        mTimedOutWhileGranted = false;
         if (!mReporting) {
             mReporting = true;
             HWC_LOGI("head %u is reporting blanks", mHeadHandle);
@@ -152,8 +203,36 @@ int TegraVSyncSource::waitForVSync(int64_t *outTimestampNs) {
          * blank is dated when it happened rather than when this thread got
          * round to it. A zero means it did not say, and then the best that
          * can be claimed is now, within one wakeup of the truth. */
-        *outTimestampNs = event.timestampNs != 0 ? event.timestampNs : now();
-        return 0;
+        timestampNs = event.timestampNs != 0 ? event.timestampNs : now();
+        found = true;
+    }
+
+    *outTimestampNs = timestampNs;
+    return 0;
+}
+
+void TegraVSyncSource::stop() {
+    /* Reporting first, so that the controller stops producing blanks before
+     * the queue is emptied, and the queue is not left with a blank that
+     * slipped in between. */
+    mHead.setVBlankReporting(false);
+    mReporting = false;
+    discardQueued();
+}
+
+void TegraVSyncSource::discardQueued() {
+    struct pollfd fd = {};
+    fd.fd = mControl->fd();
+    fd.events = POLLIN;
+
+    while (true) {
+        fd.revents = 0;
+        if (poll(&fd, 1, kNoWaitMs) <= 0 || !(fd.revents & POLLIN))
+            return;
+
+        DcControl::Event event;
+        if (mControl->readEvent(&event))
+            return;
     }
 }
 
