@@ -374,11 +374,6 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * validate and execute that finds the fence due. */
   int64_t last_latch_ns_ = 0;
 
-  /* The period between latches as the fences report it, not as the mode
-   * computes it: the two differ by a part in six hundred on this panel,
-   * which is a millisecond and a half across a second's pause. Seeded
-   * from the mode, then followed as landed flips come in. */
-  int64_t latch_period_ns_ = 0;
   bool NoteLatch();
 
   /* Describes the accepted frame to the governor in plain numbers. */
