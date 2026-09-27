@@ -46,5 +46,13 @@ std::vector<governor::Member> DescribeMembers(
 void MarkMergeForCalibration(
     const drm_hwcomposer::TegraAtomicRequest::Merge &merge, uint64_t seq);
 
+/* The runs the planner weighed for this frame's merge and the one it took,
+ * as an instant in the trace: "hwc_steer seq=N n=W len=L chosen=K
+ * runs=b:l:kpx:s:v,..." -- begin, drawing layers, pixels in thousands,
+ * steepest resize in percent, whether it could have been seated. Nothing
+ * when there was no merge or no choice. */
+void MarkSteeringForCalibration(const drm_hwcomposer::FrameNote &note,
+                                size_t merge_width, uint64_t seq);
+
 }  // namespace hwc
 }  // namespace android

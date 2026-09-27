@@ -180,6 +180,63 @@ bool PlaceSteered(LayerToPlaneJoiningPlan &plan,
     return true;
   };
 
+  /* What the merge would push for one member: the larger of the pixels
+   * it reads and the pixels it writes, in the axes it writes them. */
+  const auto pixels_of = [](const LayerData &dhl) -> uint64_t {
+    const float w = dhl.bi ? static_cast<float>(dhl.bi->width) : 0.F;
+    const float h = dhl.bi ? static_cast<float>(dhl.bi->height) : 0.F;
+    const auto e = dhl.pi.ExtentsInDestAxes(w, h);
+    const float src = e.src_w > 0 && e.src_h > 0 ? e.src_w * e.src_h : 0.F;
+    const float dst = e.dst_w > 0 && e.dst_h > 0 ? e.dst_w * e.dst_h : 0.F;
+    return static_cast<uint64_t>(src > dst ? src : dst);
+  };
+  const auto scale_pct_of = [](const LayerData &dhl) -> uint32_t {
+    const float w = dhl.bi ? static_cast<float>(dhl.bi->width) : 0.F;
+    const float h = dhl.bi ? static_cast<float>(dhl.bi->height) : 0.F;
+    const auto e = dhl.pi.ExtentsInDestAxes(w, h);
+    if (e.src_w <= 0 || e.src_h <= 0)
+      return 100;
+    const float sx = e.dst_w / e.src_w;
+    const float sy = e.dst_h / e.src_h;
+    return static_cast<uint32_t>((sx > sy ? sx : sy) * 100.F + 0.5F);
+  };
+  /* Whether a run could be seated: the run's members in merging planes,
+   * everything else in ordinary ones, each plane offered once, in
+   * order -- the same walk the chosen run is seated by below. */
+  const auto seatable = [&](size_t begin) {
+    auto ordinary_it = avail_planes.begin();
+    auto merging_it = avail_planes.begin();
+    for (size_t i = 0; i < composition.size(); i++) {
+      const bool merged = i >= begin && i < begin + run_len;
+      const auto *dhl = &composition[i];
+      const auto fits = [merged, dhl](const PlaneRef &plane) {
+        return plane->Get()->IsMerging() == merged &&
+               plane->Get()->IsValidForLayer(dhl);
+      };
+      auto &it = merged ? merging_it : ordinary_it;
+      it = std::find_if(it, avail_planes.end(), fits);
+      if (it == avail_planes.end())
+        return false;
+      ++it;
+    }
+    return true;
+  };
+  const auto record = [&](size_t begin, size_t live) {
+    LayerToPlaneJoiningPlan::Run run;
+    run.begin = begin;
+    run.live = live;
+    for (size_t i = 0; i < run_len; i++) {
+      const LayerData &member = composition[begin + i];
+      run.pixels += pixels_of(member);
+      const uint32_t s = scale_pct_of(member);
+      if (s > run.scale_pct)
+        run.scale_pct = s;
+    }
+    run.seatable = seatable(begin);
+    plan.runs.push_back(run);
+  };
+  plan.run_len = run_len;
+
   size_t live_here = 0;
   for (size_t i = 0; i < run_len; i++)
     if (composition[i].live)
@@ -188,6 +245,10 @@ bool PlaceSteered(LayerToPlaneJoiningPlan &plan,
   bool found = run_uniform(0);
   size_t run_begin = 0;
   size_t fewest_live = live_here;
+  if (found) {
+    record(0, live_here);
+    plan.chosen_run = 0;
+  }
   for (size_t i = run_len; i < composition.size(); i++) {
     if (composition[i - run_len].live)
       live_here--;
@@ -196,10 +257,12 @@ bool PlaceSteered(LayerToPlaneJoiningPlan &plan,
     const size_t begin = i - run_len + 1;
     if (!run_uniform(begin))
       continue;
+    record(begin, live_here);
     if (!found || live_here < fewest_live) {
       found = true;
       fewest_live = live_here;
       run_begin = begin;
+      plan.chosen_run = plan.runs.size() - 1;
     }
   }
   if (!found) {

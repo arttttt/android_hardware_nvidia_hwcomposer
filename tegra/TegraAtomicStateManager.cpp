@@ -667,6 +667,16 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
      * It travels with the request and is printed only if the frame is put
      * up -- a request built to be weighed never reaches the ring. */
     note.steering = static_cast<int>(args.composition->steering);
+    note.chosen_run = static_cast<uint32_t>(args.composition->chosen_run);
+    note.run_len = static_cast<uint32_t>(args.composition->run_len);
+    for (const auto &run : args.composition->runs) {
+      FrameNote::Run &r = note.runs.emplace_back();
+      r.begin = static_cast<uint32_t>(run.begin);
+      r.live = static_cast<uint32_t>(run.live);
+      r.pixels = run.pixels;
+      r.scale_pct = run.scale_pct;
+      r.seatable = run.seatable;
+    }
 
     for (const auto &joining : args.composition->plan) {
       if (!joining.plane)
@@ -943,6 +953,8 @@ void TegraAtomicStateManager::TellGovernor(const TegraAtomicRequest &tegra) {
 
   hwc::governor::Frame frame{};
   frame.seq = ++planned_seq_;
+  hwc::MarkSteeringForCalibration(tegra.GetFrameNote(), merge.layers.size(),
+                                  frame.seq);
   frame.now_ns = GetTimeMonotonicNs();
   frame.last_latch_ns = last_latch_ns_;
   /* The mode's period, which is the pixel clock's and exact in the clock

@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -75,6 +77,29 @@ struct LayerToPlaneJoiningPlan {
     kMixedTurn,
   };
   Steering steering = Steering::kFitsOrdinary;
+
+  /* The runs the steering weighed, in the order it met them: where each
+   * began in the stack, how many drawing layers it held, and how many
+   * pixels the merge would push for it -- each member counted at the
+   * larger of what it reads and what it writes. For the record only;
+   * nothing in the compositor acts on them. */
+  struct Run {
+    size_t begin = 0;
+    size_t live = 0;
+    uint64_t pixels = 0;
+    /* The steepest resize among the members, in percent of the source;
+     * a hundred when nothing is resized. */
+    uint32_t scale_pct = 100;
+    /* Whether the layers outside this run would all find a window, and
+     * the run a merging plane: a run that cannot be seated is not a
+     * choice the planner had. */
+    bool seatable = false;
+  };
+  std::vector<Run> runs;
+  /* Which of `runs` was taken, when the plan was steered. */
+  size_t chosen_run = 0;
+  /* How wide the runs were: the merge's width for this frame. */
+  size_t run_len = 0;
 
 
   static auto CreateLayerToPlaneJoiningPlan(

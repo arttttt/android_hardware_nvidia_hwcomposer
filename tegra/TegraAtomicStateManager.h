@@ -73,6 +73,20 @@ struct FrameNote {
     int32_t x = 0, y = 0, w = 0, h = 0;
   };
   std::vector<Row> layers;
+
+  /* The runs the steering weighed and the one it took, copied from the
+   * plan. Traced beside the merge's own numbers, so a merge can be
+   * compared with the merges the planner could have made instead. */
+  struct Run {
+    uint32_t begin = 0;
+    uint32_t live = 0;
+    uint64_t pixels = 0;
+    uint32_t scale_pct = 100;
+    bool seatable = false;
+  };
+  std::vector<Run> runs;
+  uint32_t chosen_run = 0;
+  uint32_t run_len = 0;
 };
 
 /* One commit, described in the terms this hardware takes.

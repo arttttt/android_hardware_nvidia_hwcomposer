@@ -77,6 +77,25 @@ std::vector<governor::Member> DescribeMembers(const Merge &merge) {
   return members;
 }
 
+void MarkSteeringForCalibration(const drm_hwcomposer::FrameNote &note,
+                                size_t merge_width, uint64_t seq) {
+  if (!ATRACE_ENABLED() || note.runs.empty() || merge_width == 0)
+    return;
+
+  char line[256];
+  int n = snprintf(line, sizeof(line),
+                   "hwc_steer seq=%" PRIu64 " n=%zu len=%u chosen=%u runs=",
+                   seq, merge_width, note.run_len, note.chosen_run);
+  for (const auto &run : note.runs) {
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(line) - 32)
+      break;
+    n += snprintf(line + n, sizeof(line) - static_cast<size_t>(n),
+                  "%u:%u:%" PRIu64 ":%u:%u,", run.begin, run.live,
+                  run.pixels / 1000, run.scale_pct, run.seatable ? 1U : 0U);
+  }
+  ATRACE_INSTANT(line);
+}
+
 void MarkMergeForCalibration(const Merge &merge, uint64_t seq) {
   if (!ATRACE_ENABLED())
     return;
