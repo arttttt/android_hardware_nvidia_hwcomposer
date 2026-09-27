@@ -22,6 +22,7 @@
 #include <thread>
 #include <vector>
 
+#include "governor/CpuFloor.h"
 #include "governor/EngineClock.h"
 #include "governor/FenceWatch.h"
 #include "governor/HwcGovernor.h"
@@ -33,31 +34,32 @@
 /* The composition load governor for Tegra K1: hwcgovernor.tegra.so.
  *
  * What it decides, once per planned merge: whether to wake a powered-down
- * engine ahead of the merge, and what clock floor to ask of the engine for
- * the merge's duration -- how much of it before the composer's submit and
- * how much after. The kernel does the rest -- the memory clock follows the
- * engine's floor, and the display's isochronous share follows the engine
- * being on.
+ * engine ahead of the merge, what clock floor to ask of the engine for the
+ * merge's duration -- how much of it before the composer's submit and how
+ * much after -- and whether to lift the processor's floor for the few
+ * milliseconds until the submit. The kernel does the rest -- the memory
+ * clock follows the engine's floor, and the display's isochronous share
+ * follows the engine being on.
  *
  * The parts: the model (MergePlan) turns a snapshot into a step; the engine
- * clock (EngineClock) is the door into the kernel; the profile
- * (PerfProfile) says whether the device is saving power; the tuning
- * (Tuning) holds the numbers; the mailbox (Mailbox) is where the
- * composer's threads leave their news, and the fence watch (FenceWatch) is
- * how merges in flight are followed. This class is the thread that joins
- * them and the timers that let the floor go.
+ * clock (EngineClock) and the processor floor (CpuFloor) are the two doors
+ * into the kernel; the profile (PerfProfile) says whether the device is
+ * saving power; the tuning (Tuning) holds the numbers; the mailbox
+ * (Mailbox) is where the composer's threads leave their news, and the
+ * fence watch (FenceWatch) is how merges in flight are followed. This class
+ * is the thread that joins them and the timers that let the floor go.
  *
- * Everything that may sleep -- the clock request, the warm-up pass -- runs
- * on this thread. The thread waits in one place, poll(), on the mailbox's
- * descriptor and on the fences, so a merge finishing and a frame being
- * planned are the same kind of wake-up.
+ * Everything that may sleep -- the clock request, the warm-up pass, the
+ * processor floor -- runs on this thread. The thread waits in one place,
+ * poll(), on the mailbox's descriptor and on the fences, so a merge
+ * finishing and a frame being planned are the same kind of wake-up.
  *
- * The processor's floor was lifted here too, for the composer's submit,
- * and was measured out: put first it ran the processor's whole scaling
- * step -- three milliseconds when the memory clock had to follow -- ahead
- * of the warm-up and the floor; put last it found the processor already
- * high in every transition, and the submit already behind the engine's
- * own voltage ramp. It is gone.
+ * The processor's lift comes last, after the warm-up and the floor: put
+ * first it ran the processor's whole scaling step -- three milliseconds
+ * when the memory clock had to follow -- ahead of both. In the transition
+ * runs it found the processor already at its top and changed nothing;
+ * it is kept, by the owner's decision, for the scenes where the processor
+ * idles low when a merge comes.
  */
 
 namespace android::hwc::governor::tegra {
@@ -96,6 +98,7 @@ class TegraGovernor final : public Governor {
   void FollowFences(int64_t now);
   void JudgeRelease(int64_t now);
   void RaiseDeferred();
+  void DropCpu();
   void DropEverything();
 
   GovernorHost &host_;
@@ -108,6 +111,7 @@ class TegraGovernor final : public Governor {
 
   Mailbox mailbox_;
   EngineClock engine_;
+  CpuFloor cpu_;
   PerfProfile profile_;
 
   std::thread thread_;
@@ -120,6 +124,7 @@ class TegraGovernor final : public Governor {
   /* The step a cold engine was not asked before the submit, to be asked
    * once the merge is reported; nought if none is owed. */
   uint32_t deferred_mhz_ = 0;
+  int64_t cpu_until_ns_ = 0;    /* processor lifted until, nought if not */
   int64_t last_warm_ns_ = 0;
   bool warm_refused_logged_ = false;
 };

@@ -179,6 +179,7 @@ LOCAL_SHARED_LIBRARIES := \
     libcutils
 
 LOCAL_SRC_FILES := \
+    governor/CpuFloor.cpp \
     governor/EngineClock.cpp \
     governor/FenceWatch.cpp \
     governor/Log.cpp \

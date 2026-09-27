@@ -42,7 +42,7 @@ int64_t NowNs() {
 }  // namespace
 
 TegraGovernor::TegraGovernor(GovernorHost &host)
-    : host_(host), engine_(host) {
+    : host_(host), engine_(host), cpu_(host) {
 }
 
 bool TegraGovernor::Start() {
@@ -56,6 +56,7 @@ bool TegraGovernor::Start() {
 
   if (!engine_.Open())
     host_.Log(ANDROID_LOG_ERROR, "no engine clock; running as a witness");
+  cpu_.Open();
 
   thread_ = std::thread(&TegraGovernor::ThreadFn, this);
   return true;
@@ -104,6 +105,7 @@ int TegraGovernor::TimeoutMs(int64_t now) const {
     if (when > 0 && (due == 0 || when < due))
       due = when;
   };
+  consider(cpu_until_ns_);
   consider(release_due_ns_);
   consider(orphan_due_ns_);
   consider(fences_.NextGiveUpNs(int64_t(tuning_.fence_patience_ms) * nsPerMs));
@@ -171,6 +173,7 @@ void TegraGovernor::ThreadFn() {
      * a step withheld from a cold engine can be asked now. */
     if (!mail.submitted.empty()) {
       orphan_due_ns_ = 0;
+      DropCpu();
       RaiseDeferred();
     }
 
@@ -195,6 +198,9 @@ void TegraGovernor::ThreadFn() {
     }
 
     JudgeRelease(now);
+
+    if (cpu_until_ns_ != 0 && now >= cpu_until_ns_)
+      DropCpu();
   }
 }
 
@@ -209,6 +215,11 @@ void TegraGovernor::JudgeRelease(int64_t now) {
     deferred_mhz_ = 0;
     engine_.Release();
   }
+}
+
+void TegraGovernor::DropCpu() {
+  cpu_until_ns_ = 0;
+  cpu_.Drop();
 }
 
 void TegraGovernor::RaiseDeferred() {
@@ -260,10 +271,15 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
       profile_.Read(now, int64_t(tuning_.profile_poll_ms) * nsPerMs);
   const bool power_save = profile == PerfProfile::powerSave;
   const bool cold = EngineCold(f, last_warm_ns_, now, tuning_);
+  /* Lifting the processor is for the composer's submit; once the submit
+   * has happened there is nothing left to lift it for. */
+  const bool lift_cpu = cold && !merge_reported && f.previous_flip_landed &&
+                        !power_save && cpu_.available() &&
+                        tuning_.cpu_khz != 0 && engine_.usable();
 
   const MergeEstimate estimate =
       EstimateMerge(f, planned.members.data(), planned.members.size(), now,
-                    tuning_, cold);
+                    tuning_, cold, lift_cpu);
   Trace(estimate, cold, profile, now - f.now_ns);
 
   if (power_save) {
@@ -314,6 +330,13 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
     else
       FollowFences(now);
   }
+
+  /* Last, and only if the submit is still ahead: the request runs the
+   * processor's whole scaling step on this thread -- three milliseconds
+   * when the memory clock had to follow -- and put first it held the
+   * warm-up and the floor behind it until the composer had submitted. */
+  if (lift_cpu && !mailbox_.HasSubmitted() && cpu_.Lift(tuning_.cpu_khz))
+    cpu_until_ns_ = now + int64_t(tuning_.cpu_cap_ms) * nsPerMs;
 }
 
 void TegraGovernor::Warm(int64_t now) {
@@ -339,6 +362,7 @@ void TegraGovernor::DropEverything() {
   orphan_due_ns_ = 0;
   deferred_mhz_ = 0;
   engine_.Release();
+  DropCpu();
 }
 
 }  // namespace android::hwc::governor::tegra
