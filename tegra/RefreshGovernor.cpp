@@ -21,6 +21,10 @@
 #include <string.h>
 #include <sys/ioctl.h>
 
+/* From the kernel tree; see Android.mk for why the include path stops at
+ * include/video rather than include/. */
+#include <tegra_dc_ext.h>
+
 #include "utils/Logging.h"
 
 #undef  LOG_TAG
@@ -31,10 +35,12 @@ namespace hwc {
 
 namespace {
 
-/* The kernel's door, declared locally like every extension this composer
- * speaks: the value lands at a frame's end, the call never waits and
- * never hears back. Zero asks for the mode's own porch. */
-constexpr uint32_t kSetActVfp = _IOW('D', 0x1F, __u32);
+/* The kernel's door, taken from the header of the kernel this is built
+ * against: a number chosen here would keep working only for as long as no
+ * other kernel hands that number to something else. The value lands at a
+ * frame's end, the call never waits and never hears back. Zero asks for
+ * the mode's own porch. */
+constexpr uint32_t kSetActVfp = TEGRA_DC_EXT_SET_ACT_VFP;
 
 }  // namespace
 
