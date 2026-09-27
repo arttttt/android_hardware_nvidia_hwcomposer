@@ -100,6 +100,13 @@ class TegraGovernor final : public Governor {
   void RaiseDeferred();
   void DropCpu();
   void DropEverything();
+  /* A merge reported: if it is the last plan's, the path from its
+   * validate to the report, in the processor's cycles of the time, is a
+   * measure of the submit's delay. */
+  void NoteSubmit(uint64_t seq, int64_t reported_ns);
+  /* The measured path read at the processor's present clock, in
+   * nanoseconds; nought without a measure or a clock. */
+  int64_t MeasuredSubmitNs(uint32_t cpu_khz) const;
 
   GovernorHost &host_;
   Tuning tuning_;
@@ -127,6 +134,18 @@ class TegraGovernor final : public Governor {
   int64_t cpu_until_ns_ = 0;    /* processor lifted until, nought if not */
   int64_t last_warm_ns_ = 0;
   bool warm_refused_logged_ = false;
+
+  /* The last plan with a merge: which frame, when it was validated, the
+   * processor's clock then, and whether the engine was cold -- so that the
+   * merge's report can be timed against it. The validate time is cleared
+   * once used. */
+  uint64_t planned_seq_ = 0;
+  int64_t planned_validate_ns_ = 0;
+  uint32_t planned_cpu_khz_ = 0;
+  bool planned_cold_ = false;
+  /* The measured path from validate to the submit's report, in processor
+   * cycles, a running mean; nought until measured. */
+  int64_t submit_cycles_ = 0;
 };
 
 }  // namespace android::hwc::governor::tegra

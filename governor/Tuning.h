@@ -76,18 +76,35 @@ struct Tuning {
   uint32_t cpu_low_khz = 400000;
 
   /* A merge this long after the engine's last use is the first of a
-   * transition, and the processor has idled down in the meantime: its
-   * governor raises it only twenty milliseconds after work begins, and
-   * the composer's own share of the submit -- planning the merge,
-   * describing it, the ioctl -- takes six milliseconds at the idle clock
-   * against one and a half at speed. Such a merge is lifted whether or
-   * not the engine is cold. Nought turns the rule off, and it is off: the
-   * processor at such a merge is at 830-900 MHz, held there by its
-   * governor under the light load of compositing without a merge, and a
-   * lift to the step the cold rule uses buys a sixth of the clock and
-   * nothing measurable -- late merges 21 against 16, hitches 10 against
-   * 11 over six runs each. The rule waits for a higher step of its own. */
-  uint32_t cpu_pause_ms = 0;
+   * transition: the processor has been compositing without a merge, held
+   * at 830-900 MHz by its governor under that light load, and the
+   * composer's share of the submit -- planning the merge, describing it,
+   * the ioctl -- takes five to six milliseconds there against one and a
+   * half in the middle of a transition. Such merges are measured apart
+   * (see submit_measured). */
+  uint32_t pause_ms = 100;
+
+  /* Whether such a merge also lifts the processor as a cold one does.
+   * Off: a lift to the cold rule's step buys a sixth of the clock over
+   * 830-900 MHz and nothing measurable -- late merges 21 against 16,
+   * hitches 10 against 11 over six runs each. */
+  uint32_t cpu_pause_lift = 0;
+
+  /* The path from validate to the submit, measured rather than assumed.
+   * The composer reports the submit, stamped on its own thread, and the
+   * governor keeps a running mean of the path in processor cycles --
+   * the time it took times the clock the processor ran at -- and reads
+   * it back at the clock of the moment. The path is the composer's own
+   * work, and its length is the processor's clock: seven milliseconds at
+   * or under 700 MHz, under two above 1.1 GHz, and a mean in
+   * milliseconds sits three milliseconds under the merges that are late.
+   * Cold merges are left out of the measure -- their path holds the
+   * engine's power-up, not cycles -- and read as the warm path plus the
+   * assumed cold submit. The assumed path stands in until there is a
+   * measure, and when this is nought. `submit_smooth` weighs what came
+   * before against the latest merge. */
+  uint32_t submit_measured = 1;
+  uint32_t submit_smooth = 3;
 
   /* How long the floor outlives the last merge's fence, so the merges of
    * one transition do not each pay for the clock coming and going. */

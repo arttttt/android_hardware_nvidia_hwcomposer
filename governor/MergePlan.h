@@ -79,8 +79,11 @@ struct MergeEstimate {
  * A latch it might just make is asked the top step for -- missing by a
  * margin costs the same frame as missing by a mile, so doubt goes to the
  * higher step. */
+/* `submit_after_ns`, when above nought, is the measured path from the
+ * frame's validate to the submit and replaces the tuning's assumed one. */
 MergeEstimate EstimateMerge(const Frame &frame, const Member *members,
                             size_t count, int64_t now_ns,
-                            const Tuning &tuning, bool cold, bool cpu_lifted);
+                            const Tuning &tuning, bool cold, bool cpu_lifted,
+                            int64_t submit_after_ns = 0);
 
 }  // namespace android::hwc::governor::tegra

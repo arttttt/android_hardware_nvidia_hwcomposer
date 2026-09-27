@@ -20,26 +20,16 @@
 #include <poll.h>
 #include <pthread.h>
 #include <sched.h>
-#include <time.h>
 #include <unistd.h>
 
 #include <algorithm>
 
 #include <android/log.h>
 
+#include "governor/Clock.h"
 #include "governor/Log.h"
 
 namespace android::hwc::governor::tegra {
-
-namespace {
-
-int64_t NowNs() {
-  struct timespec ts = {};
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  return int64_t(ts.tv_sec) * nsPerSec + int64_t(ts.tv_nsec);
-}
-
-}  // namespace
 
 TegraGovernor::TegraGovernor(GovernorHost &host)
     : host_(host), engine_(host), cpu_(host) {
@@ -176,6 +166,8 @@ void TegraGovernor::ThreadFn() {
       DropCpu();
       RaiseDeferred();
     }
+    for (const Watched &w : mail.submitted)
+      NoteSubmit(w.seq, w.since_ns);
 
     /* Judged against the slots built before the sleep; only then are the
      * merges reported this round added, after those slots. */
@@ -195,6 +187,10 @@ void TegraGovernor::ThreadFn() {
       /* Reported this round or earlier: either way the merge is gone. */
       const uint64_t seq = mail.planned->frame.seq;
       Decide(*mail.planned, now, fences_.latest_seq() >= seq);
+      /* A merge reported in the same round as its plan is timed against
+       * that plan; the pass before the plan did not know it yet. */
+      for (const Watched &w : mail.submitted)
+        NoteSubmit(w.seq, w.since_ns);
     }
 
     JudgeRelease(now);
@@ -271,18 +267,35 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
       profile_.Read(now, int64_t(tuning_.profile_poll_ms) * nsPerMs);
   const bool power_save = profile == PerfProfile::powerSave;
   const bool cold = EngineCold(f, last_warm_ns_, now, tuning_);
-  /* The first merge after a pause finds the processor idled down, cold
-   * engine or not; the pause is read from the engine's last use. */
+  /* The first merge after a pause: the processor is at its light-load
+   * clock and the composer's share of the submit is long. The pause is
+   * read from the engine's last use. */
   const bool paused =
-      tuning_.cpu_pause_ms != 0 && f.last_engine_use_ns != 0 &&
-      now - f.last_engine_use_ns >= int64_t(tuning_.cpu_pause_ms) * nsPerMs;
+      tuning_.pause_ms != 0 && f.last_engine_use_ns != 0 &&
+      now - f.last_engine_use_ns >= int64_t(tuning_.pause_ms) * nsPerMs;
   host_.TraceInt("hwc_gov_paused", paused ? 1 : 0);
+
+  /* The processor's clock now: what the composer's share of the submit
+   * will run at, and what the last such share is measured in. One sysfs
+   * read a plan. */
+  const uint32_t cpu_khz =
+      cpu_.available() && (tuning_.submit_measured != 0 || cold || paused)
+          ? cpu_.CurrentKhz()
+          : 0;
+  host_.TraceInt("hwc_gov_cpu_khz", int32_t(cpu_khz));
+
+  /* Remembered so the merge's report can be timed against the plan. */
+  planned_seq_ = f.seq;
+  planned_validate_ns_ = f.now_ns;
+  planned_cpu_khz_ = cpu_khz;
+  planned_cold_ = cold;
+
   /* Lifting the processor is for the composer's submit; once the submit
    * has happened there is nothing left to lift it for. */
-  const bool lift_cpu = (cold || paused) && !merge_reported &&
-                        f.previous_flip_landed && !power_save &&
-                        cpu_.available() && tuning_.cpu_khz != 0 &&
-                        engine_.usable();
+  const bool lift_cpu = (cold || (paused && tuning_.cpu_pause_lift != 0)) &&
+                        !merge_reported && f.previous_flip_landed &&
+                        !power_save && cpu_.available() &&
+                        tuning_.cpu_khz != 0 && engine_.usable();
 
   /* An idling processor first: the engine's floor ramps the rail by I2C
    * writes served by interrupts, and at its lowest clock the processor
@@ -292,7 +305,6 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
    * by lifting first, and the processor is lifted at once whenever it is
    * below the step. */
   bool lifted = false;
-  const uint32_t cpu_khz = lift_cpu ? cpu_.CurrentKhz() : 0;
   if (lift_cpu &&
       (cpu_khz <= tuning_.cpu_low_khz || (!cold && cpu_khz < tuning_.cpu_khz))) {
     lifted = cpu_.Lift(tuning_.cpu_khz);
@@ -301,9 +313,24 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
   }
   host_.TraceInt("hwc_gov_cpu_first", lifted ? 1 : 0);
 
+  /* How long the submit will take to come: the measured warm path at
+   * the processor's present clock -- or at the lift's step, when the
+   * processor is being lifted for this very submit -- plus the assumed
+   * cold submit when the engine has to be brought up on the way; the
+   * assumed path when there is no measure yet. */
+  const uint32_t path_khz =
+      lift_cpu ? std::max(cpu_khz, tuning_.cpu_khz) : cpu_khz;
+  int64_t submit_after =
+      tuning_.submit_measured != 0 ? MeasuredSubmitNs(path_khz) : 0;
+  if (submit_after > 0 && cold)
+    submit_after += int64_t(lift_cpu ? tuning_.submit_cold_us
+                                     : tuning_.submit_cold_slow_us) *
+                    nsPerUs;
+  host_.TraceInt("hwc_gov_submit_after_us", int32_t(submit_after / nsPerUs));
+
   const MergeEstimate estimate =
       EstimateMerge(f, planned.members.data(), planned.members.size(), now,
-                    tuning_, cold, lift_cpu);
+                    tuning_, cold, lift_cpu, submit_after);
   Trace(estimate, cold, profile, now - f.now_ns, now);
 
   if (power_save) {
@@ -363,6 +390,44 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
   if (lift_cpu && !lifted && !mailbox_.HasSubmitted() &&
       cpu_.Lift(tuning_.cpu_khz))
     cpu_until_ns_ = now + int64_t(tuning_.cpu_cap_ms) * nsPerMs;
+}
+
+void TegraGovernor::NoteSubmit(uint64_t seq, int64_t reported_ns) {
+  if (seq != planned_seq_ || planned_validate_ns_ == 0)
+    return;
+  const int64_t sample_ns = reported_ns - planned_validate_ns_;
+  planned_validate_ns_ = 0;
+  host_.TraceInt("hwc_gov_submit_us", int32_t(sample_ns / nsPerUs));
+
+  /* Cold merges carry the engine's power-up in their path, not cycles;
+   * a clock unread cannot be measured in; and a report a frame or more
+   * late waited on something other than the composer. */
+  if (planned_cold_ || planned_cpu_khz_ == 0 || sample_ns <= 0 ||
+      sample_ns > 100 * nsPerMs)
+    return;
+
+  /* Nanoseconds times kilohertz over a million: cycles. */
+  const int64_t cycles = sample_ns * int64_t(planned_cpu_khz_) / 1000000;
+  /* A path three times the mean is a wait on something else too. Such
+   * paths come in runs -- a dozen merges at a stretch, at the same point
+   * of a transition, the composer waiting between present and commit at
+   * full clock -- and learning from them would have the next merge at a
+   * lower clock predicted twenty milliseconds long; replayed, restarting
+   * the mean on such a run was worse than never doing so. */
+  if (submit_cycles_ != 0 && cycles > 3 * submit_cycles_)
+    return;
+
+  const int64_t smooth = int64_t(tuning_.submit_smooth);
+  submit_cycles_ = submit_cycles_ == 0
+                       ? cycles
+                       : (submit_cycles_ * smooth + cycles) / (smooth + 1);
+  host_.TraceInt("hwc_gov_submit_kcyc", int32_t(submit_cycles_ / 1000));
+}
+
+int64_t TegraGovernor::MeasuredSubmitNs(uint32_t cpu_khz) const {
+  if (submit_cycles_ == 0 || cpu_khz == 0)
+    return 0;
+  return submit_cycles_ * 1000000 / int64_t(cpu_khz);
 }
 
 void TegraGovernor::Warm(int64_t now) {

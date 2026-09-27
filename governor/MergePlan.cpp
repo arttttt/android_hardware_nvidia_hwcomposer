@@ -99,15 +99,20 @@ void Estimate(MergeEstimate *e, int64_t deadline_ns, int64_t submit_end_ns) {
 MergeEstimate EstimateMerge(const Frame &frame, const Member *members,
                             size_t count, int64_t now_ns,
                             const Tuning &tuning, bool cold,
-                            bool cpu_lifted) {
+                            bool cpu_lifted, int64_t submit_after_ns) {
   MergeEstimate e = {};
   e.cycles = MergeCycles(members, count, tuning);
 
+  /* When the submit will have happened: measured from the frame's
+   * validate when there is a measure, else the assumed lead and submit
+   * from now. */
   const uint32_t submit_us =
       cold ? (cpu_lifted ? tuning.submit_cold_us : tuning.submit_cold_slow_us)
            : tuning.submit_warm_us;
   const int64_t submit_end =
-      now_ns + int64_t(tuning.lead_us + submit_us) * nsPerUs;
+      submit_after_ns > 0
+          ? frame.now_ns + submit_after_ns
+          : now_ns + int64_t(tuning.lead_us + submit_us) * nsPerUs;
 
   const int64_t deadline = LatchDeadline(frame, now_ns, tuning);
   Estimate(&e, deadline, submit_end);

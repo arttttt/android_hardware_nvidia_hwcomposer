@@ -42,7 +42,9 @@ class Mailbox {
  public:
   struct Contents {
     std::optional<Planned> planned;
-    std::vector<Watched> submitted;  /* since_ns not yet set */
+    /* since_ns carries when the composer reported the merge, stamped on
+     * its thread, right after the submit; the watch sets its own. */
+    std::vector<Watched> submitted;
     Power power;
     bool stop;
   };

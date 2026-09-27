@@ -20,6 +20,8 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 
+#include "governor/Clock.h"
+
 namespace android::hwc::governor::tegra {
 
 Mailbox::~Mailbox() {
@@ -59,7 +61,7 @@ void Mailbox::Plan(const Frame &frame) {
 void Mailbox::Submit(uint64_t seq, int fence_fd) {
   {
     const std::lock_guard<std::mutex> lock(mutex_);
-    submitted_.push_back(Watched{fence_fd, seq, 0});
+    submitted_.push_back(Watched{fence_fd, seq, NowNs()});
   }
   Ring();
 }

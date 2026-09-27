@@ -300,6 +300,27 @@ void NoBudgetLeftSlipsRatherThanAskingTheTop() {
 
 }  // namespace
 
+void AMeasuredSubmitPathShortensTheBudget() {
+  Tuning t;
+  Member members[3] = {FullScreen(), FullScreen(), FullScreen()};
+  /* A millisecond into the frame with the previous flip landed: the
+   * nearest latch is the target. */
+  const Frame f = Planned(t0, t0 - 1 * nsPerMs, true);
+  const MergeEstimate assumed = EstimateMerge(f, members, 3, t0, t, false, false);
+  const MergeEstimate measured =
+      EstimateMerge(f, members, 3, t0, t, false, false, 6 * nsPerMs);
+  /* Six milliseconds to the submit, measured, against the assumed lead
+   * and warm submit: the budget shrinks by exactly the difference, and
+   * the same work over less time asks a higher step. */
+  const int64_t assumed_path = int64_t(t.lead_us + t.submit_warm_us) * nsPerUs;
+  CHECK(assumed.budget_ns - measured.budget_ns == 6 * nsPerMs - assumed_path);
+  CHECK(measured.need_mhz > assumed.need_mhz);
+  CHECK(measured.step_mhz >= assumed.step_mhz);
+  /* Nought as the measure means the assumed path, exactly as before. */
+  const MergeEstimate none = EstimateMerge(f, members, 3, t0, t, false, false, 0);
+  CHECK(none.budget_ns == assumed.budget_ns);
+}
+
 int main() {
   ClockStepsAreOrdered();
   ColdIsIdleBeyondThePowergate();
@@ -316,6 +337,7 @@ int main() {
   ColdEngineGetsTheSafetyFloor();
   ColdSubmitEatsMoreBudgetUnlessTheProcessorIsLifted();
   NoBudgetLeftSlipsRatherThanAskingTheTop();
+  AMeasuredSubmitPathShortensTheBudget();
 
   if (failures != 0) {
     fprintf(stderr, "%d check(s) failed\n", failures);
