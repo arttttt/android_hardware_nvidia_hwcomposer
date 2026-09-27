@@ -133,6 +133,8 @@ LOCAL_SRC_FILES := \
     hwc2_device/hwc2_device.cpp \
     tegra/DcControl.cpp \
     tegra/DcHead.cpp \
+    tegra/GetFeaturesSource.cpp \
+    tegra/WindowFeatures.cpp \
     tegra/TegraAtomicCommitSink.cpp \
     tegra/TegraAtomicStateManager.cpp \
     tegra/TegraBackend.cpp \

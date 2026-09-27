@@ -22,6 +22,7 @@
 #include <memory>
 #include <vector>
 
+#include "tegra/WindowFeatures.h"
 #include "utils/UniqueFd.h"
 
 /* The kernel's colour-pipeline snapshot; kept behind a pointer so the kernel
@@ -138,42 +139,8 @@ public:
         int preFence = -1;
     };
 
-    /* What one window can be asked to do.
-     *
-     * The windows of a head are not alike: which formats each reads, how far
-     * it will scale, whether it understands memory arranged in blocks --
-     * these differ from one to the next, and a composer that assumed them
-     * equal would hand the hardware a frame it cannot show and find out only
-     * when the flip is refused. So they are asked for.
-     */
-    struct WindowCapabilities {
-        /* Which formats this window reads, as a bit per format code. */
-        uint64_t formats = 0;
-
-        uint32_t minWidth = 0;
-        uint32_t maxWidth = 0;
-        uint32_t minHeight = 0;
-        uint32_t maxHeight = 0;
-
-        bool pitchLayout = false;
-        bool tiledLayout = false;
-        bool blocklinearLayout = false;
-
-        bool invertH = false;
-        bool invertV = false;
-        bool scanColumn = false;
-
-        bool scaling = false;
-
-        /* How far the window will resize, as the driver's own ratios: a
-         * source may be up to maxDown times wider or taller than the window
-         * shows it, and shown up to maxUp times wider or taller than it is.
-         * All ones where the window cannot resize at all. */
-        uint32_t maxUpH = 1;
-        uint32_t maxUpV = 1;
-        uint32_t maxDownH = 1;
-        uint32_t maxDownV = 1;
-    };
+    /* What one window can be asked to do; see WindowFeatures.h. */
+    using WindowCapabilities = hwc::WindowCapabilities;
 
     /* Opens head `index`. Returns null and logs on failure. */
     static std::unique_ptr<DcHead> open(int index);
@@ -320,6 +287,11 @@ private:
     UniqueFd mFd;
     int mIndex;
 
+    /* Where this head's feature table comes from. One source today, the
+     * 3.10 kernel's; the head asks through it and would not notice another
+     * in its place. */
+    std::unique_ptr<WindowFeatureSource> mFeatures;
+
     /* Reads the live colour pipeline and keeps it as the state to restore.
      * Done once, before the first write ever changes it. */
     bool rememberBootCmu();
@@ -329,8 +301,8 @@ private:
      * its own level back. */
     static void fillIdentityTables(tegra_dc_ext_cmu *cmu);
 
-    /* Reads the controller's whole feature table and keeps what it says about
-     * each window. One call answers for every window, so it is done once. */
+    /* Reads the feature table and keeps what it says about each window. One
+     * table answers for every window, so it is done once. */
     bool readCapabilities();
 
     /* Owned windows, ascending. Empty until the first call to windows(). */
