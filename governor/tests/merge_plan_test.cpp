@@ -124,20 +124,22 @@ void DeadlineFollowsThePhase() {
         t0 + int64_t(t.budget_waited_us) * nsPerUs);
 }
 
-void CyclesAreHalfAClockPerPixelWithMargin() {
+void CyclesAreTheJobPlusHalfAClockPerPixelWithMargin() {
   Tuning t;
+  const double job = t.job_kcycles * 1000.0;
   Member members[3] = {FullScreen(), FullScreen(), FullScreen()};
-  /* Three full screens: 3 x 1536 x 2048 / 2 x 1.25. */
-  const double expected = 3.0 * 1536 * 2048 / 2 * 1.25;
+  /* Three full screens: the job plus 3 x 1536 x 2048 / 2, times 1.25. */
+  const double expected = (job + 3.0 * 1536 * 2048 / 2) * 1.25;
   CHECK(MergeCycles(members, 3, t) == expected);
 
   /* The larger side counts: a member scaled up costs its destination. */
   Member scaled = FullScreen();
   scaled.src_w = 1440;
   scaled.src_h = 1920;
-  CHECK(MergeCycles(&scaled, 1, t) == 1536.0 * 2048 / 2 * 1.25);
+  CHECK(MergeCycles(&scaled, 1, t) == (job + 1536.0 * 2048 / 2) * 1.25);
 
-  CHECK(MergeCycles(nullptr, 0, t) == 0.0);
+  /* An empty merge still costs a job -- and is never planned anyway. */
+  CHECK(MergeCycles(nullptr, 0, t) == job * 1.25);
 }
 
 void WarmMergeWithAFrameOfBudgetNeedsAModestStep() {
@@ -197,17 +199,17 @@ void ColdSlipStillGetsTheSafetyFloor() {
 void AStalePhaseIsNoPhase() {
   Tuning t;
   Member members[3] = {FullScreen(), FullScreen(), FullScreen()};
-  /* A latch a second old: the panel may have been slowed and re-phased
-   * since. The fallback budget applies and nothing slips. */
-  const Frame f = Planned(t0, t0 - nsPerSec, true);
+  /* A latch three seconds old: whatever grid the panel had then is gone.
+   * The fallback budget applies and nothing slips. */
+  const Frame f = Planned(t0, t0 - 3 * nsPerSec, true);
   CHECK(!PhaseKnown(f, t0, t));
   CHECK(LatchDeadline(f, t0, t) == t0 + int64_t(t.budget_empty_us) * nsPerUs);
   const MergeEstimate e = EstimateMerge(f, members, 3, t0, t, false, false);
   CHECK(!e.slipped);
   CHECK(e.beyond);
 
-  /* Four periods old is still a phase. */
-  const Frame g = Planned(t0, t0 - 4 * period + nsPerMs, true);
+  /* A second old -- the first frame after a pause -- is still a phase. */
+  const Frame g = Planned(t0, t0 - nsPerSec, true);
   CHECK(PhaseKnown(g, t0, t));
 }
 
@@ -292,8 +294,8 @@ void NoBudgetLeftSlipsRatherThanAskingTheTop() {
   CHECK(e.slipped);
   CHECK(!e.late);
   CHECK(e.budget_ns > 4 * nsPerMs);
-  /* ~2 M cycles over ~5.3 ms: 378 MHz. */
-  CHECK(e.step_mhz == 378);
+  /* ~2.3 M cycles over ~5.3 ms: 462 MHz. */
+  CHECK(e.step_mhz == 462);
 }
 
 }  // namespace
@@ -302,7 +304,7 @@ int main() {
   ClockStepsAreOrdered();
   ColdIsIdleBeyondThePowergate();
   DeadlineFollowsThePhase();
-  CyclesAreHalfAClockPerPixelWithMargin();
+  CyclesAreTheJobPlusHalfAClockPerPixelWithMargin();
   WarmMergeWithAFrameOfBudgetNeedsAModestStep();
   EmptyPipelineLateInTheFrameSlipsButNotPastTheNextMerge();
   SlipWhileWaitingForThePreviousFlip();

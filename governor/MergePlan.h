@@ -52,8 +52,9 @@ bool PhaseKnown(const Frame &frame, int64_t now_ns, const Tuning &tuning);
 int64_t LatchDeadline(const Frame &frame, int64_t now_ns,
                       const Tuning &tuning);
 
-/* The engine's work for the merge: a clock per `pixels_per_clock` pixels,
- * over the larger of what each member reads and writes, with the margin. */
+/* The engine's work for the merge: the job's own cost, plus a clock per
+ * `pixels_per_clock` pixels over the larger of what each member reads and
+ * writes, with the margin. */
 double MergeCycles(const Member *members, size_t count, const Tuning &tuning);
 
 struct MergeEstimate {

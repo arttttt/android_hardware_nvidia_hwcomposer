@@ -64,7 +64,9 @@ double MergeCycles(const Member *members, size_t count,
     const uint64_t dst = uint64_t(m.dst_w) * m.dst_h;
     area += std::max(src, dst);
   }
-  return double(area) / tuning.pixels_per_clock * tuning.factor_pct / 100.0;
+  const double raw = double(tuning.job_kcycles) * 1000.0 +
+                     double(area) / tuning.pixels_per_clock;
+  return raw * tuning.factor_pct / 100.0;
 }
 
 namespace {

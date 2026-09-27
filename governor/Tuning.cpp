@@ -37,6 +37,7 @@ struct TuningKey {
 constexpr TuningKey tuningKeys[] = {
     {"factor_pct", &Tuning::factor_pct},
     {"pixels_per_clock", &Tuning::pixels_per_clock},
+    {"job_kcycles", &Tuning::job_kcycles},
     {"min_cold_mhz", &Tuning::min_cold_mhz},
     {"hold_ms", &Tuning::hold_ms},
     {"powergate_ms", &Tuning::powergate_ms},

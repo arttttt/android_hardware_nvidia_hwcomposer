@@ -39,6 +39,12 @@ struct Tuning {
   /* Pixels the engine moves per clock. Two on this chip. */
   uint32_t pixels_per_clock = 2;
 
+  /* What a job costs before its first pixel, thousands of cycles: from
+   * the calibration markers of twelve runs, the engine's cycles for a
+   * merge fit a quarter of a million plus half a cycle per pixel, within
+   * ten per cent either way on the large ones. */
+  uint32_t job_kcycles = 250;
+
   /* The floor asked of a cold engine when the model wants less: until the
    * model is calibrated its underestimates are covered from here. Nought
    * trusts the model. */
@@ -75,10 +81,13 @@ struct Tuning {
   /* How far before the latch the merge has to be done. */
   uint32_t latch_margin_us = 700;
 
-  /* How many periods old the last latch may be and still place the grid:
-   * after a second of quiet the panel is slowed and re-phased, and a grid
-   * extended across that is a guess. Beyond this the fallbacks apply. */
-  uint32_t phase_max_age_periods = 4;
+  /* How many periods old the last latch may be and still place the grid.
+   * After a second of quiet the panel is slowed and re-phased, but the
+   * re-phasing measured on the device is under three milliseconds, and a
+   * grid extended across it beat the fallback budgets on the first frame
+   * after the pause -- which is the frame the governor is for. Two
+   * seconds, then; beyond that the fallbacks apply. */
+  uint32_t phase_max_age_periods = 120;
 
   /* How soon after a latch the next frame's merge is expected at the
    * engine: the framework's offset and the composer's path. A slipped
