@@ -81,8 +81,13 @@ struct Tuning {
    * the composer's own share of the submit -- planning the merge,
    * describing it, the ioctl -- takes six milliseconds at the idle clock
    * against one and a half at speed. Such a merge is lifted whether or
-   * not the engine is cold. Nought turns the rule off. */
-  uint32_t cpu_pause_ms = 100;
+   * not the engine is cold. Nought turns the rule off, and it is off: the
+   * processor at such a merge is at 830-900 MHz, held there by its
+   * governor under the light load of compositing without a merge, and a
+   * lift to the step the cold rule uses buys a sixth of the clock and
+   * nothing measurable -- late merges 21 against 16, hitches 10 against
+   * 11 over six runs each. The rule waits for a higher step of its own. */
+  uint32_t cpu_pause_ms = 0;
 
   /* How long the floor outlives the last merge's fence, so the merges of
    * one transition do not each pay for the clock coming and going. */
