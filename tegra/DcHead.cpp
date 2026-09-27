@@ -416,24 +416,48 @@ static std::vector<struct tegra_dc_ext_flip_windowattr> describe(
     return attrs;
 }
 
+/* The request both the proposal and the flip are made of: the fourth revision
+ * of the structure, the one both the 3.10 kernel and the 4.9 kernels of the
+ * L4T r32 line serve, and the only flip the latter still know. Its head is
+ * the third revision byte for byte; the tail that would point at per-flip
+ * user data stays empty. The only user data the 3.10 kernel understands is
+ * HDR metadata, which on a DSI panel changes nothing except arming the
+ * frame-end interrupt whenever the metadata is sent, and on r32 the fence fd
+ * in the head remains the default way to be handed the post fence. */
+static struct tegra_dc_ext_flip_4 enclose(
+        const std::vector<struct tegra_dc_ext_flip_windowattr> &attrs) {
+    struct tegra_dc_ext_flip_4 request;
+    memset(&request, 0, sizeof(request));
+
+    request.win = reinterpret_cast<__u64>(attrs.data());
+    request.win_num = static_cast<__u8>(attrs.size());
+    request.post_syncpt_fd = -1;
+
+    /* No head flags. The ones that exist select YUV bypass, variable refresh
+     * and, on the 3.10 kernel, a second, wider window structure; sending that
+     * last flag with the structure this code fills would have the driver
+     * parse every field at the wrong offset. */
+    request.flags = 0;
+
+    return request;
+}
+
 int DcHead::test(const std::vector<Window> &windows) {
     if (windows.empty())
         return -EINVAL;
 
     std::vector<struct tegra_dc_ext_flip_windowattr> attrs = describe(windows);
-
-    struct tegra_dc_ext_flip_3 proposal;
-    memset(&proposal, 0, sizeof(proposal));
-
-    proposal.win = reinterpret_cast<__u64>(attrs.data());
-    proposal.win_num = static_cast<__u8>(attrs.size());
-    proposal.post_syncpt_fd = -1;
-    proposal.flags = 0;
+    struct tegra_dc_ext_flip_4 proposal = enclose(attrs);
 
     /* The controller weighs the whole set against the memory bandwidth it can
      * command and answers without touching anything. This is the one refusal
      * that cannot be predicted from the windows alone: each may be within
-     * what it can do while together they ask for more than there is. */
+     * what it can do while together they ask for more than there is.
+     *
+     * How much of the request the driver reads is settled by the header this
+     * is built against: the 3.10 kernel declares the proposal over the third
+     * revision and copies its 24 bytes, the r32 line declares it over the
+     * fourth and copies all 40. The head is the same bytes either way. */
     if (ioctl(mFd.get(), TEGRA_DC_EXT_SET_PROPOSED_BW_3, &proposal) < 0) {
         int err = -errno;
         HWC_LOGD("head %d: %zu window(s) will not fit: %s", mIndex,
@@ -449,19 +473,7 @@ int DcHead::flip(const std::vector<Window> &windows, UniqueFd *outPostFence) {
         return -EINVAL;
 
     std::vector<struct tegra_dc_ext_flip_windowattr> attrs = describe(windows);
-
-    struct tegra_dc_ext_flip_3 flip;
-    memset(&flip, 0, sizeof(flip));
-
-    flip.win = reinterpret_cast<__u64>(attrs.data());
-    flip.win_num = static_cast<__u8>(attrs.size());
-    flip.post_syncpt_fd = -1;
-
-    /* No head flags. The two that exist here select YUV bypass and a second,
-     * wider window structure; sending the wider flag with the structure this
-     * code fills would have the driver parse every field at the wrong
-     * offset. */
-    flip.flags = 0;
+    struct tegra_dc_ext_flip_4 flip = enclose(attrs);
 
     for (const Window &window : windows) {
         HWC_LOGD("head %d: win %d buf=%d off=%u stride=%u offU=%u strideUV=%u "
@@ -476,9 +488,9 @@ int DcHead::flip(const std::vector<Window> &windows, UniqueFd *outPostFence) {
                  window.z, window.preFence);
     }
 
-    if (ioctl(mFd.get(), TEGRA_DC_EXT_FLIP3, &flip) < 0) {
+    if (ioctl(mFd.get(), TEGRA_DC_EXT_FLIP4, &flip) < 0) {
         int err = -errno;
-        HWC_LOGE("head %d: FLIP3 with %zu window(s): %s", mIndex,
+        HWC_LOGE("head %d: FLIP4 with %zu window(s): %s", mIndex,
                  windows.size(), strerror(-err));
         return err;
     }

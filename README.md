@@ -23,7 +23,7 @@ the process walks into its descriptor limit and SurfaceFlinger dies with it.
 
 Interfaces sit between the composer core and the display: a pipeline, a
 compositor, a vsync source, and an immutable per-frame plan. Behind them the
-Tegra implementation issues `TEGRA_DC_EXT_FLIP3` and reads display events from
+Tegra implementation issues `TEGRA_DC_EXT_FLIP4` and reads display events from
 the kernel's event mask. Nothing DRM/KMS is involved — the R24.1 kernel this
 device runs has no DRM driver for the display controller and no PRIME path.
 
