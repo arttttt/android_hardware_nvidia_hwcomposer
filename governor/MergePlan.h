@@ -68,8 +68,7 @@ struct MergeEstimate {
   bool slipped;        /* aimed at the latch after the nearest one */
 };
 
-/* `cold` says the engine will pay for coming up; `cpu_lifted` that the
- * processor will be lifted for the submit, which shortens it.
+/* `cold` says the engine will pay for coming up.
  *
  * A latch the merge cannot make at the top step even down the shortest
  * path is not the latch the frame will land on: with the phase known, the
@@ -81,6 +80,6 @@ struct MergeEstimate {
  * higher step. */
 MergeEstimate EstimateMerge(const Frame &frame, const Member *members,
                             size_t count, int64_t now_ns,
-                            const Tuning &tuning, bool cold, bool cpu_lifted);
+                            const Tuning &tuning, bool cold);
 
 }  // namespace android::hwc::governor::tegra

@@ -50,6 +50,15 @@ struct Tuning {
    * trusts the model. */
   uint32_t min_cold_mhz = 504;
 
+  /* The most asked of a cold engine before the composer's submit. A
+   * higher step on a just-powered engine ramps the core rail -- two to
+   * nine milliseconds of the kernel stepping the regulator -- with the
+   * bus clock's lock held, and the composer's own submit waits behind
+   * that lock. Up to this step the ramp is a fraction of a millisecond
+   * on the device; what the model wants beyond it is asked once the
+   * merge has been reported, when nobody is waiting. */
+  uint32_t cold_cap_mhz = 504;
+
   /* How long the floor outlives the last merge's fence, so the merges of
    * one transition do not each pay for the clock coming and going. */
   uint32_t hold_ms = 17;
@@ -58,20 +67,14 @@ struct Tuning {
    * powergate delay. */
   uint32_t powergate_ms = 500;
 
-  /* The processor floor's step, kilohertz, and how long it may be held.
-   * Nought as the step lifts the processor never. */
-  uint32_t cpu_khz = 1044000;
-  uint32_t cpu_cap_ms = 5;
-
   /* The path from validate to the submit, measured: the composer's lead
-   * and the submit itself on a warm engine, on a cold one with the
-   * processor lifted, and on a cold one without. The cold ones are short
-   * now that the governor wakes the engine before the composer gets
-   * there: half a millisecond to a millisecond and a half on the device. */
+   * and the submit itself on a warm engine and on a cold one. The cold
+   * one is short now that the governor wakes the engine before the
+   * composer gets there: a quarter of a millisecond at the median, under
+   * one at the ninetieth percentile on the device. */
   uint32_t lead_us = 1500;
   uint32_t submit_warm_us = 250;
   uint32_t submit_cold_us = 600;
-  uint32_t submit_cold_slow_us = 1200;
 
   /* The shortest the path can be: what a latch is judged hopeless by. A
    * latch the merge cannot make at the top step even from here is left

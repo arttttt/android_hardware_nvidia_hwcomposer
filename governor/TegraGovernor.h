@@ -22,7 +22,6 @@
 #include <thread>
 #include <vector>
 
-#include "governor/CpuFloor.h"
 #include "governor/EngineClock.h"
 #include "governor/FenceWatch.h"
 #include "governor/HwcGovernor.h"
@@ -34,24 +33,31 @@
 /* The composition load governor for Tegra K1: hwcgovernor.tegra.so.
  *
  * What it decides, once per planned merge: whether to wake a powered-down
- * engine ahead of the merge, what clock floor to ask of the engine for the
- * merge's duration, and whether to lift the processor's floor for the few
- * milliseconds between the plan and the submit. The kernel does the rest --
- * the memory clock follows the engine's floor, and the display's isochronous
- * share follows the engine being on.
+ * engine ahead of the merge, and what clock floor to ask of the engine for
+ * the merge's duration -- how much of it before the composer's submit and
+ * how much after. The kernel does the rest -- the memory clock follows the
+ * engine's floor, and the display's isochronous share follows the engine
+ * being on.
  *
  * The parts: the model (MergePlan) turns a snapshot into a step; the engine
- * clock (EngineClock) and the processor floor (CpuFloor) are the two doors
- * into the kernel; the profile (PerfProfile) says whether the device is
- * saving power; the tuning (Tuning) holds the numbers; the mailbox
- * (Mailbox) is where the composer's threads leave their news, and the
- * fence watch (FenceWatch) is how merges in flight are followed. This class
- * is the thread that joins them and the timers that let the floor go.
+ * clock (EngineClock) is the door into the kernel; the profile
+ * (PerfProfile) says whether the device is saving power; the tuning
+ * (Tuning) holds the numbers; the mailbox (Mailbox) is where the
+ * composer's threads leave their news, and the fence watch (FenceWatch) is
+ * how merges in flight are followed. This class is the thread that joins
+ * them and the timers that let the floor go.
  *
- * Everything that may sleep -- the clock request, the warm-up pass, the
- * processor floor -- runs on this thread. The thread waits in one place,
- * poll(), on the mailbox's descriptor and on the fences, so a merge
- * finishing and a frame being planned are the same kind of wake-up.
+ * Everything that may sleep -- the clock request, the warm-up pass -- runs
+ * on this thread. The thread waits in one place, poll(), on the mailbox's
+ * descriptor and on the fences, so a merge finishing and a frame being
+ * planned are the same kind of wake-up.
+ *
+ * The processor's floor was lifted here too, for the composer's submit,
+ * and was measured out: put first it ran the processor's whole scaling
+ * step -- three milliseconds when the memory clock had to follow -- ahead
+ * of the warm-up and the floor; put last it found the processor already
+ * high in every transition, and the submit already behind the engine's
+ * own voltage ramp. It is gone.
  */
 
 namespace android::hwc::governor::tegra {
@@ -80,8 +86,8 @@ class TegraGovernor final : public Governor {
   int TimeoutMs(int64_t now) const;
   /* `merge_reported` says the composer had already sent this frame's
    * merge to the engine when the plan was taken out of the mailbox: too
-   * late to wake the engine or lift the processor, not too late for the
-   * floor. */
+   * late to wake the engine, not too late for the floor -- and nobody is
+   * waiting behind its ramp any more. */
   void Decide(const Planned &planned, int64_t now, bool merge_reported);
   void Trace(const MergeEstimate &estimate, bool cold, int profile,
              int64_t lag_ns);
@@ -89,7 +95,7 @@ class TegraGovernor final : public Governor {
   void KeepFloorFor(int64_t now);
   void FollowFences(int64_t now);
   void JudgeRelease(int64_t now);
-  void DropCpu();
+  void RaiseDeferred();
   void DropEverything();
 
   GovernorHost &host_;
@@ -102,7 +108,6 @@ class TegraGovernor final : public Governor {
 
   Mailbox mailbox_;
   EngineClock engine_;
-  CpuFloor cpu_;
   PerfProfile profile_;
 
   std::thread thread_;
@@ -111,7 +116,10 @@ class TegraGovernor final : public Governor {
   FenceWatch fences_;
   int64_t release_due_ns_ = 0;  /* when the floor may go, nought if not yet */
   int64_t orphan_due_ns_ = 0;   /* floor raised, no merge reported by then */
-  int64_t cpu_until_ns_ = 0;    /* processor lifted until, nought if not */
+
+  /* The step a cold engine was not asked before the submit, to be asked
+   * once the merge is reported; nought if none is owed. */
+  uint32_t deferred_mhz_ = 0;
   int64_t last_warm_ns_ = 0;
   bool warm_refused_logged_ = false;
 };

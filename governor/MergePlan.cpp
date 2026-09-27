@@ -98,14 +98,12 @@ void Estimate(MergeEstimate *e, int64_t deadline_ns, int64_t submit_end_ns) {
 
 MergeEstimate EstimateMerge(const Frame &frame, const Member *members,
                             size_t count, int64_t now_ns,
-                            const Tuning &tuning, bool cold,
-                            bool cpu_lifted) {
+                            const Tuning &tuning, bool cold) {
   MergeEstimate e = {};
   e.cycles = MergeCycles(members, count, tuning);
 
   const uint32_t submit_us =
-      cold ? (cpu_lifted ? tuning.submit_cold_us : tuning.submit_cold_slow_us)
-           : tuning.submit_warm_us;
+      cold ? tuning.submit_cold_us : tuning.submit_warm_us;
   const int64_t submit_end =
       now_ns + int64_t(tuning.lead_us + submit_us) * nsPerUs;
 

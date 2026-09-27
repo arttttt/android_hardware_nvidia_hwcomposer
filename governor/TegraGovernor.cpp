@@ -42,7 +42,7 @@ int64_t NowNs() {
 }  // namespace
 
 TegraGovernor::TegraGovernor(GovernorHost &host)
-    : host_(host), engine_(host), cpu_(host) {
+    : host_(host), engine_(host) {
 }
 
 bool TegraGovernor::Start() {
@@ -56,7 +56,6 @@ bool TegraGovernor::Start() {
 
   if (!engine_.Open())
     host_.Log(ANDROID_LOG_ERROR, "no engine clock; running as a witness");
-  cpu_.Open();
 
   thread_ = std::thread(&TegraGovernor::ThreadFn, this);
   return true;
@@ -105,7 +104,6 @@ int TegraGovernor::TimeoutMs(int64_t now) const {
     if (when > 0 && (due == 0 || when < due))
       due = when;
   };
-  consider(cpu_until_ns_);
   consider(release_due_ns_);
   consider(orphan_due_ns_);
   consider(fences_.NextGiveUpNs(int64_t(tuning_.fence_patience_ms) * nsPerMs));
@@ -168,11 +166,12 @@ void TegraGovernor::ThreadFn() {
       continue;
     }
 
-    /* Merges that went to the engine: the processor has done its part,
-     * the fence is now what says when the engine has done its. */
+    /* Merges that went to the engine: the fence is now what says when the
+     * engine is done with them -- and the composer is past the submit, so
+     * a step withheld from a cold engine can be asked now. */
     if (!mail.submitted.empty()) {
       orphan_due_ns_ = 0;
-      DropCpu();
+      RaiseDeferred();
     }
 
     /* Judged against the slots built before the sleep; only then are the
@@ -196,9 +195,6 @@ void TegraGovernor::ThreadFn() {
     }
 
     JudgeRelease(now);
-
-    if (cpu_until_ns_ != 0 && now >= cpu_until_ns_)
-      DropCpu();
   }
 }
 
@@ -210,8 +206,20 @@ void TegraGovernor::JudgeRelease(int64_t now) {
   if (held_long_enough || orphaned) {
     release_due_ns_ = 0;
     orphan_due_ns_ = 0;
+    deferred_mhz_ = 0;
     engine_.Release();
   }
+}
+
+void TegraGovernor::RaiseDeferred() {
+  const uint32_t step = deferred_mhz_;
+  deferred_mhz_ = 0;
+  if (step == 0 || !engine_.usable() || step <= engine_.floor_mhz())
+    return;
+  /* The merge is running at the capped step; the ramp this starts lands
+   * partway through it, or before the next one of the transition. */
+  engine_.SetFloor(step);
+  host_.TraceInt("hwc_gov_deferred_mhz", 0);
 }
 
 void TegraGovernor::KeepFloorFor(int64_t now) {
@@ -223,11 +231,6 @@ void TegraGovernor::FollowFences(int64_t now) {
   orphan_due_ns_ = 0;
   release_due_ns_ =
       fences_.empty() ? now + int64_t(tuning_.hold_ms) * nsPerMs : 0;
-}
-
-void TegraGovernor::DropCpu() {
-  cpu_until_ns_ = 0;
-  cpu_.Drop();
 }
 
 void TegraGovernor::Trace(const MergeEstimate &e, bool cold, int profile,
@@ -257,15 +260,10 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
       profile_.Read(now, int64_t(tuning_.profile_poll_ms) * nsPerMs);
   const bool power_save = profile == PerfProfile::powerSave;
   const bool cold = EngineCold(f, last_warm_ns_, now, tuning_);
-  /* Lifting the processor is for the composer's submit; once the submit
-   * has happened there is nothing left to lift it for. */
-  const bool lift_cpu = cold && !merge_reported && f.previous_flip_landed &&
-                        !power_save && cpu_.available() &&
-                        tuning_.cpu_khz != 0 && engine_.usable();
 
   const MergeEstimate estimate =
       EstimateMerge(f, planned.members.data(), planned.members.size(), now,
-                    tuning_, cold, lift_cpu);
+                    tuning_, cold);
   Trace(estimate, cold, profile, now - f.now_ns);
 
   if (power_save) {
@@ -285,31 +283,37 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
   if (cold && !merge_reported)
     Warm(now);
 
+  if (!engine_.usable())
+    return;
+
+  /* A cold engine with the submit still ahead is asked no more than the
+   * cap now: a higher step ramps the core rail with the bus clock's lock
+   * held, and the composer's submit would wait behind it for
+   * milliseconds. The rest is owed, and asked once the merge is reported.
+   * A merge already sent, or a warm engine, is asked the step outright. */
+  uint32_t ask = estimate.step_mhz;
+  deferred_mhz_ = 0;
+  if (cold && !merge_reported && ask > tuning_.cold_cap_mhz) {
+    deferred_mhz_ = ask;
+    ask = tuning_.cold_cap_mhz;
+  }
+  host_.TraceInt("hwc_gov_deferred_mhz", int32_t(deferred_mhz_));
+
   /* Only upward from what the engine is already doing, by devfreq's doing
    * or by a floor still standing from the previous merge. A standing
    * floor is kept standing: this merge's fence will extend it. */
-  if (engine_.usable()) {
-    const uint32_t have =
-        std::max(engine_.CurrentMhz().value_or(0), engine_.floor_mhz());
-    const bool raised = estimate.step_mhz > have &&
-                        engine_.SetFloor(estimate.step_mhz);
-    if (raised || engine_.floor_mhz() != 0) {
-      /* A floor for a merge still to come waits for its report; one for a
-       * merge already in flight follows that merge's fence -- and if the
-       * fence is already gone, the hold starts now. */
-      if (!merge_reported)
-        KeepFloorFor(now);
-      else
-        FollowFences(now);
-    }
+  const uint32_t have =
+      std::max(engine_.CurrentMhz().value_or(0), engine_.floor_mhz());
+  const bool raised = ask > have && engine_.SetFloor(ask);
+  if (raised || engine_.floor_mhz() != 0) {
+    /* A floor for a merge still to come waits for its report; one for a
+     * merge already in flight follows that merge's fence -- and if the
+     * fence is already gone, the hold starts now. */
+    if (!merge_reported)
+      KeepFloorFor(now);
+    else
+      FollowFences(now);
   }
-
-  /* Last, and only if the submit is still ahead: the request runs the
-   * processor's whole scaling step on this thread -- three milliseconds
-   * when the processor was idling -- and put first it held the warm-up and
-   * the floor behind it until the composer had submitted anyway. */
-  if (lift_cpu && !mailbox_.HasSubmitted() && cpu_.Lift(tuning_.cpu_khz))
-    cpu_until_ns_ = now + int64_t(tuning_.cpu_cap_ms) * nsPerMs;
 }
 
 void TegraGovernor::Warm(int64_t now) {
@@ -333,8 +337,8 @@ void TegraGovernor::DropEverything() {
   fences_.DropAll();
   release_due_ns_ = 0;
   orphan_due_ns_ = 0;
+  deferred_mhz_ = 0;
   engine_.Release();
-  DropCpu();
 }
 
 }  // namespace android::hwc::governor::tegra

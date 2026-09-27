@@ -148,7 +148,7 @@ void WarmMergeWithAFrameOfBudgetNeedsAModestStep() {
   /* Right after a vsync, previous flip not landed: the frame has the
    * best part of two periods -- the long, waited budget. */
   const Frame f = Planned(t0, t0 - 1 * nsPerMs, false);
-  const MergeEstimate e = EstimateMerge(f, members, 2, t0, t, false, false);
+  const MergeEstimate e = EstimateMerge(f, members, 2, t0, t, false);
   CHECK(!e.late);
   CHECK(!e.beyond);
   /* ~3.9 M cycles over ~30 ms is well under the lowest step. */
@@ -165,7 +165,7 @@ void EmptyPipelineLateInTheFrameSlipsButNotPastTheNextMerge() {
    * latch after -- but the next frame's merge arrives 6.5 ms past the
    * nearest latch, and this one has to be out of the engine by then. */
   const Frame f = Planned(t0, t0 - 10 * nsPerMs, true);
-  const MergeEstimate e = EstimateMerge(f, members, 3, t0, t, false, false);
+  const MergeEstimate e = EstimateMerge(f, members, 3, t0, t, false);
   CHECK(e.slipped);
   CHECK(!e.beyond);
   CHECK(!e.late);
@@ -181,7 +181,7 @@ void SlipWhileWaitingForThePreviousFlip() {
   /* Not landed: the frame already targets the latch after the nearest,
    * ten milliseconds into the frame that is ~23 ms away -- no slip. */
   const Frame f = Planned(t0, t0 - 10 * nsPerMs, false);
-  const MergeEstimate e = EstimateMerge(f, members, 3, t0, t, false, false);
+  const MergeEstimate e = EstimateMerge(f, members, 3, t0, t, false);
   CHECK(!e.slipped);
   CHECK(!e.beyond);
   CHECK(e.budget_ns > 20 * nsPerMs);
@@ -191,7 +191,7 @@ void ColdSlipStillGetsTheSafetyFloor() {
   Tuning t;
   Member members[3] = {FullScreen(), FullScreen(), FullScreen()};
   const Frame f = Planned(t0, t0 - 10 * nsPerMs, true);
-  const MergeEstimate e = EstimateMerge(f, members, 3, t0, t, true, false);
+  const MergeEstimate e = EstimateMerge(f, members, 3, t0, t, true);
   CHECK(e.slipped);
   CHECK(e.step_mhz >= t.min_cold_mhz);
 }
@@ -204,7 +204,7 @@ void AStalePhaseIsNoPhase() {
   const Frame f = Planned(t0, t0 - 3 * nsPerSec, true);
   CHECK(!PhaseKnown(f, t0, t));
   CHECK(LatchDeadline(f, t0, t) == t0 + int64_t(t.budget_empty_us) * nsPerUs);
-  const MergeEstimate e = EstimateMerge(f, members, 3, t0, t, false, false);
+  const MergeEstimate e = EstimateMerge(f, members, 3, t0, t, false);
   CHECK(!e.slipped);
   CHECK(e.beyond);
 
@@ -221,7 +221,7 @@ void AMarginalLatchIsAskedTheTopStepNotSlipped() {
    * not with the margin and the usual lead. Doubt goes to the higher
    * step, not to the next frame. */
   const Frame f = Planned(t0, t0 - 10 * nsPerMs, true);
-  const MergeEstimate e = EstimateMerge(f, members, 2, t0, t, false, false);
+  const MergeEstimate e = EstimateMerge(f, members, 2, t0, t, false);
   CHECK(!e.slipped);
   CHECK(e.beyond);
   CHECK(e.step_mhz == topStepMhz);
@@ -235,7 +235,7 @@ void SlipsOnceOnly() {
   huge.src_w = huge.dst_w = 8192;
   huge.src_h = huge.dst_h = 8192;
   const Frame f = Planned(t0, t0 - 10 * nsPerMs, true);
-  const MergeEstimate e = EstimateMerge(f, &huge, 1, t0, t, false, false);
+  const MergeEstimate e = EstimateMerge(f, &huge, 1, t0, t, false);
   CHECK(e.slipped);
   CHECK(e.beyond);
   CHECK(e.step_mhz == topStepMhz);
@@ -245,7 +245,7 @@ void WithoutAPhaseNothingSlips() {
   Tuning t;
   Member members[3] = {FullScreen(), FullScreen(), FullScreen()};
   const Frame f = Planned(t0, 0, true);
-  const MergeEstimate e = EstimateMerge(f, members, 3, t0, t, false, false);
+  const MergeEstimate e = EstimateMerge(f, members, 3, t0, t, false);
   CHECK(!e.slipped);
   CHECK(e.beyond);
   CHECK(e.step_mhz == topStepMhz);
@@ -258,29 +258,26 @@ void ColdEngineGetsTheSafetyFloor() {
   small.src_h = small.dst_h = 200;
   const Frame f = Planned(t0, t0 - 1 * nsPerMs, false);
 
-  const MergeEstimate warm = EstimateMerge(f, &small, 1, t0, t, false, false);
+  const MergeEstimate warm = EstimateMerge(f, &small, 1, t0, t, false);
   CHECK(warm.step_mhz == 180);
 
-  const MergeEstimate cold = EstimateMerge(f, &small, 1, t0, t, true, false);
+  const MergeEstimate cold = EstimateMerge(f, &small, 1, t0, t, true);
   CHECK(cold.step_mhz == t.min_cold_mhz);
 
   /* Trusting the model turns the floor off. */
   t.min_cold_mhz = 0;
-  const MergeEstimate trusted = EstimateMerge(f, &small, 1, t0, t, true, false);
+  const MergeEstimate trusted = EstimateMerge(f, &small, 1, t0, t, true);
   CHECK(trusted.step_mhz == 180);
 }
 
-void ColdSubmitEatsMoreBudgetUnlessTheProcessorIsLifted() {
+void ColdSubmitEatsMoreBudget() {
   Tuning t;
   Member m = FullScreen();
   const Frame f = Planned(t0, t0 - 1 * nsPerMs, false);
-  const MergeEstimate warm = EstimateMerge(f, &m, 1, t0, t, false, false);
-  const MergeEstimate lifted = EstimateMerge(f, &m, 1, t0, t, true, true);
-  const MergeEstimate slow = EstimateMerge(f, &m, 1, t0, t, true, false);
-  CHECK(warm.budget_ns - lifted.budget_ns ==
+  const MergeEstimate warm = EstimateMerge(f, &m, 1, t0, t, false);
+  const MergeEstimate cold = EstimateMerge(f, &m, 1, t0, t, true);
+  CHECK(warm.budget_ns - cold.budget_ns ==
         int64_t(t.submit_cold_us - t.submit_warm_us) * nsPerUs);
-  CHECK(lifted.budget_ns - slow.budget_ns ==
-        int64_t(t.submit_cold_slow_us - t.submit_cold_us) * nsPerUs);
 }
 
 void NoBudgetLeftSlipsRatherThanAskingTheTop() {
@@ -290,7 +287,7 @@ void NoBudgetLeftSlipsRatherThanAskingTheTop() {
    * landed: gone even down the shortest path; the slip runs to the next
    * frame's merge, ~7 ms past that latch. */
   const Frame f = Planned(t0, t0 - period + 500 * nsPerUs, true);
-  const MergeEstimate e = EstimateMerge(f, &m, 1, t0, t, false, false);
+  const MergeEstimate e = EstimateMerge(f, &m, 1, t0, t, false);
   CHECK(e.slipped);
   CHECK(!e.late);
   CHECK(e.budget_ns > 4 * nsPerMs);
@@ -314,7 +311,7 @@ int main() {
   SlipsOnceOnly();
   WithoutAPhaseNothingSlips();
   ColdEngineGetsTheSafetyFloor();
-  ColdSubmitEatsMoreBudgetUnlessTheProcessorIsLifted();
+  ColdSubmitEatsMoreBudget();
   NoBudgetLeftSlipsRatherThanAskingTheTop();
 
   if (failures != 0) {
