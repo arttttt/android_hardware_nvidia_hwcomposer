@@ -20,10 +20,12 @@
  *       tegra/WindowFeatures.cpp -o /tmp/window_features_test && \
  *       /tmp/window_features_test
  *
- * The rows are the ones the 3.10 kernel recites for the mocha panel's head:
- * windows 0-2 read every format the controller has and resize by two,
- * window 3 reads the five simple RGB formats and does not resize at all.
- * They stand in for the driver here; the composer itself never carries them.
+ * The rows are the ones the 3.10 kernel recites for the mocha panel's head
+ * (drivers/video/tegra/dc/dc_config.c, the first head's table): windows 0-2
+ * read every format the controller has, resize by two and flip either way;
+ * window 3 reads the five simple RGB formats, pitch layout only, and neither
+ * resizes nor flips. They stand in for the driver here; the composer itself
+ * never carries them.
  */
 
 #include <cstdio>
@@ -71,10 +73,10 @@ std::vector<FeatureEntry> FullWindow(uint32_t w) {
 }
 
 std::vector<FeatureEntry> SimpleWindow(uint32_t w) {
-  return {Row(w, kFormats, 0x000030F0, 0), Row(w, kBlend, 1),
+  return {Row(w, kFormats, 0x000030F0, 0), Row(w, kBlend, 2),
           Row(w, kMaximumSize, 4096, 1, 4096, 1),
           Row(w, kMaximumScale, 1, 1, 1, 1), Row(w, kFilter, 0, 0),
-          Row(w, kLayout, 1, 0, 1), Row(w, kInvert, 1, 1, 0),
+          Row(w, kLayout, 1, 0, 0), Row(w, kInvert, 0, 0, 0),
           Row(w, kField, 0)};
 }
 
@@ -93,7 +95,7 @@ void AFullWindowIsDescribedWhole() {
   CHECK(w.invertH && w.invertV && w.scanColumn);
 }
 
-void ASimpleWindowDoesNotResize() {
+void ASimpleWindowDoesNotResizeNorFlip() {
   std::map<uint32_t, WindowCapabilities> caps;
   describeWindows(SimpleWindow(3), caps);
 
@@ -101,7 +103,8 @@ void ASimpleWindowDoesNotResize() {
   CHECK(w.formats == 0x30F0ULL);
   CHECK(!w.scaling);
   CHECK(w.maxUpH == 1 && w.maxUpV == 1 && w.maxDownH == 1 && w.maxDownV == 1);
-  CHECK(w.invertH && w.invertV && !w.scanColumn);
+  CHECK(w.pitchLayout && !w.tiledLayout && !w.blocklinearLayout);
+  CHECK(!w.invertH && !w.invertV && !w.scanColumn);
 }
 
 void TheWholeHeadKeepsEveryWindowApart() {
@@ -155,7 +158,7 @@ void OneRatioOffOneIsResizing() {
 
 int main() {
   AFullWindowIsDescribedWhole();
-  ASimpleWindowDoesNotResize();
+  ASimpleWindowDoesNotResizeNorFlip();
   TheWholeHeadKeepsEveryWindowApart();
   ARowNobodyReadsStillNamesTheWindow();
   AnUnknownPropertyChangesNothing();
