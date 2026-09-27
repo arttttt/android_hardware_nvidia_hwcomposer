@@ -913,11 +913,33 @@ hwc::governor::Power GovernorPower(PowerMode mode) {
 bool TegraAtomicStateManager::NoteLatch() {
   if (FenceDue(previous_post_fence_) != Due::kYes)
     return false;
+
+  if (latch_period_ns_ == 0 && !modes_.empty())
+    latch_period_ns_ = int64_t(modes_.front().GetVSyncPeriodNs());
+
+  /* A latch taken while the panel may still be finishing a slowed frame
+   * is a latch of the wrong grid: the phase is dropped and picked up
+   * again from the first clean landing. */
+  if (governor_ != nullptr && !governor_->VsyncTimestampTrustworthy()) {
+    last_latch_ns_ = 0;
+    return true;
+  }
+
   /* Due, so the time is there to read; a fence that cannot say when
    * leaves the last known latch standing. */
   const std::optional<int64_t> at = SignalTimeNs(previous_post_fence_);
-  if (at && *at > last_latch_ns_)
-    last_latch_ns_ = *at;
+  if (!at || *at <= last_latch_ns_)
+    return true;
+
+  /* The period, followed: a landing a whole number of periods after the
+   * last one, up to a few, refines it an eighth at a time. */
+  if (last_latch_ns_ != 0 && latch_period_ns_ > 0) {
+    const int64_t gap = *at - last_latch_ns_;
+    const int64_t k = (gap + latch_period_ns_ / 2) / latch_period_ns_;
+    if (k >= 1 && k <= 8)
+      latch_period_ns_ += (gap / k - latch_period_ns_) / 8;
+  }
+  last_latch_ns_ = *at;
   return true;
 }
 
@@ -936,8 +958,7 @@ void TegraAtomicStateManager::TellGovernor(const TegraAtomicRequest &tegra) {
   frame.seq = ++planned_seq_;
   frame.now_ns = GetTimeMonotonicNs();
   frame.last_latch_ns = last_latch_ns_;
-  frame.vsync_period_ns =
-      modes_.empty() ? 0 : int64_t(modes_.front().GetVSyncPeriodNs());
+  frame.vsync_period_ns = latch_period_ns_;
   frame.last_engine_use_ns = vic_ != nullptr ? vic_->last_use_ns() : 0;
   frame.merge_planned = !merge.layers.empty();
   /* The verdict execute will reach, predicted from the same key. Only a

@@ -368,9 +368,17 @@ class TegraAtomicStateManager : public AtomicStateManager {
 
   /* When the display last latched a frame, as the previous flip's fence
    * reported it once due: the controller's own scanout grid, which the
-   * governor aims its deadlines at. Nought before the first landed flip.
-   * Refreshed at every validate and execute that finds the fence due. */
+   * governor aims its deadlines at. Nought before the first landed flip,
+   * and nought again while the refresh governor's raise is in its shadow
+   * -- a latch of a slowed frame places no grid. Refreshed at every
+   * validate and execute that finds the fence due. */
   int64_t last_latch_ns_ = 0;
+
+  /* The period between latches as the fences report it, not as the mode
+   * computes it: the two differ by a part in six hundred on this panel,
+   * which is a millisecond and a half across a second's pause. Seeded
+   * from the mode, then followed as landed flips come in. */
+  int64_t latch_period_ns_ = 0;
   bool NoteLatch();
 
   /* Describes the accepted frame to the governor in plain numbers. */
