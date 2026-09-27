@@ -24,7 +24,8 @@ class GovernorHost;
 
 namespace tegra {
 
-/* The processor's clock floor, held through /dev/cpu_freq_min.
+/* The processor's clock floor, held through /dev/cpu_freq_min, and the
+ * processor's clock as read from cpufreq.
  *
  * The node is a pm_qos request that lives while the descriptor is open:
  * a write of a rate in kilohertz raises the floor, a write of nought lets
@@ -49,11 +50,17 @@ class CpuFloor {
   bool Lift(uint32_t khz);
   void Drop();
 
+  /* The processor's clock now, kilohertz, as cpufreq reports it for the
+   * first core; nought if it cannot be read. A sysfs read, so asked only
+   * when the answer changes what is done. */
+  uint32_t CurrentKhz();
+
  private:
   bool Write(uint32_t khz);
 
   GovernorHost &host_;
   int fd_ = -1;
+  int cur_fd_ = -1;
   bool lifted_ = false;
 };
 

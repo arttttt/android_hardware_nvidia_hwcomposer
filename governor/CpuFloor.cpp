@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 #include <android/log.h>
@@ -31,12 +32,16 @@ namespace android::hwc::governor::tegra {
 namespace {
 
 constexpr const char *nodePath = "/dev/cpu_freq_min";
+constexpr const char *currentPath =
+    "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq";
 
 }  // namespace
 
 CpuFloor::~CpuFloor() {
   if (fd_ >= 0)
     close(fd_);
+  if (cur_fd_ >= 0)
+    close(cur_fd_);
 }
 
 bool CpuFloor::Open() {
@@ -46,7 +51,23 @@ bool CpuFloor::Open() {
     host_.Log(ANDROID_LOG_WARN, "the processor will not be lifted");
     return false;
   }
+  /* Kept open and re-read from the start: a sysfs attribute is
+   * regenerated on every read from offset nought. */
+  cur_fd_ = open(currentPath, O_RDONLY | O_CLOEXEC);
+  if (cur_fd_ < 0)
+    LogErrno(host_, ANDROID_LOG_WARN, currentPath, errno);
   return true;
+}
+
+uint32_t CpuFloor::CurrentKhz() {
+  if (cur_fd_ < 0)
+    return 0;
+  char text[32];
+  const ssize_t n = pread(cur_fd_, text, sizeof(text) - 1, 0);
+  if (n <= 0)
+    return 0;
+  text[n] = '\0';
+  return static_cast<uint32_t>(strtoul(text, nullptr, 10));
 }
 
 bool CpuFloor::Write(uint32_t khz) {

@@ -67,6 +67,14 @@ struct Tuning {
   uint32_t cpu_khz = 1044000;
   uint32_t cpu_cap_ms = 5;
 
+  /* Below this clock the processor is lifted before the engine's floor
+   * rather than after it. The floor's rail ramp is three I2C writes, each
+   * served by an interrupt the idling processor takes about three
+   * milliseconds to get to at its lowest clock and a tenth of one above
+   * a gigahertz: nineteen of twenty-one ramps over two milliseconds were
+   * taken at or under 312 MHz, one of eighty-three above 1.4 GHz. */
+  uint32_t cpu_low_khz = 400000;
+
   /* How long the floor outlives the last merge's fence, so the merges of
    * one transition do not each pay for the clock coming and going. */
   uint32_t hold_ms = 17;

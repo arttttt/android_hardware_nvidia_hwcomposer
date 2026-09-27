@@ -245,10 +245,10 @@ void TegraGovernor::FollowFences(int64_t now) {
 }
 
 void TegraGovernor::Trace(const MergeEstimate &e, bool cold, int profile,
-                          int64_t lag_ns) {
+                          int64_t lag_ns, int64_t now_ns) {
   host_.TraceInt("hwc_gov_lag_us", int32_t(lag_ns / nsPerUs));
   host_.TraceInt("hwc_gov_est_kcycles", int32_t(e.cycles / 1000.0));
-  host_.TraceInt("hwc_gov_deadline_us", int32_t(e.deadline_ns / nsPerUs));
+  host_.TraceInt("hwc_gov_deadline_us", int32_t((e.deadline_ns - now_ns) / nsPerUs));
   host_.TraceInt("hwc_gov_budget_us", int32_t(e.budget_ns / nsPerUs));
   host_.TraceInt("hwc_gov_need_mhz", int32_t(e.need_mhz));
   host_.TraceInt("hwc_gov_step_mhz", int32_t(e.step_mhz));
@@ -277,10 +277,23 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
                         !power_save && cpu_.available() &&
                         tuning_.cpu_khz != 0 && engine_.usable();
 
+  /* An idling processor first: the engine's floor ramps the rail by I2C
+   * writes served by interrupts, and at its lowest clock the processor
+   * takes milliseconds to get to each -- longer than the lift, memory
+   * clock and all. Above the threshold the lift goes last, where it holds
+   * nothing up. */
+  bool lifted = false;
+  if (lift_cpu && cpu_.CurrentKhz() <= tuning_.cpu_low_khz) {
+    lifted = cpu_.Lift(tuning_.cpu_khz);
+    if (lifted)
+      cpu_until_ns_ = now + int64_t(tuning_.cpu_cap_ms) * nsPerMs;
+  }
+  host_.TraceInt("hwc_gov_cpu_first", lifted ? 1 : 0);
+
   const MergeEstimate estimate =
       EstimateMerge(f, planned.members.data(), planned.members.size(), now,
                     tuning_, cold, lift_cpu);
-  Trace(estimate, cold, profile, now - f.now_ns);
+  Trace(estimate, cold, profile, now - f.now_ns, now);
 
   if (power_save) {
     /* The one thing allowed here: a cold engine is woken, nothing is
@@ -331,11 +344,13 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
       FollowFences(now);
   }
 
-  /* Last, and only if the submit is still ahead: the request runs the
-   * processor's whole scaling step on this thread -- three milliseconds
-   * when the memory clock had to follow -- and put first it held the
-   * warm-up and the floor behind it until the composer had submitted. */
-  if (lift_cpu && !mailbox_.HasSubmitted() && cpu_.Lift(tuning_.cpu_khz))
+  /* Otherwise last, and only if the submit is still ahead: the request
+   * runs the processor's whole scaling step on this thread -- three
+   * milliseconds when the memory clock has to follow -- and put first on
+   * a busy processor it held the warm-up and the floor behind it until
+   * the composer had submitted. */
+  if (lift_cpu && !lifted && !mailbox_.HasSubmitted() &&
+      cpu_.Lift(tuning_.cpu_khz))
     cpu_until_ns_ = now + int64_t(tuning_.cpu_cap_ms) * nsPerMs;
 }
 

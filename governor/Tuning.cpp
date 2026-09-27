@@ -42,6 +42,7 @@ constexpr TuningKey tuningKeys[] = {
     {"cold_cap_mhz", &Tuning::cold_cap_mhz},
     {"cpu_khz", &Tuning::cpu_khz},
     {"cpu_cap_ms", &Tuning::cpu_cap_ms},
+    {"cpu_low_khz", &Tuning::cpu_low_khz},
     {"hold_ms", &Tuning::hold_ms},
     {"powergate_ms", &Tuning::powergate_ms},
     {"lead_us", &Tuning::lead_us},

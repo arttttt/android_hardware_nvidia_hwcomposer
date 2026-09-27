@@ -92,7 +92,7 @@ class TegraGovernor final : public Governor {
    * waiting behind its ramp any more. */
   void Decide(const Planned &planned, int64_t now, bool merge_reported);
   void Trace(const MergeEstimate &estimate, bool cold, int profile,
-             int64_t lag_ns);
+             int64_t lag_ns, int64_t now_ns);
   void Warm(int64_t now);
   void KeepFloorFor(int64_t now);
   void FollowFences(int64_t now);
