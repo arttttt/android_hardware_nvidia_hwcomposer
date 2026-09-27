@@ -271,19 +271,30 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
       profile_.Read(now, int64_t(tuning_.profile_poll_ms) * nsPerMs);
   const bool power_save = profile == PerfProfile::powerSave;
   const bool cold = EngineCold(f, last_warm_ns_, now, tuning_);
+  /* The first merge after a pause finds the processor idled down, cold
+   * engine or not; the pause is read from the engine's last use. */
+  const bool paused =
+      tuning_.cpu_pause_ms != 0 && f.last_engine_use_ns != 0 &&
+      now - f.last_engine_use_ns >= int64_t(tuning_.cpu_pause_ms) * nsPerMs;
+  host_.TraceInt("hwc_gov_paused", paused ? 1 : 0);
   /* Lifting the processor is for the composer's submit; once the submit
    * has happened there is nothing left to lift it for. */
-  const bool lift_cpu = cold && !merge_reported && f.previous_flip_landed &&
-                        !power_save && cpu_.available() &&
-                        tuning_.cpu_khz != 0 && engine_.usable();
+  const bool lift_cpu = (cold || paused) && !merge_reported &&
+                        f.previous_flip_landed && !power_save &&
+                        cpu_.available() && tuning_.cpu_khz != 0 &&
+                        engine_.usable();
 
   /* An idling processor first: the engine's floor ramps the rail by I2C
    * writes served by interrupts, and at its lowest clock the processor
    * takes milliseconds to get to each -- longer than the lift, memory
    * clock and all. Above the threshold the lift goes last, where it holds
-   * nothing up. */
+   * nothing up. A warm engine has no rail to ramp, so nothing is held up
+   * by lifting first, and the processor is lifted at once whenever it is
+   * below the step. */
   bool lifted = false;
-  if (lift_cpu && cpu_.CurrentKhz() <= tuning_.cpu_low_khz) {
+  const uint32_t cpu_khz = lift_cpu ? cpu_.CurrentKhz() : 0;
+  if (lift_cpu &&
+      (cpu_khz <= tuning_.cpu_low_khz || (!cold && cpu_khz < tuning_.cpu_khz))) {
     lifted = cpu_.Lift(tuning_.cpu_khz);
     if (lifted)
       cpu_until_ns_ = now + int64_t(tuning_.cpu_cap_ms) * nsPerMs;

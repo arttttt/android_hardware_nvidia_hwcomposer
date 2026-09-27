@@ -75,6 +75,15 @@ struct Tuning {
    * taken at or under 312 MHz, one of eighty-three above 1.4 GHz. */
   uint32_t cpu_low_khz = 400000;
 
+  /* A merge this long after the engine's last use is the first of a
+   * transition, and the processor has idled down in the meantime: its
+   * governor raises it only twenty milliseconds after work begins, and
+   * the composer's own share of the submit -- planning the merge,
+   * describing it, the ioctl -- takes six milliseconds at the idle clock
+   * against one and a half at speed. Such a merge is lifted whether or
+   * not the engine is cold. Nought turns the rule off. */
+  uint32_t cpu_pause_ms = 100;
+
   /* How long the floor outlives the last merge's fence, so the merges of
    * one transition do not each pay for the clock coming and going. */
   uint32_t hold_ms = 17;
