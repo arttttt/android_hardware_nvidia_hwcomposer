@@ -40,6 +40,10 @@ constexpr int64_t nsPerSec = 1000000000LL;
 bool EngineCold(const Frame &frame, int64_t last_warm_ns, int64_t now_ns,
                 const Tuning &tuning);
 
+/* Whether the frame carries a phase worth extending: a last latch, a
+ * period, and not so old that the panel may have been re-phased since. */
+bool PhaseKnown(const Frame &frame, int64_t now_ns, const Tuning &tuning);
+
 /* When the merge has to be done: the latch the frame is aiming at, less
  * the margin. The latches are the last one the display reported plus whole
  * periods. With the previous flip landed the frame targets the nearest;
@@ -68,9 +72,12 @@ struct MergeEstimate {
  *
  * A latch the merge cannot make at the top step even down the shortest
  * path is not the latch the frame will land on: with the phase known, the
- * estimate slips to the following latch once, and says so. A latch it
- * might just make is asked the top step for -- missing by a margin costs
- * the same frame as missing by a mile, so doubt goes to the higher step. */
+ * estimate slips once, and says so -- to the following latch, or sooner,
+ * to the moment the next frame's merge is expected at the engine, since
+ * the engine's queue is one and a slow merge in it is that frame's loss.
+ * A latch it might just make is asked the top step for -- missing by a
+ * margin costs the same frame as missing by a mile, so doubt goes to the
+ * higher step. */
 MergeEstimate EstimateMerge(const Frame &frame, const Member *members,
                             size_t count, int64_t now_ns,
                             const Tuning &tuning, bool cold, bool cpu_lifted);

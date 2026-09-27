@@ -48,6 +48,8 @@ constexpr TuningKey tuningKeys[] = {
     {"submit_cold_slow_us", &Tuning::submit_cold_slow_us},
     {"lead_min_us", &Tuning::lead_min_us},
     {"latch_margin_us", &Tuning::latch_margin_us},
+    {"phase_max_age_periods", &Tuning::phase_max_age_periods},
+    {"next_submit_us", &Tuning::next_submit_us},
     {"budget_empty_us", &Tuning::budget_empty_us},
     {"budget_waited_us", &Tuning::budget_waited_us},
     {"fence_patience_ms", &Tuning::fence_patience_ms},

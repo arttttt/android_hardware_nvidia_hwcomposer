@@ -120,14 +120,15 @@ int TegraGovernor::TimeoutMs(int64_t now) const {
 void TegraGovernor::ThreadFn() {
   pthread_setname_np(pthread_self(), "hwc-governor");
 
-  /* Real-time, like the composer's own binder threads: a plan is worth
-   * acting on within the millisecond and a half before the composer's
-   * submit, and a fair-share thread in a busy transition waited two to
-   * four milliseconds for a processor -- and decided after the merge had
-   * gone. The work is short and the sleeps are in the kernel's own
-   * scaling; the priority is the lowest real-time one. */
+  /* Real-time, like the composer's own binder threads and at their
+   * priority, no higher: a plan is worth acting on within the millisecond
+   * and a half before the composer's submit, and a fair-share thread in a
+   * busy transition waited two to four milliseconds for a processor -- and
+   * decided after the merge had gone. Equal priority does not preempt the
+   * framework or the composer mid-frame; the warm-up's polling and the
+   * processor's scaling step run on this thread. */
   struct sched_param param = {};
-  param.sched_priority = 2;
+  param.sched_priority = 1;
   if (sched_setscheduler(0, SCHED_FIFO, &param) != 0)
     LogErrno(host_, ANDROID_LOG_WARN, "real-time priority", errno);
 

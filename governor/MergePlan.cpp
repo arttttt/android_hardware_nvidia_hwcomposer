@@ -30,9 +30,17 @@ bool EngineCold(const Frame &frame, int64_t last_warm_ns, int64_t now_ns,
          now_ns - last_use > int64_t(tuning.powergate_ms) * nsPerMs;
 }
 
+bool PhaseKnown(const Frame &frame, int64_t now_ns, const Tuning &tuning) {
+  if (frame.last_latch_ns <= 0 || frame.vsync_period_ns <= 0)
+    return false;
+  const int64_t age = now_ns - frame.last_latch_ns;
+  return age >= 0 &&
+         age <= int64_t(tuning.phase_max_age_periods) * frame.vsync_period_ns;
+}
+
 int64_t LatchDeadline(const Frame &frame, int64_t now_ns,
                       const Tuning &tuning) {
-  if (frame.last_latch_ns <= 0 || frame.vsync_period_ns <= 0) {
+  if (!PhaseKnown(frame, now_ns, tuning)) {
     const uint32_t budget_us = frame.previous_flip_landed
                                    ? tuning.budget_empty_us
                                    : tuning.budget_waited_us;
@@ -40,7 +48,7 @@ int64_t LatchDeadline(const Frame &frame, int64_t now_ns,
   }
 
   const int64_t elapsed = now_ns - frame.last_latch_ns;
-  const int64_t periods = elapsed >= 0 ? elapsed / frame.vsync_period_ns : -1;
+  const int64_t periods = elapsed / frame.vsync_period_ns;
   int64_t next = frame.last_latch_ns + (periods + 1) * frame.vsync_period_ns;
   if (!frame.previous_flip_landed)
     next += frame.vsync_period_ns;
@@ -107,8 +115,14 @@ MergeEstimate EstimateMerge(const Frame &frame, const Member *members,
   const double top_ns = double(area_cycles(e, tuning)) / topStepMhz * 1e3;
   const int64_t soonest = now_ns + int64_t(tuning.lead_min_us) * nsPerUs;
   const bool hopeless = double(deadline - soonest) < top_ns;
-  if (hopeless && frame.last_latch_ns > 0 && frame.vsync_period_ns > 0) {
-    Estimate(&e, deadline + frame.vsync_period_ns, submit_end);
+  if (hopeless && PhaseKnown(frame, now_ns, tuning)) {
+    /* The nearest latch itself, then the earlier of the latch after it
+     * and the next frame's expected arrival at the engine. */
+    const int64_t latch = deadline + int64_t(tuning.latch_margin_us) * nsPerUs;
+    const int64_t slipped =
+        std::min(deadline + frame.vsync_period_ns,
+                 latch + int64_t(tuning.next_submit_us) * nsPerUs);
+    Estimate(&e, slipped, submit_end);
     e.slipped = true;
   }
 

@@ -75,6 +75,17 @@ struct Tuning {
   /* How far before the latch the merge has to be done. */
   uint32_t latch_margin_us = 700;
 
+  /* How many periods old the last latch may be and still place the grid:
+   * after a second of quiet the panel is slowed and re-phased, and a grid
+   * extended across that is a guess. Beyond this the fallbacks apply. */
+  uint32_t phase_max_age_periods = 4;
+
+  /* How soon after a latch the next frame's merge is expected at the
+   * engine: the framework's offset and the composer's path. A slipped
+   * merge has to be out of the engine by then -- the channel is one
+   * queue, and a slow merge in it is the next frame's loss. */
+  uint32_t next_submit_us = 6500;
+
   /* Fallbacks for a frame planned before the composer has a vsync phase. */
   uint32_t budget_empty_us = 7200;
   uint32_t budget_waited_us = 23000;

@@ -112,10 +112,10 @@ void DeadlineFollowsThePhase() {
   CHECK(LatchDeadline(Planned(t0, vsync, false), t0, t) ==
         vsync + 2 * period - margin);
 
-  /* A stale phase still places the latch: several periods back. */
-  const int64_t old = t0 - 10 * period - 3 * nsPerMs;
+  /* A phase a few periods old still places the latch. */
+  const int64_t old = t0 - 3 * period - 3 * nsPerMs;
   CHECK(LatchDeadline(Planned(t0, old, true), t0, t) ==
-        old + 11 * period - margin);
+        old + 4 * period - margin);
 
   /* No phase at all: the measured fallbacks. */
   CHECK(LatchDeadline(Planned(t0, 0, true), t0, t) ==
@@ -154,22 +154,61 @@ void WarmMergeWithAFrameOfBudgetNeedsAModestStep() {
   CHECK(e.step_mhz == 180);
 }
 
-void EmptyPipelineLateInTheFrameSlipsToTheNextLatch() {
+void EmptyPipelineLateInTheFrameSlipsButNotPastTheNextMerge() {
   Tuning t;
   Member members[3] = {FullScreen(), FullScreen(), FullScreen()};
   /* Ten milliseconds into the frame with the previous flip landed: the
-   * nearest latch is ~6 ms away, and 4.7 M raw cycles take 6.2 ms at the
-   * top step even down the shortest path. The frame will take the latch
-   * after, and the estimate says so. */
+   * nearest latch is ~6.7 ms away, and 4.7 M raw cycles take 6.2 ms at
+   * the top step even down the shortest path. The frame will take the
+   * latch after -- but the next frame's merge arrives 6.5 ms past the
+   * nearest latch, and this one has to be out of the engine by then. */
   const Frame f = Planned(t0, t0 - 10 * nsPerMs, true);
   const MergeEstimate e = EstimateMerge(f, members, 3, t0, t, false, false);
   CHECK(e.slipped);
   CHECK(!e.beyond);
   CHECK(!e.late);
-  /* ~5.9 M cycles with margin over ~20.5 ms: under 336 MHz. */
-  CHECK(e.step_mhz == 336);
+  const int64_t nearest = t0 + period - 10 * nsPerMs;
+  CHECK(e.deadline_ns == nearest + int64_t(t.next_submit_us) * nsPerUs);
+  /* ~5.9 M cycles with margin over ~11.4 ms: 552 MHz. */
+  CHECK(e.step_mhz == 552);
+}
+
+void SlipWhileWaitingForThePreviousFlip() {
+  Tuning t;
+  Member members[3] = {FullScreen(), FullScreen(), FullScreen()};
+  /* Not landed: the frame already targets the latch after the nearest,
+   * ten milliseconds into the frame that is ~23 ms away -- no slip. */
+  const Frame f = Planned(t0, t0 - 10 * nsPerMs, false);
+  const MergeEstimate e = EstimateMerge(f, members, 3, t0, t, false, false);
+  CHECK(!e.slipped);
+  CHECK(!e.beyond);
   CHECK(e.budget_ns > 20 * nsPerMs);
-  CHECK(e.deadline_ns > t0 + 20 * nsPerMs);
+}
+
+void ColdSlipStillGetsTheSafetyFloor() {
+  Tuning t;
+  Member members[3] = {FullScreen(), FullScreen(), FullScreen()};
+  const Frame f = Planned(t0, t0 - 10 * nsPerMs, true);
+  const MergeEstimate e = EstimateMerge(f, members, 3, t0, t, true, false);
+  CHECK(e.slipped);
+  CHECK(e.step_mhz >= t.min_cold_mhz);
+}
+
+void AStalePhaseIsNoPhase() {
+  Tuning t;
+  Member members[3] = {FullScreen(), FullScreen(), FullScreen()};
+  /* A latch a second old: the panel may have been slowed and re-phased
+   * since. The fallback budget applies and nothing slips. */
+  const Frame f = Planned(t0, t0 - nsPerSec, true);
+  CHECK(!PhaseKnown(f, t0, t));
+  CHECK(LatchDeadline(f, t0, t) == t0 + int64_t(t.budget_empty_us) * nsPerUs);
+  const MergeEstimate e = EstimateMerge(f, members, 3, t0, t, false, false);
+  CHECK(!e.slipped);
+  CHECK(e.beyond);
+
+  /* Four periods old is still a phase. */
+  const Frame g = Planned(t0, t0 - 4 * period + nsPerMs, true);
+  CHECK(PhaseKnown(g, t0, t));
 }
 
 void AMarginalLatchIsAskedTheTopStepNotSlipped() {
@@ -246,14 +285,15 @@ void NoBudgetLeftSlipsRatherThanAskingTheTop() {
   Tuning t;
   Member m = FullScreen();
   /* Planned half a millisecond before the latch with the previous flip
-   * landed: gone even down the shortest path, the one after has a frame's
-   * worth of budget. */
+   * landed: gone even down the shortest path; the slip runs to the next
+   * frame's merge, ~7 ms past that latch. */
   const Frame f = Planned(t0, t0 - period + 500 * nsPerUs, true);
   const MergeEstimate e = EstimateMerge(f, &m, 1, t0, t, false, false);
   CHECK(e.slipped);
   CHECK(!e.late);
-  CHECK(e.budget_ns > 14 * nsPerMs);
-  CHECK(e.step_mhz == 180);
+  CHECK(e.budget_ns > 4 * nsPerMs);
+  /* ~2 M cycles over ~5.3 ms: 378 MHz. */
+  CHECK(e.step_mhz == 378);
 }
 
 }  // namespace
@@ -264,7 +304,10 @@ int main() {
   DeadlineFollowsThePhase();
   CyclesAreHalfAClockPerPixelWithMargin();
   WarmMergeWithAFrameOfBudgetNeedsAModestStep();
-  EmptyPipelineLateInTheFrameSlipsToTheNextLatch();
+  EmptyPipelineLateInTheFrameSlipsButNotPastTheNextMerge();
+  SlipWhileWaitingForThePreviousFlip();
+  ColdSlipStillGetsTheSafetyFloor();
+  AStalePhaseIsNoPhase();
   AMarginalLatchIsAskedTheTopStepNotSlipped();
   SlipsOnceOnly();
   WithoutAPhaseNothingSlips();
