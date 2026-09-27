@@ -186,11 +186,9 @@ void TegraGovernor::ThreadFn() {
       release_due_ns_ = now + int64_t(tuning_.hold_ms) * nsPerMs;
 
     if (mail.planned) {
+      /* Reported this round or earlier: either way the merge is gone. */
       const uint64_t seq = mail.planned->frame.seq;
-      bool reported = false;
-      for (const Watched &w : mail.submitted)
-        reported = reported || w.seq >= seq;
-      Decide(*mail.planned, now, reported);
+      Decide(*mail.planned, now, fences_.latest_seq() >= seq);
     }
 
     JudgeRelease(now);
@@ -217,6 +215,12 @@ void TegraGovernor::KeepFloorFor(int64_t now) {
   orphan_due_ns_ = now + int64_t(tuning_.orphan_ms) * nsPerMs;
 }
 
+void TegraGovernor::FollowFences(int64_t now) {
+  orphan_due_ns_ = 0;
+  release_due_ns_ =
+      fences_.empty() ? now + int64_t(tuning_.hold_ms) * nsPerMs : 0;
+}
+
 void TegraGovernor::DropCpu() {
   cpu_until_ns_ = 0;
   cpu_.Drop();
@@ -226,6 +230,7 @@ void TegraGovernor::Trace(const MergeEstimate &e, bool cold, int profile,
                           int64_t lag_ns) {
   host_.TraceInt("hwc_gov_lag_us", int32_t(lag_ns / nsPerUs));
   host_.TraceInt("hwc_gov_est_kcycles", int32_t(e.cycles / 1000.0));
+  host_.TraceInt("hwc_gov_deadline_us", int32_t(e.deadline_ns / nsPerUs));
   host_.TraceInt("hwc_gov_budget_us", int32_t(e.budget_ns / nsPerUs));
   host_.TraceInt("hwc_gov_need_mhz", int32_t(e.need_mhz));
   host_.TraceInt("hwc_gov_step_mhz", int32_t(e.step_mhz));
@@ -282,11 +287,16 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
   if (engine_.usable()) {
     const uint32_t have =
         std::max(engine_.CurrentMhz().value_or(0), engine_.floor_mhz());
-    if (estimate.step_mhz > have) {
-      if (engine_.SetFloor(estimate.step_mhz))
+    const bool raised = estimate.step_mhz > have &&
+                        engine_.SetFloor(estimate.step_mhz);
+    if (raised || engine_.floor_mhz() != 0) {
+      /* A floor for a merge still to come waits for its report; one for a
+       * merge already in flight follows that merge's fence -- and if the
+       * fence is already gone, the hold starts now. */
+      if (!merge_reported)
         KeepFloorFor(now);
-    } else if (engine_.floor_mhz() != 0) {
-      KeepFloorFor(now);
+      else
+        FollowFences(now);
     }
   }
 

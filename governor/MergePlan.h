@@ -41,9 +41,10 @@ bool EngineCold(const Frame &frame, int64_t last_warm_ns, int64_t now_ns,
                 const Tuning &tuning);
 
 /* When the merge has to be done: the latch the frame is aiming at, less
- * the margin. With the previous flip landed the frame targets the nearest
- * vsync; otherwise it waits for that one to carry the previous frame and
- * targets the one after. Without a phase, the measured fallbacks. */
+ * the margin. The latches are the last one the display reported plus whole
+ * periods. With the previous flip landed the frame targets the nearest;
+ * otherwise it waits for that one to carry the previous frame and targets
+ * the one after. Without a phase, the measured fallbacks. */
 int64_t LatchDeadline(const Frame &frame, int64_t now_ns,
                       const Tuning &tuning);
 
@@ -53,6 +54,7 @@ double MergeCycles(const Member *members, size_t count, const Tuning &tuning);
 
 struct MergeEstimate {
   double cycles;
+  int64_t deadline_ns; /* when the merge has to be done */
   int64_t budget_ns;   /* from the end of the submit to the deadline */
   uint32_t need_mhz;   /* cycles over budget, rounded up */
   uint32_t step_mhz;   /* the step to ask for */
@@ -64,10 +66,11 @@ struct MergeEstimate {
 /* `cold` says the engine will pay for coming up; `cpu_lifted` that the
  * processor will be lifted for the submit, which shortens it.
  *
- * A latch the merge cannot make even at the top step is not the latch the
- * frame will land on: with the phase known, the estimate slips to the
- * following latch once, and says so. Asking the top step for a merge that
- * will take the next latch anyway buys nothing. */
+ * A latch the merge cannot make at the top step even down the shortest
+ * path is not the latch the frame will land on: with the phase known, the
+ * estimate slips to the following latch once, and says so. A latch it
+ * might just make is asked the top step for -- missing by a margin costs
+ * the same frame as missing by a mile, so doubt goes to the higher step. */
 MergeEstimate EstimateMerge(const Frame &frame, const Member *members,
                             size_t count, int64_t now_ns,
                             const Tuning &tuning, bool cold, bool cpu_lifted);

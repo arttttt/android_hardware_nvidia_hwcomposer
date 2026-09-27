@@ -60,11 +60,11 @@ Member FullScreen() {
   return m;
 }
 
-Frame Planned(int64_t now, int64_t last_vsync, bool landed) {
+Frame Planned(int64_t now, int64_t last_latch, bool landed) {
   Frame f = {};
   f.seq = 1;
   f.now_ns = now;
-  f.last_vsync_ns = last_vsync;
+  f.last_latch_ns = last_latch;
   f.vsync_period_ns = period;
   f.merge_planned = true;
   f.previous_flip_landed = landed;
@@ -158,17 +158,33 @@ void EmptyPipelineLateInTheFrameSlipsToTheNextLatch() {
   Tuning t;
   Member members[3] = {FullScreen(), FullScreen(), FullScreen()};
   /* Ten milliseconds into the frame with the previous flip landed: the
-   * nearest latch is ~6 ms away, ~1.75 ms of that goes to the submit, and
-   * 5.9 M cycles do not fit even at the top step. The frame will take the
-   * latch after, and the estimate says so. */
+   * nearest latch is ~6 ms away, and 4.7 M raw cycles take 6.2 ms at the
+   * top step even down the shortest path. The frame will take the latch
+   * after, and the estimate says so. */
   const Frame f = Planned(t0, t0 - 10 * nsPerMs, true);
   const MergeEstimate e = EstimateMerge(f, members, 3, t0, t, false, false);
   CHECK(e.slipped);
   CHECK(!e.beyond);
   CHECK(!e.late);
-  /* ~5.9 M cycles over ~20.5 ms: under 336 MHz. */
+  /* ~5.9 M cycles with margin over ~20.5 ms: under 336 MHz. */
   CHECK(e.step_mhz == 336);
   CHECK(e.budget_ns > 20 * nsPerMs);
+  CHECK(e.deadline_ns > t0 + 20 * nsPerMs);
+}
+
+void AMarginalLatchIsAskedTheTopStepNotSlipped() {
+  Tuning t;
+  Member members[2] = {FullScreen(), FullScreen()};
+  /* Ten milliseconds into the frame: ~6 ms to the latch, 3.1 M raw cycles
+   * take 4.2 ms at the top step -- it fits down the shortest path, though
+   * not with the margin and the usual lead. Doubt goes to the higher
+   * step, not to the next frame. */
+  const Frame f = Planned(t0, t0 - 10 * nsPerMs, true);
+  const MergeEstimate e = EstimateMerge(f, members, 2, t0, t, false, false);
+  CHECK(!e.slipped);
+  CHECK(e.beyond);
+  CHECK(e.step_mhz == topStepMhz);
+  CHECK(e.deadline_ns < t0 + 7 * nsPerMs);
 }
 
 void SlipsOnceOnly() {
@@ -229,8 +245,9 @@ void ColdSubmitEatsMoreBudgetUnlessTheProcessorIsLifted() {
 void NoBudgetLeftSlipsRatherThanAskingTheTop() {
   Tuning t;
   Member m = FullScreen();
-  /* Planned right at the latch with the previous flip landed: the nearest
-   * latch is gone, the one after has a frame's worth of budget. */
+  /* Planned half a millisecond before the latch with the previous flip
+   * landed: gone even down the shortest path, the one after has a frame's
+   * worth of budget. */
   const Frame f = Planned(t0, t0 - period + 500 * nsPerUs, true);
   const MergeEstimate e = EstimateMerge(f, &m, 1, t0, t, false, false);
   CHECK(e.slipped);
@@ -248,6 +265,7 @@ int main() {
   CyclesAreHalfAClockPerPixelWithMargin();
   WarmMergeWithAFrameOfBudgetNeedsAModestStep();
   EmptyPipelineLateInTheFrameSlipsToTheNextLatch();
+  AMarginalLatchIsAskedTheTopStepNotSlipped();
   SlipsOnceOnly();
   WithoutAPhaseNothingSlips();
   ColdEngineGetsTheSafetyFloor();

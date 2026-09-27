@@ -28,6 +28,8 @@ void FenceWatch::Add(int fd, uint64_t seq, int64_t now_ns) {
   if (fd < 0)
     return;
   watched_.push_back(Watched{fd, seq, now_ns});
+  if (seq > latest_seq_)
+    latest_seq_ = seq;
 }
 
 void FenceWatch::AppendPollSet(std::vector<struct pollfd> *fds) const {

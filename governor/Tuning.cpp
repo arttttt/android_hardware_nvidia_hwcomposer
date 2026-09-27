@@ -46,6 +46,7 @@ constexpr TuningKey tuningKeys[] = {
     {"submit_warm_us", &Tuning::submit_warm_us},
     {"submit_cold_us", &Tuning::submit_cold_us},
     {"submit_cold_slow_us", &Tuning::submit_cold_slow_us},
+    {"lead_min_us", &Tuning::lead_min_us},
     {"latch_margin_us", &Tuning::latch_margin_us},
     {"budget_empty_us", &Tuning::budget_empty_us},
     {"budget_waited_us", &Tuning::budget_waited_us},

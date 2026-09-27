@@ -32,16 +32,16 @@ bool EngineCold(const Frame &frame, int64_t last_warm_ns, int64_t now_ns,
 
 int64_t LatchDeadline(const Frame &frame, int64_t now_ns,
                       const Tuning &tuning) {
-  if (frame.last_vsync_ns <= 0 || frame.vsync_period_ns <= 0) {
+  if (frame.last_latch_ns <= 0 || frame.vsync_period_ns <= 0) {
     const uint32_t budget_us = frame.previous_flip_landed
                                    ? tuning.budget_empty_us
                                    : tuning.budget_waited_us;
     return now_ns + int64_t(budget_us) * nsPerUs;
   }
 
-  const int64_t elapsed = now_ns - frame.last_vsync_ns;
+  const int64_t elapsed = now_ns - frame.last_latch_ns;
   const int64_t periods = elapsed >= 0 ? elapsed / frame.vsync_period_ns : -1;
-  int64_t next = frame.last_vsync_ns + (periods + 1) * frame.vsync_period_ns;
+  int64_t next = frame.last_latch_ns + (periods + 1) * frame.vsync_period_ns;
   if (!frame.previous_flip_landed)
     next += frame.vsync_period_ns;
   return next - int64_t(tuning.latch_margin_us) * nsPerUs;
@@ -61,8 +61,14 @@ double MergeCycles(const Member *members, size_t count,
 
 namespace {
 
+/* The work without its margin, for judging a latch hopeless. */
+double area_cycles(const MergeEstimate &e, const Tuning &tuning) {
+  return e.cycles * 100.0 / tuning.factor_pct;
+}
+
 /* The estimate against one deadline. */
 void Estimate(MergeEstimate *e, int64_t deadline_ns, int64_t submit_end_ns) {
+  e->deadline_ns = deadline_ns;
   e->budget_ns = deadline_ns - submit_end_ns;
   e->late = e->budget_ns < nsPerMs;
   if (e->late)
@@ -96,7 +102,12 @@ MergeEstimate EstimateMerge(const Frame &frame, const Member *members,
   const int64_t deadline = LatchDeadline(frame, now_ns, tuning);
   Estimate(&e, deadline, submit_end);
 
-  if (e.beyond && frame.last_vsync_ns > 0 && frame.vsync_period_ns > 0) {
+  /* Hopeless: the raw work at the top step does not fit between the
+   * shortest path and the latch. */
+  const double top_ns = double(area_cycles(e, tuning)) / topStepMhz * 1e3;
+  const int64_t soonest = now_ns + int64_t(tuning.lead_min_us) * nsPerUs;
+  const bool hopeless = double(deadline - soonest) < top_ns;
+  if (hopeless && frame.last_latch_ns > 0 && frame.vsync_period_ns > 0) {
     Estimate(&e, deadline + frame.vsync_period_ns, submit_end);
     e.slipped = true;
   }

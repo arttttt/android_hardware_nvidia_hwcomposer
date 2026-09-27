@@ -164,15 +164,6 @@ class TegraAtomicRequest : public AtomicRequest {
     SharedFd acquire;
   };
 
-  /* The panel's phase as the display knew it when the frame was built,
-   * for the composition governor: the last vsync at full precision --
-   * nought before the first -- and the period. Uninitialised like the
-   * Merge fields above, for the same reason. */
-  struct Timing {
-    int64_t last_vsync_ns;
-    int64_t vsync_period_ns;
-  };
-
   TegraAtomicRequest(std::vector<hwc::DcHead::Window> windows,
                      bool has_composition,
                      std::optional<PowerMode> power_mode,
@@ -180,24 +171,18 @@ class TegraAtomicRequest : public AtomicRequest {
                      std::shared_ptr<const HalColorTransformMatrix>
                          color_matrix = nullptr,
                      Cursor cursor = {},
-                     FrameNote note = {},
-                     Timing timing = {})
+                     FrameNote note = {})
       : windows_(std::move(windows)),
         has_composition_(has_composition),
         power_mode_(power_mode),
         merge_(std::move(merge)),
         color_matrix_(std::move(color_matrix)),
         cursor_(cursor),
-        note_(std::move(note)),
-        timing_(timing) {
+        note_(std::move(note)) {
   }
 
   const Merge &GetMerge() const {
     return merge_;
-  }
-
-  const Timing &GetTiming() const {
-    return timing_;
   }
 
   const Cursor &GetCursor() const {
@@ -242,7 +227,6 @@ class TegraAtomicRequest : public AtomicRequest {
   const std::shared_ptr<const HalColorTransformMatrix> color_matrix_;
   const Cursor cursor_;
   const FrameNote note_;
-  const Timing timing_;
 };
 
 /* Turns plans into frames on this controller.
@@ -381,6 +365,13 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * telling it only of changes. On before anything is said otherwise,
    * which is how the display starts. */
   PowerMode power_mode_seen_ = PowerMode::kOn;
+
+  /* When the display last latched a frame, as the previous flip's fence
+   * reported it once due: the controller's own scanout grid, which the
+   * governor aims its deadlines at. Nought before the first landed flip.
+   * Refreshed at every validate and execute that finds the fence due. */
+  int64_t last_latch_ns_ = 0;
+  bool NoteLatch();
 
   /* Describes the accepted frame to the governor in plain numbers. */
   void TellGovernor(const TegraAtomicRequest &tegra);

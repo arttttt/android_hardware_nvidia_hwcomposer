@@ -38,7 +38,7 @@
 
 namespace android::hwc::governor {
 
-constexpr uint32_t apiVersion = 1;
+constexpr uint32_t apiVersion = 2;
 
 /* The display's power mode, numbered as the composer's own enumeration. */
 enum class Power : uint8_t {
@@ -75,7 +75,14 @@ struct Frame {
   uint64_t seq;
 
   int64_t now_ns;
-  int64_t last_vsync_ns;     /* nought if the composer has no phase yet */
+
+  /* When the display last latched a frame: the moment the previous flip's
+   * fence came due, which is the controller's own report of scanout
+   * starting on that frame. The latches the governor aims at are this
+   * moment plus whole periods. Nought before the first landed flip; the
+   * framework's vsync timestamps were tried first and turned out not to
+   * be locked to the latch at all. */
+  int64_t last_latch_ns;
   int64_t vsync_period_ns;
 
   /* When the composer last used the engine for anything -- a merge or the

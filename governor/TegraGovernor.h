@@ -87,6 +87,7 @@ class TegraGovernor final : public Governor {
              int64_t lag_ns);
   void Warm(int64_t now);
   void KeepFloorFor(int64_t now);
+  void FollowFences(int64_t now);
   void JudgeRelease(int64_t now);
   void DropCpu();
   void DropEverything();

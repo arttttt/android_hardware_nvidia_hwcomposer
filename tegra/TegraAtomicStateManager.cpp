@@ -867,10 +867,13 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
     window.blend = TEGRA_DC_EXT_BLEND_PREMULT;
   }
 
-  return std::make_unique<TegraAtomicRequest>(
-      std::move(windows), args.composition != nullptr, args.power_mode,
-      std::move(merge), args.color_matrix, cursor, std::move(note),
-      TegraAtomicRequest::Timing{args.last_vsync_ns, args.vsync_period_ns});
+  return std::make_unique<TegraAtomicRequest>(std::move(windows),
+                                              args.composition != nullptr,
+                                              args.power_mode,
+                                              std::move(merge),
+                                              args.color_matrix,
+                                              cursor,
+                                              std::move(note));
 }
 
 bool TegraAtomicStateManager::Test(const AtomicRequest &request) {
@@ -907,16 +910,34 @@ hwc::governor::Power GovernorPower(PowerMode mode) {
 
 }  // namespace
 
+bool TegraAtomicStateManager::NoteLatch() {
+  if (FenceDue(previous_post_fence_) != Due::kYes)
+    return false;
+  /* Due, so the time is there to read; a fence that cannot say when
+   * leaves the last known latch standing. */
+  const std::optional<int64_t> at = SignalTimeNs(previous_post_fence_);
+  if (at && *at > last_latch_ns_)
+    last_latch_ns_ = *at;
+  return true;
+}
+
 void TegraAtomicStateManager::TellGovernor(const TegraAtomicRequest &tegra) {
   const auto &merge = tegra.GetMerge();
   const std::vector<hwc::governor::Member> members =
       hwc::DescribeMembers(merge);
 
+  /* Whether the previous flip has landed decides which latch this frame
+   * can make: with the fence due, the nearest; otherwise the one after,
+   * since the present will first wait for it. The landing also says where
+   * the latches are. */
+  const bool landed = NoteLatch();
+
   hwc::governor::Frame frame{};
   frame.seq = ++planned_seq_;
   frame.now_ns = GetTimeMonotonicNs();
-  frame.last_vsync_ns = tegra.GetTiming().last_vsync_ns;
-  frame.vsync_period_ns = tegra.GetTiming().vsync_period_ns;
+  frame.last_latch_ns = last_latch_ns_;
+  frame.vsync_period_ns =
+      modes_.empty() ? 0 : int64_t(modes_.front().GetVSyncPeriodNs());
   frame.last_engine_use_ns = vic_ != nullptr ? vic_->last_use_ns() : 0;
   frame.merge_planned = !merge.layers.empty();
   /* The verdict execute will reach, predicted from the same key. Only a
@@ -924,10 +945,7 @@ void TegraAtomicStateManager::TellGovernor(const TegraAtomicRequest &tegra) {
    * and a wrong guess costs a floor or a warm-up, never a frame. */
   frame.merge_reuse_predicted = frame.merge_planned && merge_cache_ &&
                                 JudgeMerge(merge) == MergeVerdict::kSame;
-  /* Whether the previous flip has landed decides which latch this frame
-   * can make: with the fence due, the nearest; otherwise the one after,
-   * since the present will first wait for it. */
-  frame.previous_flip_landed = FenceDue(previous_post_fence_) == Due::kYes;
+  frame.previous_flip_landed = landed;
   frame.power_mode = static_cast<uint8_t>(GovernorPower(power_mode_seen_));
   frame.target_w = merge.width;
   frame.target_h = merge.height;

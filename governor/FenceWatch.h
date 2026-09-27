@@ -49,6 +49,10 @@ class FenceWatch {
 
   bool empty() const { return watched_.empty(); }
 
+  /* The highest frame number among the fences ever added, nought before
+   * the first: whether a plan's merge has already been reported. */
+  uint64_t latest_seq() const { return latest_seq_; }
+
   /* One poll slot per fence, appended in the list's order. Judge reads
    * the answers back from the same slots, so nothing may be added between
    * the two -- add after judging. */
@@ -68,6 +72,7 @@ class FenceWatch {
 
  private:
   std::vector<Watched> watched_;
+  uint64_t latest_seq_ = 0;
 };
 
 }  // namespace android::hwc::governor::tegra

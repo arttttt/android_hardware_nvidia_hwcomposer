@@ -59,11 +59,18 @@ struct Tuning {
 
   /* The path from validate to the submit, measured: the composer's lead
    * and the submit itself on a warm engine, on a cold one with the
-   * processor lifted, and on a cold one without. */
+   * processor lifted, and on a cold one without. The cold ones are short
+   * now that the governor wakes the engine before the composer gets
+   * there: half a millisecond to a millisecond and a half on the device. */
   uint32_t lead_us = 1500;
   uint32_t submit_warm_us = 250;
-  uint32_t submit_cold_us = 1600;
-  uint32_t submit_cold_slow_us = 4000;
+  uint32_t submit_cold_us = 600;
+  uint32_t submit_cold_slow_us = 1200;
+
+  /* The shortest the path can be: what a latch is judged hopeless by. A
+   * latch the merge cannot make at the top step even from here is left
+   * for the next; one it might make is asked the top step for. */
+  uint32_t lead_min_us = 1000;
 
   /* How far before the latch the merge has to be done. */
   uint32_t latch_margin_us = 700;
