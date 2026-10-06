@@ -50,6 +50,7 @@
 #include "display/Plane.h"
 #include "display/PipelineBinding.h"
 #include "tegra/MergeDescription.h"
+#include "tegra/TegraConnector.h"
 #include "tegra/FbDevice.h"
 #include "tegra/TegraFormat.h"
 #include "utils/Logging.h"
@@ -612,11 +613,12 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
     return nullptr;
   }
 
-  /* A timing is accepted only if it is one the panel runs. On this board
-   * that means the one it is already running, so honouring the request is
-   * doing nothing -- but a request for a timing this panel does not have must
-   * not be answered with silence, or the framework will believe a mode change
-   * happened that did not. */
+  /* A timing is accepted only if it is one the panel runs: its own, or the
+   * same timing at the slower rate. Either is a porch to ask the head for
+   * with this frame. A request for a timing this panel does not have must
+   * not be answered with silence, or the framework will believe a mode
+   * change happened that did not. */
+  std::optional<TegraAtomicRequest::Rate> rate;
   if (args.display_mode) {
     const drmModeModeInfo &wanted = args.display_mode->GetRawMode();
 
@@ -629,6 +631,12 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
             args.display_mode->GetName().c_str());
       return nullptr;
     }
+
+    rate = TegraAtomicRequest::Rate{
+        .porch = hwc::TegraConnector::porchFor(wanted,
+                                               modes_.front().GetRawMode()),
+        .period_ns = int64_t(args.display_mode->GetVSyncPeriodNs()),
+    };
   }
 
   /* Every window of the head, whether or not a layer claimed it.
@@ -883,7 +891,8 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
                                               std::move(merge),
                                               args.color_matrix,
                                               cursor,
-                                              std::move(note));
+                                              std::move(note),
+                                              rate);
 }
 
 bool TegraAtomicStateManager::Test(const AtomicRequest &request) {
@@ -924,14 +933,6 @@ bool TegraAtomicStateManager::NoteLatch() {
   if (FenceDue(previous_post_fence_) != Due::kYes)
     return false;
 
-  /* A latch taken while the panel may still be finishing a slowed frame
-   * is a latch of the wrong grid: the phase is dropped and picked up
-   * again from the first clean landing. */
-  if (governor_ != nullptr && !governor_->VsyncTimestampTrustworthy()) {
-    last_latch_ns_ = 0;
-    return true;
-  }
-
   /* Due, so the time is there to read; a fence that cannot say when
    * leaves the last known latch standing. */
   const std::optional<int64_t> at = SignalTimeNs(previous_post_fence_);
@@ -957,12 +958,12 @@ void TegraAtomicStateManager::TellGovernor(const TegraAtomicRequest &tegra) {
                                   frame.seq);
   frame.now_ns = GetTimeMonotonicNs();
   frame.last_latch_ns = last_latch_ns_;
-  /* The mode's period, which is the pixel clock's and exact in the clock
-   * the fences are stamped in. Following the fences instead was tried:
-   * the worker's wake jitter on a single interval, taken in an eighth at
-   * a time, drifted the grid by milliseconds across a second's pause. */
-  frame.vsync_period_ns =
-      modes_.empty() ? 0 : int64_t(modes_.front().GetVSyncPeriodNs());
+  /* The period of the rate the panel was last asked for, which is the pixel
+   * clock's and exact in the clock the fences are stamped in. Following the
+   * fences instead was tried: the worker's wake jitter on a single interval,
+   * taken in an eighth at a time, drifted the grid by milliseconds across a
+   * second's pause. */
+  frame.vsync_period_ns = period_ns_;
   frame.last_engine_use_ns = vic_ != nullptr ? vic_->last_use_ns() : 0;
   frame.merge_planned = !merge.layers.empty();
   /* The verdict execute will reach, predicted from the same key. Only a
@@ -1177,11 +1178,6 @@ void TegraAtomicStateManager::WriteMergedPicture(
 int TegraAtomicStateManager::Execute(const AtomicRequest &request,
                                      AtomicCommitResult *out_result) {
   const auto &tegra = static_cast<const TegraAtomicRequest &>(request);
-
-  /* A frame is the loudest possible sign of life: whatever the panel
-   * was slowed to, it comes back before this one shows. */
-  if (governor_ != nullptr)
-    governor_->NoteActivity();
 
   if (tegra.GetPowerMode() && *tegra.GetPowerMode() != power_mode_seen_) {
     power_mode_seen_ = *tegra.GetPowerMode();
@@ -1538,6 +1534,17 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
 
   previous_post_fence_ = std::move(this_post_fence);
 
+  /* The rate goes with the frame that carried it, once the frame is up: the
+   * framework counts the change as made when this commit returns. The head
+   * takes the porch at the end of the frame it is scanning, without a flip,
+   * and the vsync worker reports the new period from the first blank that
+   * runs at it. */
+  if (tegra.GetRate()) {
+    porch_ = tegra.GetRate()->porch;
+    period_ns_ = tegra.GetRate()->period_ns;
+    head_.setActiveVfp(porch_);
+  }
+
   if (composition_governor_ != nullptr)
     composition_governor_->FramePresented(planned_seq_);
 
@@ -1732,11 +1739,9 @@ std::string TegraAtomicStateManager::DumpState() {
     ss << "Cursor unit               : not claimed\n";
   }
 
-  if (governor_ != nullptr)
-    governor_->AppendDump(ss);
-  else
-    ss << "Refresh governor          : not running (no stretch in the kernel, "
-          "or vendor.hwc.governor=0, read at start)\n";
+  ss << "Panel rate                : porch " << porch_ << " (0 is the "
+        "panel's own), period " << period_ns_ / 1000 << " us, "
+     << modes_.size() << " rate(s) offered\n";
 
   /* Quiet when colour was never asked to change: most dumps, on a display
    * that spends its life at the identity. */
@@ -2046,6 +2051,12 @@ int TegraAtomicStateManager::SetPowered(bool powered) {
    * the same discipline the colour state keeps. */
   if (powered && cursor_ != nullptr && cursor_shown_)
     cursor_->Rearm();
+
+  /* Nor does it keep a stretched porch: blanking puts the panel's own back.
+   * The framework still believes in the rate it last chose, so that is the
+   * rate the panel comes back at. */
+  if (powered && porch_ != 0)
+    head_.setActiveVfp(porch_);
 
   return 0;
 }

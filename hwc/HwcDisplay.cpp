@@ -745,27 +745,13 @@ void HwcDisplay::SetVsyncCallbacksEnabled(bool enabled) {
     return;
   }
 
-  /* Before anything else: the panel may be living slow, and the enable
-   * that follows is the framework about to take its first timing
-   * sample -- the sample has to find the native rate already back. */
-  GetPipe().atomic_state_manager->NoteVsyncEnabled(enabled);
-
   vsync_event_en_ = enabled;
   std::optional<VSyncWorker::VsyncTimestampCallback> callback = std::nullopt;
   if (vsync_event_en_) {
     Hwc *hwc = hwc_;
     DisplayHandle id = handle_;
-    auto *state_manager = GetPipe().atomic_state_manager.get();
     // Callback will be called from the vsync thread.
-    callback = [hwc, id, state_manager](int64_t timestamp,
-                                        uint32_t period_ns) {
-      /* A tick born of a stretched frame is withheld rather than
-       * delivered: fed to the framework's timing model it teaches a
-       * slow world that no longer exists, and the model, once taught,
-       * self-confirms for seconds. The first clean tick is at most a
-       * stretched frame away. */
-      if (!state_manager->VsyncTimestampTrustworthy())
-        return;
+    callback = [hwc, id](int64_t timestamp, uint32_t period_ns) {
       hwc->SendVsyncEventToClient(id, timestamp, period_ns);
     };
   }

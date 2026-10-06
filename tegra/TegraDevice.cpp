@@ -22,6 +22,7 @@
 #include "backend/BackendManager.h"
 #include "utils/Logging.h"
 
+#include "tegra/DcHead.h"
 #include "tegra/FbDevice.h"
 
 #undef  LOG_TAG
@@ -51,10 +52,15 @@ std::unique_ptr<TegraDevice> TegraDevice::create() {
         if (readPanelTiming(index, &timing) != 0)
             continue;
 
+        /* Asked before the connector is built: whether the porch can be
+         * stretched decides which rates the panel is offered at, and the
+         * asking also brings back a panel a predecessor left slow. */
+        const bool stretchable = DcHead::settlePorch(index);
+
         device->mConnectors.push_back(
             std::make_unique<TegraConnector>(*device,
                                              static_cast<uint32_t>(index),
-                                             timing));
+                                             timing, stretchable));
     }
 
     if (device->mConnectors.empty()) {

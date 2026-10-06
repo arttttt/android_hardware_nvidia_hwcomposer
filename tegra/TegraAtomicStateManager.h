@@ -29,7 +29,6 @@
 #include "tegra/CompositionGovernor.h"
 #include "tegra/DcHead.h"
 #include "tegra/CursorUnit.h"
-#include "tegra/RefreshGovernor.h"
 #include "tegra/ScratchPool.h"
 #include "tegra/VicSession.h"
 #include "utils/properties.h"
@@ -178,6 +177,13 @@ class TegraAtomicRequest : public AtomicRequest {
     SharedFd acquire;
   };
 
+  /* A rate this frame moves the panel to: the porch to ask the head for,
+   * nought being the panel's own, and the period a frame then takes. */
+  struct Rate {
+    uint32_t porch = 0;
+    int64_t period_ns = 0;
+  };
+
   TegraAtomicRequest(std::vector<hwc::DcHead::Window> windows,
                      bool has_composition,
                      std::optional<PowerMode> power_mode,
@@ -185,14 +191,16 @@ class TegraAtomicRequest : public AtomicRequest {
                      std::shared_ptr<const HalColorTransformMatrix>
                          color_matrix = nullptr,
                      Cursor cursor = {},
-                     FrameNote note = {})
+                     FrameNote note = {},
+                     std::optional<Rate> rate = std::nullopt)
       : windows_(std::move(windows)),
         has_composition_(has_composition),
         power_mode_(power_mode),
         merge_(std::move(merge)),
         color_matrix_(std::move(color_matrix)),
         cursor_(cursor),
-        note_(std::move(note)) {
+        note_(std::move(note)),
+        rate_(rate) {
   }
 
   const Merge &GetMerge() const {
@@ -233,6 +241,12 @@ class TegraAtomicRequest : public AtomicRequest {
     return note_;
   }
 
+  /* Set when the framework asked for another of the panel's rates with
+   * this frame; empty otherwise. */
+  const std::optional<Rate> &GetRate() const {
+    return rate_;
+  }
+
  private:
   const std::vector<hwc::DcHead::Window> windows_;
   const bool has_composition_;
@@ -241,6 +255,7 @@ class TegraAtomicRequest : public AtomicRequest {
   const std::shared_ptr<const HalColorTransformMatrix> color_matrix_;
   const Cursor cursor_;
   const FrameNote note_;
+  const std::optional<Rate> rate_;
 };
 
 /* Turns plans into frames on this controller.
@@ -260,11 +275,11 @@ class TegraAtomicStateManager : public AtomicStateManager {
                           const std::vector<DrmMode> &modes,
                           hwc::VicSession *vic, hwc::ScratchPool *scratch,
                           hwc::CursorUnit *cursor,
-                          hwc::RefreshGovernor *governor,
                           hwc::CompositionGovernor *composition_governor)
       : head_(head), modes_(modes), vic_(vic), scratch_(scratch),
-        cursor_(cursor), governor_(governor),
-        composition_governor_(composition_governor) {
+        cursor_(cursor), composition_governor_(composition_governor),
+        period_ns_(modes.empty() ? 0
+                                 : int64_t(modes.front().GetVSyncPeriodNs())) {
     count_fences_ = CountFencesFromProperty();
     throttle_to_one_frame_ = ThrottleFromProperty();
     report_engine_reads_ = EngineReadsFromProperty();
@@ -300,11 +315,6 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * Arrives from the framework between frames, at the pointer's own rate;
    * touches nothing a frame owns, which is the whole point of the unit. */
   void MoveCursor(int32_t x, int32_t y) override {
-    /* The pointer is life too, and it moves without frames by design --
-     * a panel left slow under it would drag the cursor at thirty. */
-    if (governor_ != nullptr)
-      governor_->NoteActivity();
-
     if (cursor_ != nullptr) {
       /* Counted before the unit hears of it: every plan carries the count
        * it was drawn under, and a mismatch at execution says a move like
@@ -312,15 +322,6 @@ class TegraAtomicStateManager : public AtomicStateManager {
       ++cursor_move_seq_;
       cursor_->Move(x, y);
     }
-  }
-
-  void NoteVsyncEnabled(bool enabled) override {
-    if (governor_ != nullptr)
-      governor_->NoteVsyncEnabled(enabled);
-  }
-
-  bool VsyncTimestampTrustworthy() override {
-    return governor_ == nullptr || governor_->VsyncTimestampTrustworthy();
   }
 
  private:
@@ -333,10 +334,10 @@ class TegraAtomicStateManager : public AtomicStateManager {
 
   hwc::DcHead &head_;
 
-  /* The timings this panel runs, to check a requested one against. A fixed
-   * panel has one, so the only mode that ever arrives here is the one already
-   * in use -- but a request for another is a mistake worth refusing rather
-   * than accepting and not carrying out. */
+  /* The timings this panel runs, to check a requested one against: its
+   * own first, and a slower rate of the same timing where the kernel can
+   * stretch the porch. A request for any other is a mistake worth refusing
+   * rather than accepting and not carrying out. */
   const std::vector<DrmMode> &modes_;
 
   /* The engine that draws what will not fit a window, and somewhere for it to
@@ -359,11 +360,6 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * main thread -- comes through the composer's one lock. */
   uint64_t cursor_move_seq_ = 0;
 
-  /* Slows the panel when nobody draws, or null where the kernel offers
-   * no such door. Owned by the pipeline, told of life from here: frames,
-   * pointer moves, and the framework's own vsync confession. */
-  hwc::RefreshGovernor *const governor_ = nullptr;
-
   /* Raises the engine's clock ahead of a merge, or null where no policy
    * library was found. Owned by the pipeline. Told of each frame the
    * controller accepted at validate, of each merge that went to the
@@ -382,11 +378,16 @@ class TegraAtomicStateManager : public AtomicStateManager {
 
   /* When the display last latched a frame, as the previous flip's fence
    * reported it once due: the controller's own scanout grid, which the
-   * governor aims its deadlines at. Nought before the first landed flip,
-   * and nought again while the refresh governor's raise is in its shadow
-   * -- a latch of a slowed frame places no grid. Refreshed at every
-   * validate and execute that finds the fence due. */
+   * governor aims its deadlines at. Nought before the first landed flip.
+   * Refreshed at every validate and execute that finds the fence due. */
   int64_t last_latch_ns_ = 0;
+
+  /* The rate the panel was last asked for: its porch, nought for its own,
+   * and the period of a frame at it, which the governor's deadlines step
+   * by. Kept to ask again when the light comes back -- the kernel puts the
+   * panel's own porch back whenever the head is blanked. */
+  uint32_t porch_ = 0;
+  int64_t period_ns_ = 0;
 
   bool NoteLatch();
 

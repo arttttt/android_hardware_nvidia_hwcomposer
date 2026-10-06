@@ -32,8 +32,15 @@ namespace hwc {
 /* The panel on the far end of a display head.
  *
  * Everything it knows came from the framebuffer device at start-up and none
- * of it changes afterwards: the panel is soldered to the board, runs one
- * timing, and is not going anywhere.
+ * of it changes afterwards: the panel is soldered to the board and is not
+ * going anywhere.
+ *
+ * It runs one timing, at one or two rates. The second is the same timing
+ * with the vertical front porch stretched until a frame takes twice as
+ * long: the controller can do that between two frames with no flip and no
+ * mode set, so the framework may ask for it as a seamless change within one
+ * group -- and the framework, not the composer, decides when it is quiet
+ * enough to ask. Offered only where the kernel can stretch the porch.
  *
  * Every settable attribute is left at the base class's answer, which is that
  * there is none -- see the note in display/Connector.h on why that is the
@@ -42,11 +49,33 @@ namespace hwc {
 class TegraConnector : public drm_hwcomposer::Connector {
 public:
     TegraConnector(drm_hwcomposer::Device &device, uint32_t index,
-                   const PanelTiming &timing)
+                   const PanelTiming &timing, bool stretchable)
         : mDevice(device),
           mIndex(index),
           mTiming(timing),
-          mModes{drm_hwcomposer::DrmMode(&mTiming.mode)} {}
+          mSlowMode(slowed(mTiming.mode)) {
+        mModes.emplace_back(&mTiming.mode);
+        if (stretchable)
+            mModes.emplace_back(&mSlowMode);
+    }
+
+    /* The porch of the slow rate, in lines: measured by eye down the
+     * calibration ladder of this panel, the longest at which its pixels
+     * hold their charge between refreshes, and the one that makes an
+     * effective thirty hertz of its mode. A property of the glass, not of
+     * the system; a different panel means a different number. */
+    static constexpr uint32_t kSlowVfp = 2086;
+
+    /* The porch to ask the head for so that `mode` is what it runs: nought
+     * for the panel's own timing, the mode's porch for any other. */
+    static uint32_t porchFor(const drmModeModeInfo &mode,
+                             const drmModeModeInfo &native) {
+        const uint32_t vfp = mode.vsync_start - mode.vdisplay;
+        return vfp == static_cast<uint32_t>(native.vsync_start -
+                                            native.vdisplay)
+                   ? 0
+                   : vfp;
+    }
 
     uint32_t GetId() const override { return mIndex; }
 
@@ -78,15 +107,40 @@ public:
     uint32_t GetMmHeight() const override { return mTiming.mmHeight; }
 
 private:
+    /* The panel's timing with the porch stretched to kSlowVfp. Everything
+     * after the porch moves down with it; the clock stays, so the rate is
+     * what the longer frame gives. Not preferred: the panel comes up at its
+     * own rate. */
+    static drmModeModeInfo slowed(const drmModeModeInfo &native) {
+        drmModeModeInfo mode = native;
+        const uint32_t pulse = native.vsync_end - native.vsync_start;
+        const uint32_t back = native.vtotal - native.vsync_end;
+        mode.vsync_start = static_cast<uint16_t>(mode.vdisplay + kSlowVfp);
+        mode.vsync_end = static_cast<uint16_t>(mode.vsync_start + pulse);
+        mode.vtotal = static_cast<uint16_t>(mode.vsync_end + back);
+        mode.type = DRM_MODE_TYPE_DRIVER;
+
+        const uint64_t pixels = static_cast<uint64_t>(mode.htotal) *
+                                mode.vtotal;
+        if (mode.clock != 0 && pixels != 0)
+            mode.vrefresh = static_cast<uint32_t>(
+                (static_cast<uint64_t>(mode.clock) * 1000 + pixels / 2) /
+                pixels);
+        else
+            mode.vrefresh = native.vrefresh / 2;
+        return mode;
+    }
+
     drm_hwcomposer::Device &mDevice;
     const uint32_t mIndex;
 
-    /* Held rather than referenced: the modes below are built from it. Not
-     * const, because a mode is built from a pointer to it. */
+    /* Held rather than referenced: the modes below are built from them. Not
+     * const, because a mode is built from a pointer to its timing. */
     PanelTiming mTiming;
+    drmModeModeInfo mSlowMode;
 
-    /* Exactly one. The panel has a single timing; the framework still wants
-     * a list, so it gets one of length one. */
+    /* The panel's own rate first, which is the one it comes up in, and the
+     * slow rate after it where the kernel can stretch the porch. */
     std::vector<drm_hwcomposer::DrmMode> mModes;
 };
 

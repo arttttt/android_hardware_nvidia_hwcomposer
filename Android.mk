@@ -143,7 +143,6 @@ LOCAL_SRC_FILES := \
     tegra/CompositionGovernor.cpp \
     tegra/CursorPlane.cpp \
     tegra/CursorUnit.cpp \
-    tegra/RefreshGovernor.cpp \
     tegra/TegraPlane.cpp \
     tegra/EngineWarmer.cpp \
     tegra/FbDevice.cpp \

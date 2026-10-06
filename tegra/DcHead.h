@@ -145,6 +145,16 @@ public:
     /* Opens head `index`. Returns null and logs on failure. */
     static std::unique_ptr<DcHead> open(int index);
 
+    /* Puts head `index` back on its panel's own vertical porch, and says
+     * whether the kernel can stretch that porch at all.
+     *
+     * Done before anything else is built, through a descriptor of its own:
+     * a predecessor that died with the panel slowed left it slow, and only
+     * a kernel that answers this can be offered a slower rate. False also
+     * where the head will not open; the caller has other ways of finding
+     * that out. */
+    static bool settlePorch(int index);
+
     ~DcHead();
 
     /* Which head this is.
@@ -207,6 +217,13 @@ public:
     int fd() const {
         return mFd.get();
     }
+
+    /* Asks for a vertical front porch of `vfp` lines, nought for the mode's
+     * own. The request is taken at once and applied by the kernel at the
+     * end of the frame being scanned, with no flip needed; nothing comes
+     * back to say when. The caller tells apart the frames that ran under it
+     * by their length. */
+    int setActiveVfp(uint32_t vfp);
 
     /* Posts one frame.
      *

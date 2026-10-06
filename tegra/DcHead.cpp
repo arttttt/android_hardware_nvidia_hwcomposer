@@ -78,6 +78,32 @@ std::unique_ptr<DcHead> DcHead::open(int index) {
     return std::unique_ptr<DcHead>(new DcHead(std::move(fd), index));
 }
 
+bool DcHead::settlePorch(int index) {
+    char path[32];
+    snprintf(path, sizeof(path), "/dev/tegra_dc_%d", index);
+
+    UniqueFd fd(::open(path, O_RDWR | O_CLOEXEC));
+    if (!fd)
+        return false;
+
+    uint32_t native = 0;
+    if (ioctl(fd.get(), TEGRA_DC_EXT_SET_ACT_VFP, &native) != 0) {
+        HWC_LOGI("head %d: no porch stretch in this kernel (%s); one rate",
+                 index, strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+int DcHead::setActiveVfp(uint32_t vfp) {
+    if (ioctl(mFd.get(), TEGRA_DC_EXT_SET_ACT_VFP, &vfp) != 0) {
+        int err = -errno;
+        HWC_LOGE("head %d: porch %u: %s", mIndex, vfp, strerror(-err));
+        return err;
+    }
+    return 0;
+}
+
 DcHead::~DcHead() {
     /* The kernel keeps the last matrix written for as long as the head is
      * up, composer or no composer -- a tint left behind here would outlive

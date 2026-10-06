@@ -147,11 +147,6 @@ TegraDisplayPipeline::TegraDisplayPipeline(TegraConnector &tegraConnector,
     if (mCursorUnit)
         mCursorPlane = std::make_unique<drm_hwcomposer::TegraCursorPlane>();
 
-    /* Whether this panel can be slowed when nobody draws is the kernel's
-     * to answer, once, here. Independent of everything above: a governor
-     * needs only the head's descriptor and the quiet. */
-    mGovernor = RefreshGovernor::Probe(mHead->fd());
-
     /* After the engine and its pool, on this thread: the governor's
      * warm-up buffers come from the zone, whose device is opened on the
      * first ask. Null is the ordinary answer on a device without the
@@ -164,7 +159,7 @@ TegraDisplayPipeline::TegraDisplayPipeline(TegraConnector &tegraConnector,
     atomic_state_manager =
         std::make_unique<drm_hwcomposer::TegraAtomicStateManager>(
             *mHead, tegraConnector.GetModes(), mVic.get(), mScratch.get(),
-            mCursorUnit.get(), mGovernor.get(), mCompositionGovernor.get());
+            mCursorUnit.get(), mCompositionGovernor.get());
 
     /* The planner is not built here. Which one runs is a decision the backend
      * makes from a property, and a pipeline has no business overriding it. */
@@ -188,10 +183,11 @@ TegraDisplayPipeline::~TegraDisplayPipeline() {
      * fd, and a hardware sprite nobody hid. */
     mCursorUnit.reset();
     mCursorPlane.reset();
-    /* After the manager that speaks to it, before the head it speaks
-     * through: letting go restores the native rate over the head's
-     * descriptor. */
-    mGovernor.reset();
+    /* The panel is left at its own rate, through the head's descriptor
+     * while it is still open: whatever the framework last chose dies with
+     * this composer, and the next one starts from the panel's own. */
+    if (mHead)
+        mHead->setActiveVfp(0);
     /* Before the engine, and it has to be: the policy library's thread is
      * joined here, and it may be inside a warm-up pass on that engine. */
     mCompositionGovernor.reset();

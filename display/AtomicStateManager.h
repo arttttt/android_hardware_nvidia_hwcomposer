@@ -158,21 +158,6 @@ class AtomicStateManager {
   virtual void MoveCursor(int32_t /*x*/, int32_t /*y*/) {
   }
 
-  /* The framework switching its vsync callbacks on or off -- its own
-   * word on whether anyone wants frames. No-op by default: most
-   * hardware has no use for the confession; one that can slow its
-   * panel does. */
-  virtual void NoteVsyncEnabled(bool /*enabled*/) {
-  }
-
-  /* Whether a vsync timestamp taken right now reflects the display's
-   * native timing. Always true by default; hardware that slows its
-   * panel answers false in the brief shadow after a wake, while a
-   * stretched frame may still be finishing -- a timestamp from there
-   * would mis-teach the framework's timing model. */
-  virtual bool VsyncTimestampTrustworthy() {
-    return true;
-  }
 };
 
 }  // namespace android::drm_hwcomposer
