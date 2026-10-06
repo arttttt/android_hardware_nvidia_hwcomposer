@@ -108,6 +108,8 @@ class TegraGovernor final : public Governor {
   /* The measured path read at the processor's present clock, in
    * nanoseconds; nought without a measure or a clock. */
   int64_t MeasuredSubmitNs(uint32_t cpu_khz) const;
+  void NoteColdSubmit(int64_t sample_ns);
+  int64_t MeasuredColdExtraNs(uint32_t path_khz) const;
 
   GovernorHost &host_;
   Tuning tuning_;
@@ -144,11 +146,16 @@ class TegraGovernor final : public Governor {
    * once used. */
   uint64_t planned_seq_ = 0;
   int64_t planned_validate_ns_ = 0;
+  /* The clock the plan read the submit at: the present one, or the
+   * lift's when the processor was lifted for it. */
   uint32_t planned_cpu_khz_ = 0;
   bool planned_cold_ = false;
   /* The measured path from validate to the submit's report, in processor
    * cycles, a running mean; nought until measured. */
   int64_t submit_cycles_ = 0;
+  /* What a cold engine adds to that path, in the same cycles at the
+   * clock the plan read it at, a running mean; nought until measured. */
+  int64_t cold_extra_cycles_ = 0;
 };
 
 }  // namespace android::hwc::governor::tegra

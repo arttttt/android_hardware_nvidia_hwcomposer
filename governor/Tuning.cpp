@@ -47,6 +47,7 @@ constexpr TuningKey tuningKeys[] = {
     {"cpu_pause_lift", &Tuning::cpu_pause_lift},
     {"submit_measured", &Tuning::submit_measured},
     {"submit_smooth", &Tuning::submit_smooth},
+    {"cold_measured", &Tuning::cold_measured},
     {"hold_ms", &Tuning::hold_ms},
     {"powergate_ms", &Tuning::powergate_ms},
     {"warm_ahead", &Tuning::warm_ahead},

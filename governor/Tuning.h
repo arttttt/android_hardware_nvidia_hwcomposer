@@ -98,13 +98,22 @@ struct Tuning {
    * work, and its length is the processor's clock: seven milliseconds at
    * or under 700 MHz, under two above 1.1 GHz, and a mean in
    * milliseconds sits three milliseconds under the merges that are late.
-   * Cold merges are left out of the measure -- their path holds the
-   * engine's power-up, not cycles -- and read as the warm path plus the
-   * assumed cold submit. The assumed path stands in until there is a
-   * measure, and when this is nought. `submit_smooth` weighs what came
-   * before against the latest merge. */
+   * Cold merges are left out of that measure -- their path holds the
+   * engine's power-up -- and read as the warm path plus a cold extra.
+   * The assumed path stands in until there is a measure, and when this is
+   * nought. `submit_smooth` weighs what came before against the latest
+   * merge, in both measures. */
   uint32_t submit_measured = 1;
   uint32_t submit_smooth = 3;
+
+  /* Whether the cold extra is measured too: the cold merge's path less
+   * the warm mean, a running mean of its own in the same cycles. The
+   * assumed extra below stands in until there is one, and when this is
+   * nought. The assumed values fitted Android 10, whose processor the
+   * load held near 2 GHz through a transition; on Android 11 it idles at
+   * 204-312 MHz when the cold merge is planned, and the extra measured
+   * three to four times the assumption. */
+  uint32_t cold_measured = 1;
 
   /* How long the floor outlives the last merge's fence, so the merges of
    * one transition do not each pay for the clock coming and going. */

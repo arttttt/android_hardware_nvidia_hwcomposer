@@ -292,7 +292,6 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
   /* Remembered so the merge's report can be timed against the plan. */
   planned_seq_ = f.seq;
   planned_validate_ns_ = f.now_ns;
-  planned_cpu_khz_ = cpu_khz;
   planned_cold_ = cold;
 
   /* Lifting the processor is for the composer's submit; once the submit
@@ -320,17 +319,23 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
 
   /* How long the submit will take to come: the measured warm path at
    * the processor's present clock -- or at the lift's step, when the
-   * processor is being lifted for this very submit -- plus the assumed
-   * cold submit when the engine has to be brought up on the way; the
-   * assumed path when there is no measure yet. */
+   * processor is being lifted for this very submit -- plus, when the
+   * engine has to be brought up on the way, what that measured on the
+   * cold merges before, or the assumed cold submit until it has been
+   * measured; the assumed path when there is no measure yet. */
   const uint32_t path_khz =
       lift_cpu ? std::max(cpu_khz, tuning_.cpu_khz) : cpu_khz;
+  planned_cpu_khz_ = path_khz;
   int64_t submit_after =
       tuning_.submit_measured != 0 ? MeasuredSubmitNs(path_khz) : 0;
-  if (submit_after > 0 && cold)
-    submit_after += int64_t(lift_cpu ? tuning_.submit_cold_us
-                                     : tuning_.submit_cold_slow_us) *
-                    nsPerUs;
+  if (submit_after > 0 && cold) {
+    const int64_t measured_extra = MeasuredColdExtraNs(path_khz);
+    submit_after += measured_extra > 0
+                        ? measured_extra
+                        : int64_t(lift_cpu ? tuning_.submit_cold_us
+                                           : tuning_.submit_cold_slow_us) *
+                              nsPerUs;
+  }
   host_.TraceInt("hwc_gov_submit_after_us", int32_t(submit_after / nsPerUs));
 
   const MergeEstimate estimate =
@@ -404,12 +409,16 @@ void TegraGovernor::NoteSubmit(uint64_t seq, int64_t reported_ns) {
   planned_validate_ns_ = 0;
   host_.TraceInt("hwc_gov_submit_us", int32_t(sample_ns / nsPerUs));
 
-  /* Cold merges carry the engine's power-up in their path, not cycles;
-   * a clock unread cannot be measured in; and a report a frame or more
+  /* A clock unread cannot be measured in, and a report a frame or more
    * late waited on something other than the composer. */
-  if (planned_cold_ || planned_cpu_khz_ == 0 || sample_ns <= 0 ||
-      sample_ns > 100 * nsPerMs)
+  if (planned_cpu_khz_ == 0 || sample_ns <= 0 || sample_ns > 100 * nsPerMs)
     return;
+  /* A cold merge carries the engine's power-up in its path: kept apart,
+   * so the warm path stays the composer's own work. */
+  if (planned_cold_) {
+    NoteColdSubmit(sample_ns);
+    return;
+  }
 
   /* Nanoseconds times kilohertz over a million: cycles. */
   const int64_t cycles = sample_ns * int64_t(planned_cpu_khz_) / 1000000;
@@ -433,6 +442,37 @@ int64_t TegraGovernor::MeasuredSubmitNs(uint32_t cpu_khz) const {
   if (submit_cycles_ == 0 || cpu_khz == 0)
     return 0;
   return submit_cycles_ * 1000000 / int64_t(cpu_khz);
+}
+
+/* What a cold engine added: the whole path in cycles at the clock the plan
+ * read it at, less the warm path's mean. Read back at the same clock, so
+ * whatever the lift does to the real clock in between is in the measure
+ * as it will be in the prediction. The assumed extra is what Android 10
+ * needed -- 0.8 ms at the median with the processor held near 2 GHz by
+ * the load -- and on Android 11, with the processor idling at 204-312 MHz
+ * when the plan is made, the extra measured 1.8-2.7 ms at the median and
+ * 5-6 at the ninetieth percentile. */
+void TegraGovernor::NoteColdSubmit(int64_t sample_ns) {
+  if (submit_cycles_ == 0 || planned_cpu_khz_ == 0)
+    return;
+  const int64_t total = sample_ns * int64_t(planned_cpu_khz_) / 1000000;
+  const int64_t extra = std::max<int64_t>(total - submit_cycles_, 0);
+  /* The same guard as the warm path's: a wait on something else. */
+  if (cold_extra_cycles_ != 0 && extra > 3 * cold_extra_cycles_)
+    return;
+
+  const int64_t smooth = int64_t(tuning_.submit_smooth);
+  cold_extra_cycles_ =
+      cold_extra_cycles_ == 0
+          ? extra
+          : (cold_extra_cycles_ * smooth + extra) / (smooth + 1);
+  host_.TraceInt("hwc_gov_cold_extra_kcyc", int32_t(cold_extra_cycles_ / 1000));
+}
+
+int64_t TegraGovernor::MeasuredColdExtraNs(uint32_t path_khz) const {
+  if (tuning_.cold_measured == 0 || cold_extra_cycles_ == 0 || path_khz == 0)
+    return 0;
+  return cold_extra_cycles_ * 1000000 / int64_t(path_khz);
 }
 
 void TegraGovernor::Warm(int64_t now) {
