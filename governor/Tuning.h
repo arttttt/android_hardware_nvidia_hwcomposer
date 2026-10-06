@@ -121,8 +121,16 @@ struct Tuning {
    * in five of them found the engine down and paid for its coming up
    * inside the frame. Woken with the activity instead, it is up by the
    * time the transition's merge is planned. No clock is asked: the pass
-   * runs at whatever the engine idles at. */
-  uint32_t warm_ahead = 1;
+   * runs at whatever the engine idles at.
+   *
+   * Off: it costs more than it saves. Two pairs of runs, interleaved, of
+   * five launches from an icon: cold merges 17 -> 13 a run, but the
+   * composer's present at p90 1.2-1.9 -> 6.5-9.4 ms, SurfaceFlinger's
+   * frame at p90 5.6-6.3 -> 10.9-13.0 ms, frames it waited on the
+   * previous one 13-31 -> 59-70. The pass lands as the animation starts,
+   * the processor still at its idle clock, where bringing the engine up
+   * ramps the core rail under the clock lock the flips wait on. */
+  uint32_t warm_ahead = 0;
 
   /* The path from validate to the submit, measured: the composer's lead
    * and the submit itself on a warm engine, on a cold one with the
