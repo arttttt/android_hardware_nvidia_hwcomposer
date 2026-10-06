@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#define ATRACE_TAG ATRACE_TAG_GRAPHICS
+
 #include "VSyncWorker.h"
 
 #include <linux/sync_file.h>
@@ -104,8 +106,30 @@ void VSyncWorker::UpdateVSyncControl() {
 void VSyncWorker::SetVsyncPeriodNs(uint32_t vsync_period_ns) {
   const std::lock_guard<std::mutex> lock(mutex_);
   vsync_period_ns_ = vsync_period_ns;
+  expected_period_ns_ = 0;
   last_timestamp_ = std::nullopt;
   last_present_fence_.reset();
+}
+
+void VSyncWorker::ExpectVsyncPeriodNs(uint32_t vsync_period_ns) {
+  const std::lock_guard<std::mutex> lock(mutex_);
+  if (vsync_period_ns == vsync_period_ns_) {
+    expected_period_ns_ = 0;
+    return;
+  }
+  expected_period_ns_ = vsync_period_ns;
+}
+
+uint32_t VSyncWorker::GetVsyncPeriodNs() {
+  const std::lock_guard<std::mutex> lock(mutex_);
+  return vsync_period_ns_;
+}
+
+bool VSyncWorker::LandsOnExpectedPeriod(int64_t previous,
+                                        int64_t timestamp) const {
+  const int64_t interval = timestamp - previous;
+  const int64_t expected = expected_period_ns_;
+  return std::abs(interval - expected) <= expected / 5;
 }
 
 void VSyncWorker::SetVsyncTimestampTracking(bool enabled) {
@@ -121,7 +145,7 @@ void VSyncWorker::SetVsyncTimestampTracking(bool enabled) {
   UpdateVSyncControl();
 }
 
-uint32_t VSyncWorker::GetLastVsyncTimestamp() {
+int64_t VSyncWorker::GetLastVsyncTimestamp() {
   const std::lock_guard<std::mutex> lock(mutex_);
   return last_timestamp_is_fresh_ ? last_timestamp_.value_or(0) : 0;
 }
@@ -305,6 +329,16 @@ void VSyncWorker::ThreadFn() {
         continue;
       if (enable_vsync_timestamps_) {
         last_timestamp_is_fresh_ = true;
+      }
+      /* The first blank one expected period after the one before it is
+       * the first frame that ran at the new rate: from here the period
+       * told is the new one, and the phase is taken from this blank. */
+      if (expected_period_ns_ != 0 && last_timestamp_.has_value() &&
+          LandsOnExpectedPeriod(*last_timestamp_, timestamp)) {
+        vsync_period_ns_ = expected_period_ns_;
+        expected_period_ns_ = 0;
+        ATRACE_INT("hwc_vsync_period_us",
+                   static_cast<int32_t>(vsync_period_ns_ / 1000));
       }
       vsync_callback = callback_;
       vsync_period_ns = vsync_period_ns_;

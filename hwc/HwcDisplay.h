@@ -399,6 +399,11 @@ class HwcDisplay : public ICompositorDisplay {
 
   uint32_t GetCurrentVsyncPeriodNs() const;
 
+  /* The period the display runs at now, as its vsync events report it.
+   * Behind the active config while a seamless rate change is still waiting
+   * for the display to take it up; never nought. */
+  uint32_t GetRunningVsyncPeriodNs() const;
+
   // Returns a client's layer if one was already provided and its size matches
   // the new config, otherwise allocates a new one.
   std::optional<LayerData> GetModesetLayerData(

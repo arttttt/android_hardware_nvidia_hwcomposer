@@ -1482,6 +1482,15 @@ uint32_t HwcDisplay::GetCurrentVsyncPeriodNs() const {
   return config->mode.GetVSyncPeriodNs();
 }
 
+uint32_t HwcDisplay::GetRunningVsyncPeriodNs() const {
+  if (vsync_worker_) {
+    const uint32_t running = vsync_worker_->GetVsyncPeriodNs();
+    if (running != 0)
+      return running;
+  }
+  return GetCurrentVsyncPeriodNs();
+}
+
 CommitStatus HwcDisplay::TestComposition(
     CompositionPlanner::ValidatedComposition &composition) const {
   ATRACE_CALL();
@@ -1841,7 +1850,7 @@ void HwcDisplay::ApplyCommitChanges(const AtomicCommitArgs &a_args,
     // Get the vsync period before updating active_config_id.
     uint32_t prev_vperiod_ns = GetCurrentVsyncPeriodNs();
     vsync_worker_->SetVsyncTimestampTracking(false);
-    uint32_t last_vsync_ts = vsync_worker_->GetLastVsyncTimestamp();
+    int64_t last_vsync_ts = vsync_worker_->GetLastVsyncTimestamp();
     if (last_vsync_ts != 0) {
       hwc_->SendVsyncPeriodTimingChangedEventToClient(handle_,
                                                       last_vsync_ts +
@@ -1855,7 +1864,15 @@ void HwcDisplay::ApplyCommitChanges(const AtomicCommitArgs &a_args,
     // VsyncWorker.
     active_config_id_ = staged_mode_config_id_.value_or(active_config_id_);
     staged_mode_config_id_.reset();
-    vsync_worker_->SetVsyncPeriodNs(a_args.display_mode->GetVSyncPeriodNs());
+    /* A seamless change is applied by the display some time after this
+     * commit -- at the end of whichever frame it is scanning -- so the new
+     * period is reported from the first blank that runs at it, not from
+     * here. A mode set is in force when the commit returns. */
+    if (a_args.seamless)
+      vsync_worker_->ExpectVsyncPeriodNs(
+          a_args.display_mode->GetVSyncPeriodNs());
+    else
+      vsync_worker_->SetVsyncPeriodNs(a_args.display_mode->GetVSyncPeriodNs());
   }
 
   if (a_args.hdcp_content_type.has_value() ||

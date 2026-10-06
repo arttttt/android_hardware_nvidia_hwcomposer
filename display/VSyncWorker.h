@@ -52,6 +52,17 @@ class VSyncWorker {
   // next vsync event is tracked.
   void SetVsyncPeriodNs(uint32_t vsync_period_ns);
 
+  /* A new period that the display takes up on its own, some time after the
+   * request -- a rate change that lands at the end of whichever frame is
+   * being scanned. Until a blank arrives one new period after the one
+   * before it, the old period goes on being reported: the framework
+   * confirms a rate change by the period it is told, and told early it
+   * would take the old cadence for the new one. */
+  void ExpectVsyncPeriodNs(uint32_t vsync_period_ns);
+
+  // The period vsync events are being reported with right now.
+  uint32_t GetVsyncPeriodNs();
+
   // Set or clear a callback to be fired on vsync.
   void SetTimestampCallback(std::optional<VsyncTimestampCallback> &&callback);
 
@@ -59,7 +70,7 @@ class VSyncWorker {
   // vsync tracking is disabled, or if no vsync has happened since it was
   // enabled.
   void SetVsyncTimestampTracking(bool enabled);
-  uint32_t GetLastVsyncTimestamp();
+  int64_t GetLastVsyncTimestamp();
 
   void AddLastPresentFence(SharedFd &fence);
 
@@ -94,6 +105,16 @@ class VSyncWorker {
   // Default to 60Hz refresh rate
   static constexpr uint32_t kDefaultVSPeriodNs = 16666666;
   uint32_t vsync_period_ns_ GUARDED_BY(mutex_) = kDefaultVSPeriodNs;
+
+  /* The period ExpectVsyncPeriodNs asked for, while the blanks still come at
+   * the old one. Nought when nothing is expected. */
+  uint32_t expected_period_ns_ GUARDED_BY(mutex_) = 0;
+
+  /* Whether the interval between `previous` and `timestamp` is the expected
+   * period's, near enough: within a fifth, as the platforms that confirm a
+   * rate change by measurement allow. */
+  bool LandsOnExpectedPeriod(int64_t previous, int64_t timestamp) const
+      REQUIRES(mutex_);
   bool enable_vsync_timestamps_ GUARDED_BY(mutex_) = false;
   bool last_timestamp_is_fresh_ GUARDED_BY(mutex_) = false;
   std::optional<VsyncTimestampCallback> callback_ GUARDED_BY(mutex_);

@@ -1391,7 +1391,10 @@ static int32_t GetDisplayVsyncPeriod(hwc2_device_t *device,
     return static_cast<int32_t>(HWC2::Error::BadConfig);
   }
 
-  *out_vsync_period = config->mode.GetVSyncPeriodNs();
+  /* What the display runs at, not what was last asked of it: across a
+   * seamless change the two differ until the display takes the new rate up,
+   * and the framework is told the new period only from then. */
+  *out_vsync_period = idisplay->GetRunningVsyncPeriodNs();
   return static_cast<int32_t>(HWC2::Error::None);
 }
 
