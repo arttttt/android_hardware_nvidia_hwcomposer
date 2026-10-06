@@ -190,6 +190,11 @@ class HwcDisplay : public ICompositorDisplay {
   // Get the HwcDisplayConfig, or nullptr if none.
   auto GetConfig(ConfigId config_id) const -> const HwcDisplayConfig *;
 
+  /* The period the display runs at now, as its vsync events report it.
+   * Behind the active config while a seamless rate change is still waiting
+   * for the display to take it up; never nought. */
+  uint32_t GetRunningVsyncPeriodNs() const;
+
   auto GetDisplayBoundsMm() const -> std::pair<int32_t, int32_t>;
 
   // To be called after SetDisplayProperties. Returns an empty vector if the
@@ -398,11 +403,6 @@ class HwcDisplay : public ICompositorDisplay {
   void WaitForPresentTime(int64_t present_time, uint32_t vsync_period_ns);
 
   uint32_t GetCurrentVsyncPeriodNs() const;
-
-  /* The period the display runs at now, as its vsync events report it.
-   * Behind the active config while a seamless rate change is still waiting
-   * for the display to take it up; never nought. */
-  uint32_t GetRunningVsyncPeriodNs() const;
 
   // Returns a client's layer if one was already provided and its size matches
   // the new config, otherwise allocates a new one.
