@@ -58,6 +58,11 @@ public:
          * schedules against. */
         int64_t timestampNs = 0;
 
+        /* VBlank only: the vertical front porch the frame that ended on this
+         * blank ran with, in lines, nought for the mode's own. A kernel
+         * that does not report it leaves nought here always. */
+        uint32_t actVfp = 0;
+
         /* Hotplug only. */
         bool connected = false;
     };

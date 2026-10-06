@@ -44,9 +44,13 @@ class VSyncSource {
 public:
     virtual ~VSyncSource() = default;
 
-    /* Waits for the next vertical blank and reports when it happened.
-     * Returns 0, or a negative errno if no blank was seen. */
-    virtual int waitForVSync(int64_t *outTimestampNs) = 0;
+    /* Waits for the next vertical blank and reports when it happened, and,
+     * where the display says so, how long the frame that ended on it took:
+     * the period it actually ran at, which after a seamless rate change is
+     * the only word on when the change took hold. Nought in `outPeriodNs`
+     * when the display does not say. Returns 0, or a negative errno if no
+     * blank was seen. */
+    virtual int waitForVSync(int64_t *outTimestampNs, int64_t *outPeriodNs) = 0;
 
     /* The caller has no use for blanks for a while. Whatever the source did
      * to make them arrive may be undone, and whatever has arrived unread

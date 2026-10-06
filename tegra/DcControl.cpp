@@ -110,6 +110,7 @@ int DcControl::readEvent(Event *outEvent) {
         outEvent->type = EventType::VBlank;
         outEvent->handle = vblank->handle;
         outEvent->timestampNs = static_cast<int64_t>(vblank->timestamp_ns);
+        outEvent->actVfp = vblank->act_vfp;
         break;
     }
     case TEGRA_DC_EXT_EVENT_HOTPLUG: {

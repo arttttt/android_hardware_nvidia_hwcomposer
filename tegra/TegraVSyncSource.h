@@ -20,6 +20,8 @@
 #include <cstdint>
 #include <memory>
 
+#include <xf86drmMode.h>
+
 #include "display/VSyncSource.h"
 #include "tegra/DcControl.h"
 #include "tegra/DcHead.h"
@@ -60,12 +62,14 @@ public:
      * depends on the display being on, which it need not be at the moment a
      * composer starts, so the request is made from the wait -- where the
      * answer to it is what the wait is about anyway. */
-    static std::unique_ptr<TegraVSyncSource> create(DcHead &head,
-                                                    uint32_t headHandle);
+    /* `native` is the panel's own timing, which a reported porch is
+     * measured against to give the period of the frame it ran. */
+    static std::unique_ptr<TegraVSyncSource> create(
+        DcHead &head, uint32_t headHandle, const drmModeModeInfo &native);
 
     ~TegraVSyncSource() override;
 
-    int waitForVSync(int64_t *outTimestampNs) override;
+    int waitForVSync(int64_t *outTimestampNs, int64_t *outPeriodNs) override;
 
     /* Reporting off and the queue read dry. The controller's interrupt is
      * masked while nobody is waiting, and the kernel is not left holding a
@@ -77,12 +81,28 @@ private:
     void discardQueued();
 
     TegraVSyncSource(std::unique_ptr<DcControl> control, DcHead &head,
-                     uint32_t headHandle)
-        : mControl(std::move(control)), mHead(head), mHeadHandle(headHandle) {}
+                     uint32_t headHandle, const drmModeModeInfo &native)
+        : mControl(std::move(control)),
+          mHead(head),
+          mHeadHandle(headHandle),
+          mNative(native) {}
+
+    /* How long a frame with front porch `actVfp` takes on this panel:
+     * nought for the panel's own porch, the line count otherwise. Nought
+     * when the timing carries no pixel clock to work it out from. */
+    int64_t periodFor(uint32_t actVfp) const;
 
     std::unique_ptr<DcControl> mControl;
     DcHead &mHead;
     const uint32_t mHeadHandle;
+    const drmModeModeInfo mNative;
+
+    /* Whether a blank has ever reported a stretched porch. A kernel that
+     * does not report the porch reports nought for ever, which reads the
+     * same as the panel's own -- so the porch is believed only once it has
+     * been seen to be something else, and until then the period is left
+     * unsaid. */
+    bool mPorchReported = false;
 
     /* Whether the controller was reporting blanks as of the last wait, or
      * granted the request to at the start of this one.

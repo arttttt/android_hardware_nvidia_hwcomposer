@@ -73,8 +73,8 @@ int64_t now() {
 
 }  // namespace
 
-std::unique_ptr<TegraVSyncSource> TegraVSyncSource::create(DcHead &head,
-                                                           uint32_t headHandle) {
+std::unique_ptr<TegraVSyncSource> TegraVSyncSource::create(
+    DcHead &head, uint32_t headHandle, const drmModeModeInfo &native) {
     std::unique_ptr<DcControl> control = DcControl::open();
     if (!control)
         return nullptr;
@@ -88,7 +88,19 @@ std::unique_ptr<TegraVSyncSource> TegraVSyncSource::create(DcHead &head,
         return nullptr;
 
     return std::unique_ptr<TegraVSyncSource>(
-        new TegraVSyncSource(std::move(control), head, headHandle));
+        new TegraVSyncSource(std::move(control), head, headHandle, native));
+}
+
+int64_t TegraVSyncSource::periodFor(uint32_t actVfp) const {
+    if (mNative.clock == 0)
+        return 0;
+
+    const uint32_t nativeVfp = mNative.vsync_start - mNative.vdisplay;
+    const uint64_t lines = static_cast<uint64_t>(mNative.vtotal) - nativeVfp +
+                           (actVfp != 0 ? actVfp : nativeVfp);
+    /* The clock is in kilohertz: a thousand pixels a millisecond. */
+    return static_cast<int64_t>(static_cast<uint64_t>(mNative.htotal) *
+                                lines * 1'000'000 / mNative.clock);
 }
 
 TegraVSyncSource::~TegraVSyncSource() {
@@ -99,7 +111,8 @@ TegraVSyncSource::~TegraVSyncSource() {
     mControl->setEventMask(0);
 }
 
-int TegraVSyncSource::waitForVSync(int64_t *outTimestampNs) {
+int TegraVSyncSource::waitForVSync(int64_t *outTimestampNs,
+                                   int64_t *outPeriodNs) {
     /* Asked for again whenever they are not arriving, rather than once and
      * assumed to hold. The driver drops the request when the head is turned
      * off and says nothing about having done so, so the only honest reading
@@ -121,6 +134,7 @@ int TegraVSyncSource::waitForVSync(int64_t *outTimestampNs) {
 
     bool found = false;
     int64_t timestampNs = 0;
+    uint32_t actVfp = 0;
 
     /* Loops because the stream carries more than this display's blanks, and
      * an event that is not the one waited for is not an answer.
@@ -204,10 +218,15 @@ int TegraVSyncSource::waitForVSync(int64_t *outTimestampNs) {
          * round to it. A zero means it did not say, and then the best that
          * can be claimed is now, within one wakeup of the truth. */
         timestampNs = event.timestampNs != 0 ? event.timestampNs : now();
+        actVfp = event.actVfp;
         found = true;
     }
 
+    if (actVfp != 0)
+        mPorchReported = true;
+
     *outTimestampNs = timestampNs;
+    *outPeriodNs = mPorchReported ? periodFor(actVfp) : 0;
     return 0;
 }
 

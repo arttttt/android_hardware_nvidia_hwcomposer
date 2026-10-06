@@ -54,10 +54,11 @@ class VSyncWorker {
 
   /* A new period that the display takes up on its own, some time after the
    * request -- a rate change that lands at the end of whichever frame is
-   * being scanned. Until a blank arrives one new period after the one
-   * before it, the old period goes on being reported: the framework
-   * confirms a rate change by the period it is told, and told early it
-   * would take the old cadence for the new one. */
+   * being scanned. Until a blank ends a frame run at the new period -- by
+   * the display's own account where it gives one, by the spacing of the
+   * blanks where it does not -- the old period goes on being reported: the
+   * framework confirms a rate change by the period it is told, and told
+   * early it would take the old cadence for the new one. */
   void ExpectVsyncPeriodNs(uint32_t vsync_period_ns);
 
   // The period vsync events are being reported with right now.
@@ -115,6 +116,10 @@ class VSyncWorker {
    * rate change by measurement allow. */
   bool LandsOnExpectedPeriod(int64_t previous, int64_t timestamp) const
       REQUIRES(mutex_);
+
+  /* Whether a frame the display says took `ran_period_ns` ran at the
+   * expected period. */
+  bool RanAtExpectedPeriod(int64_t ran_period_ns) const REQUIRES(mutex_);
   bool enable_vsync_timestamps_ GUARDED_BY(mutex_) = false;
   bool last_timestamp_is_fresh_ GUARDED_BY(mutex_) = false;
   std::optional<VsyncTimestampCallback> callback_ GUARDED_BY(mutex_);

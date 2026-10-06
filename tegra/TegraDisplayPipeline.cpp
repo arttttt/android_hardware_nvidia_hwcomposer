@@ -92,8 +92,9 @@ std::unique_ptr<TegraDisplayPipeline> TegraDisplayPipeline::create(
      * report them, the control device is where they come out. The head index
      * doubles as the event handle -- the controller reports blanks against
      * the same numbering the device nodes use. */
-    std::unique_ptr<TegraVSyncSource> vsync =
-        TegraVSyncSource::create(*head, static_cast<uint32_t>(index));
+    std::unique_ptr<TegraVSyncSource> vsync = TegraVSyncSource::create(
+        *head, static_cast<uint32_t>(index),
+        connector.GetModes().front().GetRawMode());
     if (!vsync)
         return nullptr;
 

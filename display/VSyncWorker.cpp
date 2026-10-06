@@ -125,6 +125,13 @@ uint32_t VSyncWorker::GetVsyncPeriodNs() {
   return vsync_period_ns_;
 }
 
+bool VSyncWorker::RanAtExpectedPeriod(int64_t ran_period_ns) const {
+  /* Both sides are worked out from the same timing, by different roundings;
+   * a hundredth covers them and is far from any other rate. */
+  const int64_t expected = expected_period_ns_;
+  return std::abs(ran_period_ns - expected) <= expected / 100;
+}
+
 bool VSyncWorker::LandsOnExpectedPeriod(int64_t previous,
                                         int64_t timestamp) const {
   const int64_t interval = timestamp - previous;
@@ -307,9 +314,10 @@ void VSyncWorker::ThreadFn() {
 
     ret = -EAGAIN;
     int64_t timestamp = 0;
+    int64_t ran_period_ns = 0;
 
     if (source_ != nullptr) {
-      ret = source_->waitForVSync(&timestamp);
+      ret = source_->waitForVSync(&timestamp, &ran_period_ns);
       if (ret == -EINTR)
         continue;
     }
@@ -330,11 +338,17 @@ void VSyncWorker::ThreadFn() {
       if (enable_vsync_timestamps_) {
         last_timestamp_is_fresh_ = true;
       }
-      /* The first blank one expected period after the one before it is
-       * the first frame that ran at the new rate: from here the period
-       * told is the new one, and the phase is taken from this blank. */
-      if (expected_period_ns_ != 0 && last_timestamp_.has_value() &&
-          LandsOnExpectedPeriod(*last_timestamp_, timestamp)) {
+      /* The first blank that ends a frame run at the new rate is where the
+       * period told changes, and the phase is taken from it. The display's
+       * own word on how long the frame took decides, where it gives one;
+       * where it does not, a blank one expected period after the one
+       * before it is taken for that frame. */
+      const bool took_hold =
+          ran_period_ns != 0
+              ? RanAtExpectedPeriod(ran_period_ns)
+              : last_timestamp_.has_value() &&
+                    LandsOnExpectedPeriod(*last_timestamp_, timestamp);
+      if (expected_period_ns_ != 0 && took_hold) {
         vsync_period_ns_ = expected_period_ns_;
         expected_period_ns_ = 0;
         ATRACE_INT("hwc_vsync_period_us",
