@@ -94,6 +94,7 @@ class TegraGovernor final : public Governor {
   void Trace(const MergeEstimate &estimate, bool cold, int profile,
              int64_t lag_ns, int64_t now_ns);
   void Warm(int64_t now);
+  void WarmAhead(const Frame &frame, int64_t now, int64_t gap_ns);
   void KeepFloorFor(int64_t now);
   void FollowFences(int64_t now);
   void JudgeRelease(int64_t now);
@@ -134,6 +135,8 @@ class TegraGovernor final : public Governor {
   int64_t cpu_until_ns_ = 0;    /* processor lifted until, nought if not */
   int64_t last_warm_ns_ = 0;
   bool warm_refused_logged_ = false;
+  /* The previous frame's validate, merge or not; nought before the first. */
+  int64_t last_plan_ns_ = 0;
 
   /* The last plan with a merge: which frame, when it was validated, the
    * processor's clock then, and whether the engine was cold -- so that the

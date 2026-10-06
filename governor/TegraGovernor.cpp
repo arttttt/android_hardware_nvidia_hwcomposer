@@ -258,8 +258,13 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
                            bool merge_reported) {
   const Frame &f = planned.frame;
 
+  const int64_t gap_ns =
+      last_plan_ns_ != 0 ? f.now_ns - last_plan_ns_ : INT64_MAX;
+  last_plan_ns_ = f.now_ns;
+
   if (!f.merge_planned || f.merge_reuse_predicted) {
     host_.TraceInt("hwc_gov_need_mhz", 0);
+    WarmAhead(f, now, gap_ns);
     return;
   }
 
@@ -445,6 +450,24 @@ void TegraGovernor::Warm(int64_t now) {
   last_warm_ns_ = now;
   host_.TraceInt("hwc_gov_warm", 1);
   host_.TraceInt("hwc_gov_warm", 0);
+}
+
+/* A frame without a merge to draw, the first after a pause as long as the
+ * engine's powergate: the screen has come to life, and the transition's
+ * merge is likely a few frames behind. Only the first such frame -- an
+ * animation that never merges is not kept warm frame after frame -- and
+ * not in power save, where the merge pays for its own waking. */
+void TegraGovernor::WarmAhead(const Frame &f, int64_t now, int64_t gap_ns) {
+  if (tuning_.warm_ahead == 0 ||
+      gap_ns < int64_t(tuning_.powergate_ms) * nsPerMs ||
+      !EngineCold(f, last_warm_ns_, now, tuning_))
+    return;
+  if (profile_.Read(now, int64_t(tuning_.profile_poll_ms) * nsPerMs) ==
+      PerfProfile::powerSave)
+    return;
+  host_.TraceInt("hwc_gov_warm_ahead", 1);
+  Warm(now);
+  host_.TraceInt("hwc_gov_warm_ahead", 0);
 }
 
 void TegraGovernor::DropEverything() {

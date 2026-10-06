@@ -114,6 +114,16 @@ struct Tuning {
    * powergate delay. */
   uint32_t powergate_ms = 500;
 
+  /* Whether the first frame after a pause at least that long wakes the
+   * engine though it carries no merge. On Android 11 the merges of a
+   * transition come one at a time, half a second to two apart -- the
+   * steered run holds still and the cache answers in between -- so four
+   * in five of them found the engine down and paid for its coming up
+   * inside the frame. Woken with the activity instead, it is up by the
+   * time the transition's merge is planned. No clock is asked: the pass
+   * runs at whatever the engine idles at. */
+  uint32_t warm_ahead = 1;
+
   /* The path from validate to the submit, measured: the composer's lead
    * and the submit itself on a warm engine, on a cold one with the
    * processor lifted, and on a cold one without. The cold ones are short
