@@ -987,8 +987,14 @@ TegraAtomicStateManager::MergeVerdict TegraAtomicStateManager::JudgeMerge(
     return MergeVerdict::kFirstSight;
   }
 
+  /* The group's depth in the stack is not judged either: it is where the
+   * window sits among the others, not anything in the picture, and the
+   * window is simply put at the new depth. Judged, every layer arriving
+   * or leaving above the group -- a shade, an application window, a
+   * popup -- had the engine redraw the very same pixels; on Android 11
+   * that was a third of the merges drawn, the commonest cause after the
+   * first sight. */
   if (merge.window != last_merge_window_ ||
-      merge.depth != last_merge_depth_ ||
       merge.layers.size() != last_merge_sources_.size() ||
       merge.source_ids.size() != merge.layers.size() ||
       merge.transforms.size() != merge.layers.size()) {
@@ -1091,7 +1097,6 @@ void TegraAtomicStateManager::RememberMerge(
   }
 
   last_merge_window_ = merge.window;
-  last_merge_depth_ = merge.depth;
   last_merge_width_ = merge.width;
   last_merge_height_ = merge.height;
   last_merge_described_ = described;
@@ -1251,9 +1256,11 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
 
       /* Where the group sits now, not where it sat when it was drawn. The
        * pixels are relative to the group's corner, so a moved group is the
-       * remembered picture in a new place -- the window follows it. */
+       * remembered picture in a new place -- the window follows it, in the
+       * plane and in the stack alike. */
       windows[merge.slot].outX = merge.origin_x;
       windows[merge.slot].outY = merge.origin_y;
+      windows[merge.slot].z = merge.depth;
     } else {
       /* The buffer and, separately, when it may be written to. The engine is
        * told the second and waits for it itself; nothing here does. */

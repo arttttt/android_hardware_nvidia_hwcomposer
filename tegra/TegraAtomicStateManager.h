@@ -530,7 +530,6 @@ class TegraAtomicStateManager : public AtomicStateManager {
   };
   std::vector<MergedSource> last_merge_sources_;
   int32_t last_merge_window_ = -1; /* -1: nothing remembered yet */
-  uint32_t last_merge_depth_ = 0;
   uint32_t last_merge_width_ = 0;
   uint32_t last_merge_height_ = 0;
   hwc::DcHead::Window last_merge_described_{};
