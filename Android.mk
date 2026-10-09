@@ -77,6 +77,15 @@ LOCAL_C_INCLUDES += \
     external/libdrm/include \
     external/libdrm/include/drm
 
+# The way a display is told about high-dynamic-range content arrived in the
+# kernel's header after the libdrm of R, and drm/drm_mode.h carries a copy of
+# its two structures for a libdrm without them. A structure has no macro to
+# test for, so the question is put to the header itself: from S on libdrm
+# declares them, and the copy stands down.
+ifneq ($(shell grep -s -l 'struct hdr_output_metadata {' external/libdrm/include/drm/drm_mode.h),)
+LOCAL_CFLAGS += -DDRM_HWC_HAVE_HDR_OUTPUT_METADATA
+endif
+
 LOCAL_SHARED_LIBRARIES := \
     liblog \
     libbase \
