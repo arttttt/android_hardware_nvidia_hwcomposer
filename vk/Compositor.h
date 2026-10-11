@@ -45,6 +45,7 @@ class VkCompositor : public Compositor {
   ~VkCompositor() override;
 
   int Compose(const Target &target, const Layer *layers, size_t count) override;
+  bool Warm() override;
 
  private:
   explicit VkCompositor(Host *host) : host_(host) {}
@@ -53,6 +54,7 @@ class VkCompositor : public Compositor {
   bool InitPipeline();
   bool InitDummy();
   bool InitSlots();
+  bool InitWarm();
 
   /* Says `what` once per kind, never per frame. */
   void LogOnce(int kind, int prio, const char *what);
@@ -93,6 +95,18 @@ class VkCompositor : public Compositor {
   VkImage dummy_image_ = VK_NULL_HANDLE;
   VkDeviceMemory dummy_memory_ = VK_NULL_HANDLE;
   VkImageView dummy_view_ = VK_NULL_HANDLE;
+
+  /* Warm(): a small image of its own with its framebuffer, a command
+   * buffer recorded once and a fence saying whether the last one is done. */
+  VkImage warm_image_ = VK_NULL_HANDLE;
+  VkDeviceMemory warm_memory_ = VK_NULL_HANDLE;
+  VkImageView warm_view_ = VK_NULL_HANDLE;
+  VkFramebuffer warm_fb_ = VK_NULL_HANDLE;
+  VkCommandBuffer warm_cmd_ = VK_NULL_HANDLE;
+  VkDescriptorPool warm_pool_ = VK_NULL_HANDLE;
+  VkDescriptorSet warm_set_ = VK_NULL_HANDLE;
+  VkFence warm_done_ = VK_NULL_HANDLE;
+  bool warm_busy_ = false;
 
   std::array<Slot, kSlots> slots_{};
   size_t next_slot_ = 0;

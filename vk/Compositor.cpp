@@ -115,12 +115,168 @@ bool VkCompositor::Init() {
       host_->Log(ANDROID_LOG_WARN, "vk: no VK_ANDROID_native_buffer; no zero-copy import");
     return false;
   }
-  if (!InitPipeline() || !InitSlots() || !InitDummy()) {
+  if (!InitPipeline() || !InitSlots() || !InitDummy() || !InitWarm()) {
     if (host_)
       host_->Log(ANDROID_LOG_ERROR, "vk: the executor's pipeline would not build");
     return false;
   }
   cache_ = std::make_unique<ImageCache>(state_, render_pass_);
+
+  /* The pipeline's first use, paid now rather than in a frame: the driver
+   * translates to GL and builds the program on the first draw (0.6 ms off
+   * the first frame, measured). The one wait outside a destructor. */
+  if (Warm())
+    state_.pfn()->WaitForFences(state_.device(), 1, &warm_done_, VK_TRUE, UINT64_MAX);
+  return true;
+}
+
+bool VkCompositor::InitWarm() {
+  const VulkanPfn &vk = *state_.pfn();
+  const VkDevice dev = state_.device();
+
+  VkImageCreateInfo ci = {};
+  ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  ci.imageType = VK_IMAGE_TYPE_2D;
+  ci.format = VK_FORMAT_R8G8B8A8_UNORM;
+  ci.extent = {16, 16, 1};
+  ci.mipLevels = 1;
+  ci.arrayLayers = 1;
+  ci.samples = VK_SAMPLE_COUNT_1_BIT;
+  ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+  ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+  ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  if (vk.CreateImage(dev, &ci, nullptr, &warm_image_) != VK_SUCCESS)
+    return false;
+  VkMemoryRequirements req;
+  vk.GetImageMemoryRequirements(dev, warm_image_, &req);
+  VkMemoryAllocateInfo mai = {};
+  mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  mai.allocationSize = req.size;
+  mai.memoryTypeIndex =
+      state_.findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  if (mai.memoryTypeIndex == UINT32_MAX ||
+      vk.AllocateMemory(dev, &mai, nullptr, &warm_memory_) != VK_SUCCESS ||
+      vk.BindImageMemory(dev, warm_image_, warm_memory_, 0) != VK_SUCCESS)
+    return false;
+  VkImageViewCreateInfo vi = {};
+  vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  vi.image = warm_image_;
+  vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  vi.format = VK_FORMAT_R8G8B8A8_UNORM;
+  vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  if (vk.CreateImageView(dev, &vi, nullptr, &warm_view_) != VK_SUCCESS)
+    return false;
+  VkFramebufferCreateInfo fi = {};
+  fi.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+  fi.renderPass = render_pass_;
+  fi.attachmentCount = 1;
+  fi.pAttachments = &warm_view_;
+  fi.width = 16;
+  fi.height = 16;
+  fi.layers = 1;
+  if (vk.CreateFramebuffer(dev, &fi, nullptr, &warm_fb_) != VK_SUCCESS)
+    return false;
+
+  VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+  VkDescriptorPoolCreateInfo dpi = {};
+  dpi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  dpi.maxSets = 1;
+  dpi.poolSizeCount = 1;
+  dpi.pPoolSizes = &ps;
+  if (vk.CreateDescriptorPool(dev, &dpi, nullptr, &warm_pool_) != VK_SUCCESS)
+    return false;
+  VkDescriptorSetAllocateInfo dai = {};
+  dai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  dai.descriptorPool = warm_pool_;
+  dai.descriptorSetCount = 1;
+  dai.pSetLayouts = &set_layout_;
+  if (vk.AllocateDescriptorSets(dev, &dai, &warm_set_) != VK_SUCCESS)
+    return false;
+  VkDescriptorImageInfo info = {sampler_, dummy_view_, VK_IMAGE_LAYOUT_GENERAL};
+  VkWriteDescriptorSet w = {};
+  w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  w.dstSet = warm_set_;
+  w.descriptorCount = 1;
+  w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  w.pImageInfo = &info;
+  vk.UpdateDescriptorSets(dev, 1, &w, 0, nullptr);
+
+  VkFenceCreateInfo fci = {};
+  fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+  if (vk.CreateFence(dev, &fci, nullptr, &warm_done_) != VK_SUCCESS)
+    return false;
+
+  /* Recorded once: both paths of the shader -- a sampled layer with
+   * corners, then a solid one -- into the small image. */
+  VkCommandBufferAllocateInfo cai = {};
+  cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  cai.commandPool = command_pool_;
+  cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  cai.commandBufferCount = 1;
+  if (vk.AllocateCommandBuffers(dev, &cai, &warm_cmd_) != VK_SUCCESS)
+    return false;
+  VkCommandBufferBeginInfo bi = {};
+  bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  if (vk.BeginCommandBuffer(warm_cmd_, &bi) != VK_SUCCESS)
+    return false;
+  VkClearValue clear = {};
+  const VkRect2D area = {{0, 0}, {16, 16}};
+  VkRenderPassBeginInfo rbi = {};
+  rbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+  rbi.renderPass = render_pass_;
+  rbi.framebuffer = warm_fb_;
+  rbi.renderArea = area;
+  rbi.clearValueCount = 1;
+  rbi.pClearValues = &clear;
+  vk.CmdBeginRenderPass(warm_cmd_, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+  vk.CmdBindPipeline(warm_cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+  const VkViewport vp = {0, 0, 16, 16, 0, 1};
+  vk.CmdSetViewport(warm_cmd_, 0, 1, &vp);
+  vk.CmdSetScissor(warm_cmd_, 0, 1, &area);
+  vk.CmdBindDescriptorSets(warm_cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1,
+                           &warm_set_, 0, nullptr);
+  LayerConstants pc = {};
+  pc.ndc[0] = -1;
+  pc.ndc[1] = -1;
+  pc.ndc[2] = 1;
+  pc.ndc[3] = 1;
+  pc.uv_tr[0] = 1;
+  pc.uv_bl[1] = 1;
+  pc.corner[2] = 16;
+  pc.corner[3] = 16;
+  pc.radius = 4;
+  pc.alpha = 1;
+  pc.flags = kFlagPremultiplied;
+  vk.CmdPushConstants(warm_cmd_, pipeline_layout_,
+                      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc),
+                      &pc);
+  vk.CmdDraw(warm_cmd_, 4, 1, 0, 0);
+  pc.flags = kFlagSolid;
+  pc.color[3] = 1;
+  vk.CmdPushConstants(warm_cmd_, pipeline_layout_,
+                      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc),
+                      &pc);
+  vk.CmdDraw(warm_cmd_, 4, 1, 0, 0);
+  vk.CmdEndRenderPass(warm_cmd_);
+  return vk.EndCommandBuffer(warm_cmd_) == VK_SUCCESS;
+}
+
+bool VkCompositor::Warm() {
+  const VulkanPfn &vk = *state_.pfn();
+  const VkDevice dev = state_.device();
+  if (warm_busy_) {
+    if (vk.WaitForFences(dev, 1, &warm_done_, VK_TRUE, 0) != VK_SUCCESS)
+      return false;
+    vk.ResetFences(dev, 1, &warm_done_);
+    warm_busy_ = false;
+  }
+  VkSubmitInfo sub = {};
+  sub.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  sub.commandBufferCount = 1;
+  sub.pCommandBuffers = &warm_cmd_;
+  if (vk.QueueSubmit(state_.queue(), 1, &sub, warm_done_) != VK_SUCCESS)
+    return false;
+  warm_busy_ = true;
   return true;
 }
 
@@ -404,6 +560,18 @@ VkCompositor::~VkCompositor() {
     if (s.done)
       vk.DestroyFence(dev, s.done, nullptr);
   }
+  if (warm_done_)
+    vk.DestroyFence(dev, warm_done_, nullptr);
+  if (warm_pool_)
+    vk.DestroyDescriptorPool(dev, warm_pool_, nullptr);
+  if (warm_fb_)
+    vk.DestroyFramebuffer(dev, warm_fb_, nullptr);
+  if (warm_view_)
+    vk.DestroyImageView(dev, warm_view_, nullptr);
+  if (warm_image_)
+    vk.DestroyImage(dev, warm_image_, nullptr);
+  if (warm_memory_)
+    vk.FreeMemory(dev, warm_memory_, nullptr);
   if (command_pool_)
     vk.DestroyCommandPool(dev, command_pool_, nullptr);
   if (dummy_view_)
