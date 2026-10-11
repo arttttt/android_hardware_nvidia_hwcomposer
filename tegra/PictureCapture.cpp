@@ -227,14 +227,29 @@ void PictureCapture::WriteBuffer(Source source, buffer_handle_t buffer,
   }
 
   /* A lock of block-arranged memory hands back the blocks as they lie, with
-   * the caches made right; the arrangement is undone below. */
+   * the caches made right; the arrangement is undone below. The mapper
+   * locks only what was imported through it; a buffer this process
+   * allocated itself through the allocator's own device -- the GPU
+   * executor's -- is locked through the allocator's module instead. */
   auto &mapper = GraphicBufferMapper::get();
+  const gralloc_module_t *module = nullptr;
   void *mapped = nullptr;
   if (mapper.lock(buffer, GRALLOC_USAGE_SW_READ_OFTEN,
                   Rect(static_cast<int32_t>(width),
                        static_cast<int32_t>(height)),
                   &mapped) != NO_ERROR ||
       mapped == nullptr) {
+    mapped = nullptr;
+    const hw_module_t *hw = nullptr;
+    if (hw_get_module(GRALLOC_HARDWARE_MODULE_ID, &hw) == 0) {
+      module = reinterpret_cast<const gralloc_module_t *>(hw);
+      if (module->lock(module, buffer, GRALLOC_USAGE_SW_READ_OFTEN, 0, 0,
+                       static_cast<int>(width), static_cast<int>(height),
+                       &mapped) != 0)
+        mapped = nullptr;
+    }
+  }
+  if (mapped == nullptr) {
     WriteWords(seq, source, std::string(head) + ", would not lock", text);
     return;
   }
@@ -255,8 +270,13 @@ void PictureCapture::WriteBuffer(Source source, buffer_handle_t buffer,
       return word;
     });
   }
-  mapper.unlock(buffer);
-  WriteWords(seq, source, head, text);
+  if (module != nullptr)
+    module->unlock(module, buffer);
+  else
+    mapper.unlock(buffer);
+  WriteWords(seq, source,
+             std::string(head) + (module != nullptr ? ", module lock" : ""),
+             text);
 }
 
 void PictureCapture::WriteText(Source source, const std::string &text) {
