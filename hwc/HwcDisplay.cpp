@@ -158,6 +158,51 @@ uint32_t GpuReadableBytes(int hal_format) {
   }
 }
 
+/* A layer as the GPU executor takes it: placement, crop, turn, blending,
+ * the buffer or the solid colour, and the rounded corners. */
+hwc::vk::Layer ToVkLayer(const LayerData &ld, std::pair<uint32_t, uint32_t> size) {
+  hwc::vk::Layer l;
+  const auto &df = ld.pi.display_frame.i_rect;
+  l.dst_left = df ? df->left : 0;
+  l.dst_top = df ? df->top : 0;
+  l.dst_right = df ? df->right : static_cast<int32_t>(size.first);
+  l.dst_bottom = df ? df->bottom : static_cast<int32_t>(size.second);
+  l.alpha = ld.pi.alpha;
+  l.transform = (ld.pi.transform.hflip ? 1 : 0) | (ld.pi.transform.vflip ? 2 : 0) |
+                (ld.pi.transform.rotate90 ? 4 : 0);
+  if (ld.bi) {
+    const auto handle = static_cast<buffer_handle_t>(ld.bi->handle);
+    l.buffer = handle;
+    l.width = ld.bi->width;
+    l.height = ld.bi->height;
+    l.format = NvGralloc::GetInstance()->GetHalFormat(handle);
+    const uint32_t bytes = GpuReadableBytes(l.format);
+    l.stride = bytes != 0 ? ld.bi->pitches[0] / bytes : ld.bi->width;
+    /* A client layer's usage; the driver reads the layout from the
+     * handle itself. */
+    l.usage = GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_RENDER |
+              GRALLOC_USAGE_HW_COMPOSER;
+    l.acquire_fence = ld.acquire_fence ? *ld.acquire_fence : -1;
+    const auto &sc = ld.pi.source_crop.f_rect;
+    l.src_left = sc ? sc->left : 0.F;
+    l.src_top = sc ? sc->top : 0.F;
+    l.src_right = sc ? sc->right : static_cast<float>(ld.bi->width);
+    l.src_bottom = sc ? sc->bottom : static_cast<float>(ld.bi->height);
+    l.premultiplied = ld.bi->blend_mode != BufferBlendMode::kCoverage;
+    l.opaque = ld.bi->blend_mode == BufferBlendMode::kNone;
+  } else if (ld.solid_color) {
+    std::copy(ld.solid_color->begin(), ld.solid_color->end(), l.color);
+  }
+  if (ld.effects.HasCorners()) {
+    l.corner_left = ld.effects.corners[0];
+    l.corner_top = ld.effects.corners[1];
+    l.corner_right = ld.effects.corners[2];
+    l.corner_bottom = ld.effects.corners[3];
+    l.corner_radius = ld.effects.corners[4];
+  }
+  return l;
+}
+
 }  // namespace
 
 bool HwcDisplay::GpuCanDrawClient(
@@ -223,49 +268,8 @@ bool HwcDisplay::DrawClientOnGpu(
   const auto size = GetSize();
   std::vector<hwc::vk::Layer> layers;
   layers.reserve(range.size());
-  for (const HwcLayer *layer : range) {
-    const LayerData &ld = layer->GetLayerData();
-    hwc::vk::Layer l;
-    const auto &df = ld.pi.display_frame.i_rect;
-    l.dst_left = df ? df->left : 0;
-    l.dst_top = df ? df->top : 0;
-    l.dst_right = df ? df->right : static_cast<int32_t>(size.first);
-    l.dst_bottom = df ? df->bottom : static_cast<int32_t>(size.second);
-    l.alpha = ld.pi.alpha;
-    l.transform = (ld.pi.transform.hflip ? 1 : 0) | (ld.pi.transform.vflip ? 2 : 0) |
-                  (ld.pi.transform.rotate90 ? 4 : 0);
-    if (ld.bi) {
-      const auto handle = static_cast<buffer_handle_t>(ld.bi->handle);
-      l.buffer = handle;
-      l.width = ld.bi->width;
-      l.height = ld.bi->height;
-      l.format = NvGralloc::GetInstance()->GetHalFormat(handle);
-      const uint32_t bytes = GpuReadableBytes(l.format);
-      l.stride = bytes != 0 ? ld.bi->pitches[0] / bytes : ld.bi->width;
-      /* A client layer's usage; the driver reads the layout from the
-       * handle itself. */
-      l.usage = GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_RENDER |
-                GRALLOC_USAGE_HW_COMPOSER;
-      l.acquire_fence = ld.acquire_fence ? *ld.acquire_fence : -1;
-      const auto &sc = ld.pi.source_crop.f_rect;
-      l.src_left = sc ? sc->left : 0.F;
-      l.src_top = sc ? sc->top : 0.F;
-      l.src_right = sc ? sc->right : static_cast<float>(ld.bi->width);
-      l.src_bottom = sc ? sc->bottom : static_cast<float>(ld.bi->height);
-      l.premultiplied = ld.bi->blend_mode != BufferBlendMode::kCoverage;
-      l.opaque = ld.bi->blend_mode == BufferBlendMode::kNone;
-    } else if (ld.solid_color) {
-      std::copy(ld.solid_color->begin(), ld.solid_color->end(), l.color);
-    }
-    if (ld.effects.HasCorners()) {
-      l.corner_left = ld.effects.corners[0];
-      l.corner_top = ld.effects.corners[1];
-      l.corner_right = ld.effects.corners[2];
-      l.corner_bottom = ld.effects.corners[3];
-      l.corner_radius = ld.effects.corners[4];
-    }
-    layers.push_back(l);
-  }
+  for (const HwcLayer *layer : range)
+    layers.push_back(ToVkLayer(layer->GetLayerData(), size));
 
   auto drawn = gpu->Compose(layers);
   if (!drawn) {
@@ -597,8 +601,21 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
    * while the plan is weighed, the plan needing a usable client target to
    * seat the client range at all. */
   auto *gpu = GetPipe().GetGpuExecutor();
-  if (gpu != nullptr && !client_layer_.IsLayerUsableAsDevice())
-    SeatGpuBuffer(gpu->Current(), {});
+  if (gpu != nullptr) {
+    if (!client_layer_.IsLayerUsableAsDevice())
+      SeatGpuBuffer(gpu->Current(), {});
+    /* Every buffer handed to the executor's thread now, whatever window it
+     * may end on: its first import costs milliseconds and is paid there,
+     * off the frame, rather than in the commit that first draws it -- as
+     * SurfaceFlinger's threaded RenderEngine maps a buffer when it is set.
+     * A buffer already imported is a lookup on that thread. */
+    const auto size = GetSize();
+    for (const auto &[_, layer] : layers_) {
+      const LayerData &ld = layer.GetLayerData();
+      if (ld.bi)
+        gpu->Prepare(ToVkLayer(ld, size));
+    }
+  }
 
   auto validation_result = pipeline_->planner->ValidateDisplay(this);
   validated_composition_.emplace(std::move(validation_result.composition));

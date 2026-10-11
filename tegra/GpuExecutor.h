@@ -73,6 +73,10 @@ class GpuExecutor {
   /* Brings the GPU up ahead of a composition; never waits. */
   bool Warm();
 
+  /* Imports `layer`'s buffer on the executor's thread, ahead of the frame
+   * that may draw it; never waits. */
+  void Prepare(const vk::Layer &layer) { compositor_->Prepare(layer); }
+
   /* The buffer most recently drawn, or the first if none has been: what
    * stands in as the client target while a plan is weighed, before any
    * frame of this one has been drawn. */
