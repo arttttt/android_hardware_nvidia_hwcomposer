@@ -234,13 +234,17 @@ void HwcLayer::SetSolidColor(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
 }
 
 bool HwcLayer::RefreshLiveness() const {
-  const bool live = std::chrono::steady_clock::now() - last_activity_ <
-                    kLayerQuietDelay;
-  if (live == live_) {
+  if (!LivenessWouldChange()) {
     return false;
   }
-  live_ = live;
+  live_ = !live_;
   return true;
+}
+
+bool HwcLayer::LivenessWouldChange() const {
+  const bool live = std::chrono::steady_clock::now() - last_activity_ <
+                    kLayerQuietDelay;
+  return live != live_;
 }
 
 

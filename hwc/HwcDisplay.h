@@ -214,6 +214,16 @@ class HwcDisplay : public ICompositorDisplay {
   // Mark previously validated properties as ready to present.
   auto AcceptValidatedComposition() -> void;
 
+  /* For a present the client sent without validating first: validates the
+   * frame here, but only when nothing has changed that the last plan
+   * depends on, so the plan is the last one and the client has nothing to
+   * be told. False when the frame needs the client's validation; nothing
+   * of it is then kept. */
+  auto ValidateForPresentWithoutValidation() -> bool;
+  bool HasValidatedComposition() const {
+    return validated_composition_.has_value();
+  }
+
   using ReleaseFence = std::pair<ILayerId, SharedFd>;
   // Present previously staged properties, and return fences to indicate when
   // the new content has been presented, and when the previous buffers have

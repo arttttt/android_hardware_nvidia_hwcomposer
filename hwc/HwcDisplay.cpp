@@ -723,6 +723,35 @@ auto HwcDisplay::AcceptValidatedComposition() -> void {
   }
 }
 
+auto HwcDisplay::ValidateForPresentWithoutValidation() -> bool {
+  if (validated_composition_.has_value() || IsInHeadlessMode() ||
+      layers_.empty() || !reusable_plan_ ||
+      reusable_plan_->flatten_reason != FlattenReason::kNone)
+    return false;
+
+  /* Looked at, not taken: the bits stay for the validation the client will
+   * ask for if the answer here is no. */
+  if (plan_invalidators_ != 0 || client_layer_.PeekPlanInvalidators() != 0 ||
+      client_layer_.LivenessWouldChange())
+    return false;
+  for (const auto &[_, layer] : layers_)
+    if (layer.PeekPlanInvalidators() != 0 || layer.LivenessWouldChange())
+      return false;
+
+  /* Nothing the plan depends on moved, so the planner hands the last plan
+   * back -- unless one of its own reasons to flatten has come up, or a
+   * layer's type would change; then the client must validate after all,
+   * and does so from scratch. */
+  const auto validated = ValidateStagedComposition();
+  if (!staged_composition_reused_ || !validated.changed_layers.empty()) {
+    validated_composition_.reset();
+    MarkPlanInvalid(kAllDirty);
+    return false;
+  }
+  AcceptValidatedComposition();
+  return true;
+}
+
 auto HwcDisplay::PresentStagedComposition(
     std::optional<int64_t> desired_present_time, SharedFd &out_present_fence,
     std::vector<ReleaseFence> &out_release_fences) -> bool {

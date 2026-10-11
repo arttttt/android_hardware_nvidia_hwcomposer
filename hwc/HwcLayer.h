@@ -129,6 +129,11 @@ class HwcLayer {
     return taken;
   }
 
+  /* The same bits, looked at and left in place. */
+  uint32_t PeekPlanInvalidators() const {
+    return plan_invalidators_;
+  }
+
   /* Re-judge this layer's class from the time of its last activity and
    * say whether the class changed. Activity is a new buffer or a moved
    * frame, stamped where SetLayerProperties accepts them; the class
@@ -138,6 +143,9 @@ class HwcLayer {
    * same reason TakePlanInvalidators is: the class is bookkeeping about
    * the layer, not the layer. */
   bool RefreshLiveness() const;
+  /* Whether RefreshLiveness would say the class changed, without changing
+   * it. */
+  bool LivenessWouldChange() const;
 
   bool IsLive() const {
     return live_;

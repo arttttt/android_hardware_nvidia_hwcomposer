@@ -25,6 +25,7 @@
 #include <cstring>
 #include <memory>
 #include <optional>
+#include <vector>
 
 #include <cutils/native_handle.h>
 #include <hardware/hwcomposer2.h>
@@ -272,19 +273,23 @@ static void HookDevGetCapabilities(hwc2_device_t * /*dev*/, uint32_t *out_count,
    * one board; were its DRM pipeline ever used, the claim would need the
    * backend's word too, because a display without a CTM property would be
    * left with nobody applying anything. */
-  if (!Properties::CmuColorPipeline()) {
-    *out_count = 0;
-    return;
-  }
+  /* And one claim always made: a present may come without a validation
+   * before it. A frame that changed nothing the plan depends on then costs
+   * the client one call into the composer instead of two; any other frame
+   * is answered NotValidated and the client validates as before (see
+   * PresentDisplay). */
+  std::vector<int32_t> capabilities = {HWC2_CAPABILITY_SKIP_VALIDATE};
+  if (Properties::CmuColorPipeline())
+    capabilities.push_back(HWC2_CAPABILITY_SKIP_CLIENT_COLOR_TRANSFORM);
 
   if (out_capabilities == nullptr) {
-    *out_count = 1;
+    *out_count = static_cast<uint32_t>(capabilities.size());
     return;
   }
-  if (*out_count >= 1) {
-    out_capabilities[0] = HWC2_CAPABILITY_SKIP_CLIENT_COLOR_TRANSFORM;
-    *out_count = 1;
-  }
+  const uint32_t n =
+      std::min(*out_count, static_cast<uint32_t>(capabilities.size()));
+  std::copy_n(capabilities.begin(), n, out_capabilities);
+  *out_count = n;
 }
 
 // NOLINTBEGIN(cppcoreguidelines-macro-usage)
@@ -1054,6 +1059,14 @@ static int32_t PresentDisplay(hwc2_device_t *device, hwc2_display_t display,
   SharedFd out_fence;
 
   hwc2display->release_fences.clear();
+
+  /* Presented without a validation -- the client's present-or-validate
+   * under HWC2_CAPABILITY_SKIP_VALIDATE. Taken only when the frame's plan
+   * is the last one; otherwise the client is sent to validate. */
+  if (!idisplay->HasValidatedComposition() &&
+      !idisplay->ValidateForPresentWithoutValidation()) {
+    return static_cast<int32_t>(HWC2::Error::NotValidated);
+  }
 
   if (!idisplay->PresentStagedComposition(std::nullopt, out_fence,
                                           hwc2display->release_fences)) {
