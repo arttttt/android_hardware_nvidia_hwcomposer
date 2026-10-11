@@ -49,6 +49,7 @@ constexpr const char *kNames[kSources] = {"merge", "merge-turned", "gpu",
  * and where the numbering stands. */
 std::array<std::atomic<int>, kSources> left{};
 std::atomic<int> next_seq{0};
+std::atomic<bool> words_only{false};
 
 /* The last ask, so that a dump repeating it starts nothing. The dump's side
  * only. */
@@ -149,6 +150,9 @@ std::string PictureCapture::Arm() {
   char from[PROPERTY_VALUE_MAX];
   property_get("vendor.hwc.test.capture.from", from, "merge,gpu,frame");
 
+  words_only.store(property_get_bool("vendor.hwc.test.capture.words", false),
+                   std::memory_order_relaxed);
+
   std::lock_guard<std::mutex> guard(arm_lock);
   const std::string ask = std::to_string(frames) + "/" + from;
   if (ask != armed_with) {
@@ -169,6 +173,10 @@ std::string PictureCapture::Arm() {
             std::to_string(left[i].load(std::memory_order_relaxed));
   line += ", next #" + std::to_string(next_seq.load(std::memory_order_relaxed));
   return line;
+}
+
+bool PictureCapture::WordsOnly() {
+  return words_only.load(std::memory_order_relaxed);
 }
 
 bool PictureCapture::Wanted(Source source) {

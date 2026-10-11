@@ -1447,7 +1447,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       words += DescribeMerge(merge);
     words += DescribeWindows(windows);
     PictureCapture::WriteText(PictureCapture::Source::kFrame, words);
-    if (merged_target != nullptr) {
+    if (merged_target != nullptr && !PictureCapture::WordsOnly()) {
       const auto source = PictureCapture::Wanted(PictureCapture::Source::kMerge)
                               ? PictureCapture::Source::kMerge
                               : PictureCapture::Source::kMergeTurned;

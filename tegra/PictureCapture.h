@@ -72,6 +72,11 @@ class PictureCapture {
   /* Reads the ask and says, in a line for the dump, where the run stands. */
   static std::string Arm();
 
+  /* Whether the run takes words only -- no wait, no lock, no file of
+   * pixels -- so that it leaves the frame's pace as it found it.
+   * vendor.hwc.test.capture.words=1, read with the rest of the ask. */
+  static bool WordsOnly();
+
   /* Whether `source` still owes frames. All the frame ever pays. */
   static bool Wanted(Source source);
 

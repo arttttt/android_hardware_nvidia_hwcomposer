@@ -340,7 +340,7 @@ bool HwcDisplay::DrawClientOnGpu(
              static_cast<const void *>(drawn ? drawn->buffer
                                              : gpu->Current()));
     const std::string words = head + DescribeLayers(composition, GetSize());
-    if (drawn)
+    if (drawn && !PictureCapture::WordsOnly())
       PictureCapture::WriteBuffer(PictureCapture::Source::kGpu, drawn->buffer,
                                   gpu->width(), gpu->height(),
                                   drawn->fence ? *drawn->fence : -1, words);
