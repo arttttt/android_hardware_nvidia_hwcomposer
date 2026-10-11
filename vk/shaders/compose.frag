@@ -33,7 +33,12 @@ void main() {
         vec2 centre = (pc.corner.xy + pc.corner.zw) * 0.5;
         vec2 halfSize = (pc.corner.zw - pc.corner.xy) * 0.5;
         vec2 q = abs(gl_FragCoord.xy - centre) - (halfSize - vec2(pc.radius));
-        float d = length(max(q, vec2(0.0))) - pc.radius;
+        // Signed distance to the rounded rectangle. The inner term is what
+        // makes the inside negative all the way in: without it every pixel
+        // inside sat at -radius, and a radius under half a pixel -- the end
+        // of every recents animation -- faded the whole layer.
+        float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0)
+                  - pc.radius;
         m *= clamp(0.5 - d, 0.0, 1.0);
     }
     outColor = c * m;
