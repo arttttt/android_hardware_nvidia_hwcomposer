@@ -63,9 +63,14 @@ class GpuExecutor {
     drm_hwcomposer::SharedFd fence;
   };
 
-  /* Draws `layers`, bottom first, into the next buffer. Nothing when the
-   * library refused the work; the buffer's turn is then given back. */
-  std::optional<Drawn> Compose(std::vector<vk::Layer> &layers);
+  /* Draws `layers`, bottom first, into the next buffer, in two halves:
+   * Begin starts the drawing and returns at once, Finish hands back the
+   * buffer and the fence its drawing signals -- nothing when the library
+   * refused the work, and the buffer's turn is then given back. A Begin
+   * over an unfinished one drops the earlier drawing; nothing was shown of
+   * it, and the buffer's turn was never taken. */
+  bool Begin(std::vector<vk::Layer> &layers);
+  std::optional<Drawn> Finish();
 
   /* A frame went up against `fence`; see ScratchPool::Presented. */
   void Presented(const drm_hwcomposer::SharedFd &fence);
@@ -102,6 +107,8 @@ class GpuExecutor {
   alloc_device_t *alloc_ = nullptr;
   std::array<Slot, 3> slots_{};
   size_t at_ = 0;
+  /* The buffer a begun drawing goes into, taken at Finish. */
+  std::optional<size_t> begun_at_;
   size_t showing_ = 0;
   bool anything_showing_ = false;
 

@@ -17,6 +17,7 @@
 #include "tegra/GpuExecutor.h"
 
 #include <dlfcn.h>
+#include <unistd.h>
 
 #include <android/log.h>
 #include <hardware/gralloc.h>
@@ -118,9 +119,16 @@ GpuExecutor::~GpuExecutor() {
     dlclose(library_);
 }
 
-std::optional<GpuExecutor::Drawn> GpuExecutor::Compose(std::vector<vk::Layer> &layers) {
+bool GpuExecutor::Begin(std::vector<vk::Layer> &layers) {
+  if (begun_at_) {
+    const int dropped = compositor_->Finish();
+    if (dropped >= 0)
+      close(dropped);
+    begun_at_.reset();
+  }
+
   const size_t at = (at_ + 1) % slots_.size();
-  Slot &slot = slots_[at];
+  const Slot &slot = slots_[at];
 
   vk::Target target;
   target.buffer = slot.buffer;
@@ -131,11 +139,22 @@ std::optional<GpuExecutor::Drawn> GpuExecutor::Compose(std::vector<vk::Layer> &l
   target.usage = kTargetUsage;
   target.ready_fence = slot.freed_when ? *slot.freed_when : -1;
 
-  const int fd = compositor_->Compose(target, layers.data(), layers.size());
+  if (!compositor_->Begin(target, layers.data(), layers.size()))
+    return false;
+  begun_at_ = at;
+  return true;
+}
+
+std::optional<GpuExecutor::Drawn> GpuExecutor::Finish() {
+  if (!begun_at_)
+    return std::nullopt;
+  const size_t at = *begun_at_;
+  begun_at_.reset();
+  const int fd = compositor_->Finish();
   if (fd < 0)
     return std::nullopt;
   at_ = at;
-  return Drawn{slot.buffer, drm_hwcomposer::MakeSharedFd(fd)};
+  return Drawn{slots_[at].buffer, drm_hwcomposer::MakeSharedFd(fd)};
 }
 
 void GpuExecutor::Presented(const drm_hwcomposer::SharedFd &fence) {

@@ -250,11 +250,11 @@ void HwcDisplay::SeatGpuBuffer(buffer_handle_t buffer, SharedFd fence) {
   client_layer_.SetLayerProperties(lp);
 }
 
-bool HwcDisplay::DrawClientOnGpu(
+void HwcDisplay::BeginClientOnGpu(
     const CompositionPlanner::ValidatedComposition &composition) {
   auto *gpu = GetPipe().GetGpuExecutor();
   if (gpu == nullptr)
-    return false;
+    return;
 
   /* The client range, bottom first, as the client would have drawn it. */
   std::vector<const HwcLayer *> range;
@@ -271,7 +271,22 @@ bool HwcDisplay::DrawClientOnGpu(
   for (const HwcLayer *layer : range)
     layers.push_back(ToVkLayer(layer->GetLayerData(), size));
 
-  auto drawn = gpu->Compose(layers);
+  gpu_begun_ = gpu->Begin(layers);
+}
+
+bool HwcDisplay::DrawClientOnGpu(
+    const CompositionPlanner::ValidatedComposition &composition) {
+  auto *gpu = GetPipe().GetGpuExecutor();
+  if (gpu == nullptr)
+    return false;
+
+  /* Begun at validate, so the drawing ran while the client went from
+   * validate to present; begun here only for a frame that skipped it. */
+  if (!gpu_begun_)
+    BeginClientOnGpu(composition);
+  gpu_begun_ = false;
+
+  auto drawn = gpu->Finish();
   if (!drawn) {
     /* Refused: the client was told these layers are the device's, so the
      * frame shows the executor's last picture. Said once a run of them. */
@@ -558,6 +573,9 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
     ALOGE("%s: Previously validated composition was not presented", __func__);
     validated_composition_.reset();
   }
+  /* A drawing begun for a validation that was never presented is not this
+   * frame's; the executor drops it when the next one begins. */
+  gpu_begun_ = false;
 
   /* How many layers the client offered, said when the number changes.
    *
@@ -631,6 +649,12 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
     constexpr int64_t kGpuIdleNs = 500'000'000;
     if (GetTimeMonotonicNs() - last_gpu_use_ns_ > kGpuIdleNs)
       gpu->Warm();
+    /* The plan is known and the client may not touch the layers again
+     * before it presents: the drawing starts now, on the executor's
+     * thread, and the commit only collects it. The client's own work
+     * between validate and present -- a millisecond or more -- is time the
+     * GPU and its driver no longer take out of the commit. */
+    BeginClientOnGpu(*validated_composition_);
   }
 
   // Iterate through the layers to find which layers actually changed.

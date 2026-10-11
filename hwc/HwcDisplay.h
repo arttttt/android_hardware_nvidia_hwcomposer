@@ -536,6 +536,10 @@ class HwcDisplay : public ICompositorDisplay {
    * time it was asked, for the warm-up. */
   bool GpuCanDrawClient(
       const CompositionPlanner::ValidatedComposition &composition) const;
+  void BeginClientOnGpu(
+      const CompositionPlanner::ValidatedComposition &composition);
+  /* A drawing of the client range is under way on the executor's thread. */
+  bool gpu_begun_ = false;
   bool DrawClientOnGpu(
       const CompositionPlanner::ValidatedComposition &composition);
   void SeatGpuBuffer(buffer_handle_t buffer, SharedFd fence);
