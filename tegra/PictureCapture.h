@@ -48,8 +48,8 @@ namespace hwc {
  *
  *   vendor.hwc.test.capture       how many frames each source gives; 0 stops
  *   vendor.hwc.test.capture.from  which sources, comma separated, of
- *                                 merge, merge-turned, gpu, frame; all but
- *                                 merge-turned when unset
+ *                                 merge, merge-turned, gpu, frame, panel;
+ *                                 merge, gpu and frame when unset
  *
  * -- and a dump that finds the same two values as the last one asks nothing,
  * so a run is not restarted by every dump that happens to come along. A new
@@ -66,6 +66,8 @@ class PictureCapture {
     kGpu,
     /* No picture: the windows each frame put on the panel. */
     kFrame,
+    /* The panel itself, as the windows stacked up; see PanelMirror. */
+    kPanel,
     kCount,
   };
 
@@ -96,6 +98,15 @@ class PictureCapture {
 
   /* The words alone, for a frame with nothing to picture. */
   static void WriteText(Source source, const std::string &text);
+
+  /* For a source that keeps its pictures and writes them later: its place
+   * in the run now, or -1 when it owes nothing more, and the writing of
+   * that place whenever it comes. The pixels as for Write, ready. */
+  static int Take(Source source);
+  static void WriteTaken(int seq, Source source, const void *pixels,
+                         uint32_t width, uint32_t height, uint32_t pitch,
+                         const std::string &text);
+  static void WriteTakenText(int seq, Source source, const std::string &text);
 };
 
 }  // namespace hwc

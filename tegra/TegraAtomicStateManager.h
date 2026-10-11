@@ -26,6 +26,7 @@
 
 #include "display/AtomicStateManager.h"
 #include "display/DrmMode.h"
+#include "tegra/PanelMirror.h"
 #include "tegra/CompositionGovernor.h"
 #include "tegra/DcHead.h"
 #include "tegra/CursorUnit.h"
@@ -247,7 +248,18 @@ class TegraAtomicRequest : public AtomicRequest {
     return rate_;
   }
 
+  /* The windows described from a layer, in the image engine's terms, for a
+   * picture of the panel; filled only while one is asked for. The merge's
+   * window is not among them -- its buffer is drawn at execute. */
+  void SetPanel(std::vector<hwc::PanelMirror::Window> panel) {
+    panel_ = std::move(panel);
+  }
+  const std::vector<hwc::PanelMirror::Window> &GetPanel() const {
+    return panel_;
+  }
+
  private:
+  std::vector<hwc::PanelMirror::Window> panel_;
   const std::vector<hwc::DcHead::Window> windows_;
   const bool has_composition_;
   const std::optional<PowerMode> power_mode_;
@@ -572,6 +584,11 @@ class TegraAtomicStateManager : public AtomicStateManager {
   void ForgetMerge() {
     last_merge_window_ = -1;
   }
+
+  /* The buffer the last group was drawn into, which a reused group shows
+   * again; and the picture of the panel, while one is asked for. */
+  const hwc::VendorBuffer *last_merge_vendor_ = nullptr;
+  std::unique_ptr<hwc::PanelMirror> mirror_;
 
   bool merge_cache_ = true;
   static bool MergeCacheFromProperty();

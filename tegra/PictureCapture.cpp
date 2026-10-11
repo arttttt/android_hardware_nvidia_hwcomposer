@@ -43,7 +43,7 @@ namespace {
 
 constexpr size_t kSources = static_cast<size_t>(PictureCapture::Source::kCount);
 constexpr const char *kNames[kSources] = {"merge", "merge-turned", "gpu",
-                                          "frame"};
+                                          "frame", "panel"};
 
 /* The whole of what the frame side touches: how many each source still owes,
  * and where the numbering stands. */
@@ -59,7 +59,7 @@ std::string armed_with;
 /* A source's turn from what it still owes, or -1 when it owes nothing. Two
  * engines on two threads can both be asked in one frame, so the count is
  * taken rather than read. */
-int Take(PictureCapture::Source source) {
+int TakeTurn(PictureCapture::Source source) {
   auto &owed = left[static_cast<size_t>(source)];
   int now = owed.load(std::memory_order_relaxed);
   while (now > 0)
@@ -183,10 +183,33 @@ bool PictureCapture::Wanted(Source source) {
   return left[static_cast<size_t>(source)].load(std::memory_order_relaxed) > 0;
 }
 
+int PictureCapture::Take(Source source) {
+  return TakeTurn(source);
+}
+
+void PictureCapture::WriteTakenText(int seq, Source source,
+                                    const std::string &text) {
+  WriteWords(seq, source, "words only", text);
+}
+
+void PictureCapture::WriteTaken(int seq, Source source, const void *pixels,
+                                uint32_t width, uint32_t height, uint32_t pitch,
+                                const std::string &text) {
+  const auto *bytes = static_cast<const uint8_t *>(pixels);
+  WritePicture(seq, source, width * 4, height * 4, [&](uint32_t x, uint32_t y) {
+    uint32_t word;
+    memcpy(&word, bytes + static_cast<size_t>(y / 4) * pitch + (x / 4) * 4, 4);
+    return word;
+  });
+  char head[64];
+  snprintf(head, sizeof(head), "already quartered, %ux%u", width, height);
+  WriteWords(seq, source, head, text);
+}
+
 void PictureCapture::Write(Source source, const void *pixels, uint32_t width,
                            uint32_t height, uint32_t pitch, int done,
                            const std::string &text) {
-  const int seq = Take(source);
+  const int seq = TakeTurn(source);
   if (seq < 0)
     return;
   const std::string waited = Wait(done);
@@ -209,7 +232,7 @@ void PictureCapture::Write(Source source, const void *pixels, uint32_t width,
 void PictureCapture::WriteBuffer(Source source, buffer_handle_t buffer,
                                  uint32_t width, uint32_t height, int done,
                                  const std::string &text) {
-  const int seq = Take(source);
+  const int seq = TakeTurn(source);
   if (seq < 0)
     return;
   const std::string waited = Wait(done);
@@ -303,7 +326,7 @@ void PictureCapture::WriteBuffer(Source source, buffer_handle_t buffer,
 }
 
 void PictureCapture::WriteText(Source source, const std::string &text) {
-  const int seq = Take(source);
+  const int seq = TakeTurn(source);
   if (seq < 0)
     return;
   WriteWords(seq, source, "words only", text);

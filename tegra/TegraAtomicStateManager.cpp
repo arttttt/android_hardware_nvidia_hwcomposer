@@ -660,6 +660,9 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
   TegraAtomicRequest::Merge merge{};
   TegraAtomicRequest::Cursor cursor{};
   FrameNote note{};
+  std::vector<hwc::PanelMirror::Window> panel;
+  const bool mirrored =
+      hwc::PictureCapture::Wanted(hwc::PictureCapture::Source::kPanel);
 
   const int32_t panel_w =
       modes_.empty() ? 0
@@ -803,6 +806,9 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
       if (!DescribeWindow(joining.layer, plane_id,
                           DepthForZPos(joining.z_pos), &windows[slot]))
         return nullptr;
+      if (mirrored)
+        panel.push_back({DepthForZPos(joining.z_pos),
+                         MergeLayerFrom(joining.layer)});
 
     }
   }
@@ -886,14 +892,18 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
     window.blend = TEGRA_DC_EXT_BLEND_PREMULT;
   }
 
-  return std::make_unique<TegraAtomicRequest>(std::move(windows),
-                                              args.composition != nullptr,
-                                              args.power_mode,
-                                              std::move(merge),
-                                              args.color_matrix,
-                                              cursor,
-                                              std::move(note),
-                                              rate);
+  auto request = std::make_unique<TegraAtomicRequest>(std::move(windows),
+                                                      args.composition !=
+                                                          nullptr,
+                                                      args.power_mode,
+                                                      std::move(merge),
+                                                      args.color_matrix,
+                                                      cursor,
+                                                      std::move(note),
+                                                      rate);
+  if (mirrored)
+    request->SetPanel(std::move(panel));
+  return request;
 }
 
 bool TegraAtomicStateManager::Test(const AtomicRequest &request) {
@@ -1312,6 +1322,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
                       [](uint8_t bits) { return bits != 0; });
       merged_target = target->vendor;
       merged_turned = any_turn;
+      last_merge_vendor_ = target->vendor;
 
       const int64_t took = GetTimeMonotonicNs() - before_merge;
       merges_.frames++;
@@ -1455,6 +1466,46 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         PictureCapture::Write(source, merged_target->pixels, merge.width,
                               merge.height, merged_target->pitch, *merged,
                               words);
+    }
+  }
+
+  /* The panel as this flip stacked it: every described window, and the
+   * group's, in the image engine's hands. The frame after a run still
+   * comes here once, to collect the last picture and write the run out. */
+  if (PictureCapture::Wanted(PictureCapture::Source::kPanel) ||
+      (mirror_ && mirror_->Busy())) {
+    if (!mirror_ && vic_ != nullptr && !modes_.empty()) {
+      const drmModeModeInfo &mode = modes_.front().GetRawMode();
+      mirror_ = std::make_unique<hwc::PanelMirror>(vic_, mode.hdisplay,
+                                                   mode.vdisplay);
+    }
+    if (mirror_) {
+      std::vector<hwc::PanelMirror::Window> shown = tegra.GetPanel();
+      const hwc::VendorBuffer *group =
+          merge_reused ? last_merge_vendor_ : merged_target;
+      if (!merge.layers.empty() && group != nullptr) {
+        hwc::PanelMirror::Window w;
+        w.depth = windows[merge.slot].z;
+        w.layer.handle = nullptr;
+        w.layer.vendor = group;
+        w.layer.source_right = static_cast<float>(merge.width);
+        w.layer.source_bottom = static_cast<float>(merge.height);
+        w.layer.display_left = merge.origin_x;
+        w.layer.display_top = merge.origin_y;
+        w.layer.display_right =
+            merge.origin_x + static_cast<int32_t>(merge.width);
+        w.layer.display_bottom =
+            merge.origin_y + static_cast<int32_t>(merge.height);
+        w.layer.premultiplied = true;
+        w.layer.alpha = 1.F;
+        w.layer.acquire_fence = windows[merge.slot].preFence;
+        shown.push_back(w);
+      }
+      char head[96];
+      snprintf(head, sizeof(head), "frame %" PRIu64 " plan %" PRIu64 "%s\n",
+               frames_executed_, planned_seq_,
+               merge_reused ? ", group shown from memory" : "");
+      mirror_->Frame(std::move(shown), head + DescribeWindows(windows));
     }
   }
 
