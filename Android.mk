@@ -160,6 +160,8 @@ LOCAL_SRC_FILES := \
     tegra/GovernorLibrary.cpp \
     tegra/GpuExecutor.cpp \
     tegra/MergeDescription.cpp \
+    tegra/PanelMirror.cpp \
+    tegra/PictureCapture.cpp \
     tegra/TegraDisplayPipeline.cpp \
     tegra/TegraVSyncSource.cpp \
     tegra/ScratchPool.cpp \

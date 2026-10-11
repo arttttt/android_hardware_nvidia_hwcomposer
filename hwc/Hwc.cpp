@@ -40,6 +40,7 @@
 #include "hwc/HwcDisplayConfigs.h"
 #include "stats/DisplayRefreshRatesChangedAtomReporter.h"
 #include "stats/Stats.h"
+#include "tegra/PictureCapture.h"
 #include "utils/log.h"
 #include "utils/properties.h"
 
@@ -93,6 +94,8 @@ std::string DumpDisplayStats(const HwcDisplay *display,
 
   ss << display->DumpGroupSelector() << "\n";
   ss << display->DumpColorBridge() << "\n";
+  /* The one door a picture run is asked through; see PictureCapture.h. */
+  ss << hwc::PictureCapture::Arm() << "\n";
 
   auto &state_manager = display->GetPipe().atomic_state_manager;
   if (state_manager) {

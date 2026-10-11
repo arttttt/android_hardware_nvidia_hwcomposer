@@ -549,6 +549,7 @@ class HwcDisplay : public ICompositorDisplay {
   void BeginClientOnGpu(
       const CompositionPlanner::ValidatedComposition &composition);
   /* A drawing of the client range is under way on the executor's thread. */
+  std::string begun_words_;
   bool gpu_begun_ = false;
   bool DrawClientOnGpu(
       const CompositionPlanner::ValidatedComposition &composition);

@@ -74,6 +74,7 @@
 #include "hwc/HwcLayer.h"
 #include "stats/DisplayConfigurationResultReporter.h"
 #include "tegra/GpuExecutor.h"
+#include "tegra/PictureCapture.h"
 #include "stats/DisplayHotplugConnectModeDetectedAtomReporter.h"
 #include "stats/Stats.h"
 #include "utils/ColorUtil.h"
@@ -240,6 +241,48 @@ hwc::vk::Layer ToVkLayer(const LayerData &ld, std::pair<uint32_t, uint32_t> size
   return l;
 }
 
+/* Every layer of the frame, bottom first, as the executor would take it:
+ * what the plan made of it, what the client asked for, and the geometry,
+ * blending and corners that went to the GPU. Which of them the GPU drew is
+ * the "client" in the first column. */
+std::string DescribeLayers(
+    const CompositionPlanner::ValidatedComposition &composition,
+    std::pair<uint32_t, uint32_t> size) {
+  constexpr const char *kTypes[] = {"invalid", "client", "device",
+                                    "solid",   "cursor", "occluded"};
+  auto name = [&](CompositionType t) {
+    const auto i = static_cast<size_t>(t);
+    return i < std::size(kTypes) ? kTypes[i] : "?";
+  };
+  std::vector<std::pair<const HwcLayer *, CompositionType>> layers(
+      composition.composition_types.begin(),
+      composition.composition_types.end());
+  std::sort(layers.begin(), layers.end(), [](const auto &a, const auto &b) {
+    return a.first->GetZOrder() < b.first->GetZOrder();
+  });
+  std::string out;
+  for (const auto &[layer, type] : layers) {
+    const LayerData &ld = layer->GetLayerData();
+    const hwc::vk::Layer l = ToVkLayer(ld, size);
+    char line[384];
+    snprintf(line, sizeof(line),
+             "z %u %s (asked %s) id %" PRIu64 " buf %p %ux%u stride %u fmt %d "
+             "src %.1f,%.1f-%.1f,%.1f -> %d,%d-%d,%d alpha %.3f turn %u %s%s "
+             "corners %.0f,%.0f-%.0f,%.0f r %.1f fence %d\n",
+             layer->GetZOrder(), name(type), name(layer->GetSfType()),
+             ld.bi ? ld.bi->unique_id : 0,
+             static_cast<const void *>(l.buffer), l.width, l.height,
+             l.stride, l.format, l.src_left, l.src_top, l.src_right,
+             l.src_bottom, l.dst_left, l.dst_top, l.dst_right, l.dst_bottom,
+             l.alpha, l.transform, l.premultiplied ? "premult" : "coverage",
+             l.opaque ? " opaque" : "", l.corner_left, l.corner_top,
+             l.corner_right, l.corner_bottom, l.corner_radius,
+             l.acquire_fence);
+    out += line;
+  }
+  return out;
+}
+
 }  // namespace
 
 bool HwcDisplay::GpuCanDrawClient(
@@ -308,6 +351,19 @@ void HwcDisplay::BeginClientOnGpu(
   for (const HwcLayer *layer : range)
     layers.push_back(ToVkLayer(layer->GetLayerData(), size));
 
+  /* What the drawing was begun with, kept only while a capture asks:
+   * the words written at present describe the layers as they are then. */
+  if (hwc::PictureCapture::Wanted(hwc::PictureCapture::Source::kGpu)) {
+    begun_words_.clear();
+    for (const auto &l : layers) {
+      char line[160];
+      snprintf(line, sizeof(line),
+               "begun: -> %d,%d-%d,%d corners %.0f,%.0f-%.0f,%.0f r %.1f\n",
+               l.dst_left, l.dst_top, l.dst_right, l.dst_bottom, l.corner_left,
+               l.corner_top, l.corner_right, l.corner_bottom, l.corner_radius);
+      begun_words_ += line;
+    }
+  }
   gpu_begun_ = gpu->Begin(layers);
 }
 
@@ -319,11 +375,28 @@ bool HwcDisplay::DrawClientOnGpu(
 
   /* Begun at validate, so the drawing ran while the client went from
    * validate to present; begun here only for a frame that skipped it. */
+  const bool begun_at_validate = gpu_begun_;
   if (!gpu_begun_)
     BeginClientOnGpu(composition);
   gpu_begun_ = false;
 
   auto drawn = gpu->Finish();
+  using hwc::PictureCapture;
+  if (PictureCapture::Wanted(PictureCapture::Source::kGpu)) {
+    char head[96];
+    snprintf(head, sizeof(head), "%s (begun at %s); panel buffer %p\n",
+             drawn ? "drawn" : "REFUSED, last picture stays",
+             begun_at_validate ? "validate" : "present",
+             static_cast<const void *>(drawn ? drawn->buffer
+                                             : gpu->Current()));
+    const std::string words =
+        head + DescribeLayers(composition, GetSize()) + begun_words_;
+    /* Words only: what the GPU drew is seen through the panel source with
+     * one window asked for, read by the image engine as the controller
+     * reads it. A processor lock of the executor's buffer does not hand
+     * back what the GPU wrote. */
+    PictureCapture::WriteText(PictureCapture::Source::kGpu, words);
+  }
   if (!drawn) {
     /* Refused: the client was told these layers are the device's, so the
      * frame shows the executor's last picture. Said once a run of them. */
