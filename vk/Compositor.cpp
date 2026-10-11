@@ -17,6 +17,8 @@
 #include "vk/Compositor.h"
 
 #include <android/log.h>
+#include <pthread.h>
+#include <sched.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -93,9 +95,87 @@ enum LogKind {
 
 std::unique_ptr<VkCompositor> VkCompositor::Create(Host *host) {
   std::unique_ptr<VkCompositor> c(new VkCompositor(host));
-  if (!c->Init())
+  std::promise<bool> started;
+  auto up = started.get_future();
+  c->thread_ = std::thread(&VkCompositor::ThreadMain, c.get(), &started);
+  if (!up.get()) {
+    /* The thread has already taken down what it brought up and returned. */
+    c->thread_.join();
     return nullptr;
+  }
   return c;
+}
+
+void VkCompositor::ThreadMain(std::promise<bool> *started) {
+  pthread_setname_np(pthread_self(), "hwc-vk");
+  /* SCHED_FIFO at 2, as RenderEngineThreaded's thread: the frame waits on
+   * this thread, which must not queue behind ordinary work. */
+  struct sched_param param = {};
+  param.sched_priority = 2;
+  const bool fifo = sched_setscheduler(0, SCHED_FIFO, &param) == 0;
+
+  const bool up = Init();
+  if (up && !fifo && host_)
+    host_->Log(ANDROID_LOG_WARN, "vk: could not run at SCHED_FIFO; running as ordinary");
+  started->set_value(up);
+  if (!up) {
+    Teardown();
+    return;
+  }
+
+  for (;;) {
+    std::function<void()> work;
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      wake_.wait(lock, [this] { return stopping_ || !work_.empty(); });
+      if (work_.empty())
+        break; /* stopping, and nothing left */
+      work = std::move(work_.front());
+      work_.pop_front();
+    }
+    work();
+  }
+  Teardown();
+}
+
+void VkCompositor::Post(std::function<void()> work) {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    work_.push_back(std::move(work));
+  }
+  wake_.notify_one();
+}
+
+int VkCompositor::Compose(const Target &target, const Layer *layers, size_t count) {
+  /* Handed over and waited for, as RenderEngineThreaded::drawLayers: the
+   * frame needs the fence before it can go up. The layers and fences are
+   * borrowed for exactly as long as this call. */
+  std::promise<int> done;
+  auto fence = done.get_future();
+  Post([&] { done.set_value(ComposeNow(target, layers, count)); });
+  return fence.get();
+}
+
+bool VkCompositor::Warm() {
+  Post([this] { WarmNow(); });
+  return true;
+}
+
+void VkCompositor::Prepare(const Layer &layer) {
+  if (layer.buffer == nullptr)
+    return;
+  /* Copied: the caller does not wait. The handle is the client's buffer,
+   * which outlives the frame it came with. */
+  Post([this, l = layer] { PrepareNow(l); });
+}
+
+void VkCompositor::PrepareNow(const Layer &layer) {
+  bool opaque = false;
+  const VkFormat f = FormatOf(layer.format, &opaque);
+  if (f == VK_FORMAT_UNDEFINED)
+    return;
+  cache_->Get(layer.buffer, layer.width, layer.height, layer.stride, layer.format, layer.usage,
+              f, false, frame_);
 }
 
 void VkCompositor::LogOnce(int kind, int prio, const char *what) {
@@ -125,7 +205,7 @@ bool VkCompositor::Init() {
   /* The pipeline's first use, paid now rather than in a frame: the driver
    * translates to GL and builds the program on the first draw (0.6 ms off
    * the first frame, measured). The one wait outside a destructor. */
-  if (Warm())
+  if (WarmNow())
     state_.pfn()->WaitForFences(state_.device(), 1, &warm_done_, VK_TRUE, UINT64_MAX);
   return true;
 }
@@ -261,7 +341,7 @@ bool VkCompositor::InitWarm() {
   return vk.EndCommandBuffer(warm_cmd_) == VK_SUCCESS;
 }
 
-bool VkCompositor::Warm() {
+bool VkCompositor::WarmNow() {
   const VulkanPfn &vk = *state_.pfn();
   const VkDevice dev = state_.device();
   if (warm_busy_) {
@@ -542,6 +622,18 @@ bool VkCompositor::InitDummy() {
 }
 
 VkCompositor::~VkCompositor() {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stopping_ = true;
+  }
+  wake_.notify_one();
+  if (thread_.joinable())
+    thread_.join();
+}
+
+/* On the thread, after its last work: everything Vulkan goes down where it
+ * came up. */
+void VkCompositor::Teardown() {
   if (!state_.isReady())
     return;
   const VulkanPfn &vk = *state_.pfn();
@@ -597,7 +689,7 @@ VkCompositor::~VkCompositor() {
   state_.destroy();
 }
 
-int VkCompositor::Compose(const Target &target, const Layer *layers, size_t count) {
+int VkCompositor::ComposeNow(const Target &target, const Layer *layers, size_t count) {
   if (count == 0 || layers == nullptr || target.buffer == nullptr)
     return -1;
   if (count > kMaxLayers) {

@@ -17,8 +17,14 @@
 #pragma once
 
 #include <array>
+#include <future>
+#include <condition_variable>
+#include <deque>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <set>
+#include <thread>
 #include <vector>
 
 #include "vk/HwcVk.h"
@@ -30,8 +36,9 @@ namespace android::hwc::vk {
 /* The executor: one render pass into the target, one draw per layer,
  * blended premultiplied-over.
  *
- * Called from the composer's commit thread and from nowhere else, so it
- * keeps no lock. It never waits for the GPU: work goes out in one of three
+ * Everything Vulkan runs on the executor's own thread, in the order it was
+ * handed over -- RenderEngineThreaded's model -- so nothing below the
+ * public calls needs a lock. It never waits for the GPU: work goes out in one of three
  * slots, and a slot is reused only once its fence has come due -- a call
  * that finds the next slot still busy refuses, and the composer takes
  * another way for that frame. The sources' acquire fences and the target's
@@ -46,9 +53,21 @@ class VkCompositor : public Compositor {
 
   int Compose(const Target &target, const Layer *layers, size_t count) override;
   bool Warm() override;
+  void Prepare(const Layer &layer) override;
 
  private:
   explicit VkCompositor(Host *host) : host_(host) {}
+
+  /* The thread: brings Vulkan up, runs what is handed over, takes Vulkan
+   * down. Post queues work; the public calls are built on it. */
+  void ThreadMain(std::promise<bool> *started);
+  void Post(std::function<void()> work);
+  void Teardown();
+
+  /* The work itself, on the thread. */
+  int ComposeNow(const Target &target, const Layer *layers, size_t count);
+  bool WarmNow();
+  void PrepareNow(const Layer &layer);
 
   bool Init();
   bool InitPipeline();
@@ -114,6 +133,12 @@ class VkCompositor : public Compositor {
   uint64_t retired_ = 0;
 
   std::set<int> logged_;
+
+  std::thread thread_;
+  std::mutex mutex_;
+  std::condition_variable wake_;
+  std::deque<std::function<void()>> work_;
+  bool stopping_ = false;
 };
 
 }  // namespace android::hwc::vk

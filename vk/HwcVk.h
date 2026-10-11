@@ -40,7 +40,7 @@ namespace android::hwc::vk {
 
 /* Bumped whenever anything below changes shape. The composer refuses a
  * library that answers another number. */
-constexpr uint32_t apiVersion = 2;
+constexpr uint32_t apiVersion = 3;
 
 /* One layer to draw. Rectangles are in pixels; `dst` is in the target's
  * own space, whose origin is wherever the composer puts the target. */
@@ -117,6 +117,13 @@ class Compositor {
    * it is the composer's governor's to decide, as it decides the warm-up
    * of the merge engine. */
   virtual bool Warm() = 0;
+
+  /* Imports `layer`'s buffer ahead of any composition, and does not wait:
+   * the first import of a buffer costs milliseconds, and paid here -- when
+   * the buffer arrives -- it is not paid in the frame that draws it. As
+   * SurfaceFlinger's threaded RenderEngine maps a buffer when it is set.
+   * Nothing for a solid colour or a buffer already imported. */
+  virtual void Prepare(const Layer &layer) = 0;
 };
 
 }  // namespace android::hwc::vk
