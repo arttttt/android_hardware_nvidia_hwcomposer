@@ -36,6 +36,14 @@ TegraGovernor::TegraGovernor(GovernorHost &host)
 }
 
 bool TegraGovernor::Start() {
+  /* Once, at start: the delay is the kernel's, and when the engine is
+   * taken to be cold has to agree with it. */
+  if (ReadPowergateDelay(powergatePath, &tuning_))
+    Logf(host_, ANDROID_LOG_INFO, "engine powergate delay %u ms",
+         tuning_.powergate_ms);
+  else
+    Logf(host_, ANDROID_LOG_WARN, "no engine powergate delay; assuming %u ms",
+         tuning_.powergate_ms);
   if (ReadTuningFile(tuningPath, &tuning_, host_))
     host_.Log(ANDROID_LOG_INFO, "tuning read from the device");
 

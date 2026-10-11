@@ -141,4 +141,27 @@ bool ReadTuningFile(const char *path, Tuning *tuning, GovernorHost &log) {
   return true;
 }
 
+bool ReadPowergateDelay(const char *path, Tuning *tuning) {
+  FILE *file = fopen(path, "re");
+  if (file == nullptr)
+    return false;
+  char line[32];
+  const bool got = fgets(line, sizeof(line), file) != nullptr;
+  fclose(file);
+  if (!got)
+    return false;
+
+  /* The same strictness as the tuning file: one unsigned decimal, blanks
+   * and the newline around it, nothing else. Zero is a real setting --
+   * the engine powered down at once -- and is kept. */
+  const char *value = Trim(line);
+  char *rest = nullptr;
+  const unsigned long parsed = strtoul(value, &rest, 10);
+  if (*value == '-' || *value == '+' || rest == value || *rest != '\0' ||
+      parsed > UINT32_MAX)
+    return false;
+  tuning->powergate_ms = static_cast<uint32_t>(parsed);
+  return true;
+}
+
 }  // namespace android::hwc::governor::tegra

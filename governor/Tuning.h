@@ -120,7 +120,9 @@ struct Tuning {
   uint32_t hold_ms = 17;
 
   /* After which the engine is taken to have powered down. The kernel's
-   * powergate delay. */
+   * powergate delay: read from the kernel itself at start (see
+   * ReadPowergateDelay), this being only what is assumed when it cannot
+   * be read. */
   uint32_t powergate_ms = 500;
 
   /* Whether the first frame after a pause at least that long wakes the
@@ -193,6 +195,17 @@ constexpr const char *tuningPath = "/vendor/etc/hwc_governor.conf";
  * carries no number is said in the log and skipped. False if there was no
  * file to read, which is not a fault. */
 bool ReadTuningFile(const char *path, Tuning *tuning, GovernorHost &log);
+
+/* Where the kernel keeps the engine's powergate delay, in milliseconds.
+ * Writable at run time, so a constant here would drift from it. */
+constexpr const char *powergatePath =
+    "/sys/devices/platform/host1x/vic03.0/acm/powergate_delay";
+
+/* Reads the delay at `path` into tuning->powergate_ms. False, with
+ * `tuning` untouched, when there is no such file or it does not hold one
+ * unsigned number. Read before the tuning file, so a line there still
+ * has the last word. */
+bool ReadPowergateDelay(const char *path, Tuning *tuning);
 
 }  // namespace tegra
 }  // namespace android::hwc::governor
