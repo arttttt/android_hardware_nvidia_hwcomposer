@@ -213,7 +213,7 @@ void VkCompositor::PrepareNow(const Layer &layer) {
   if (f == VK_FORMAT_UNDEFINED)
     return;
   cache_->Get(layer.buffer, layer.width, layer.height, layer.stride, layer.format, layer.usage,
-              f, false, frame_);
+              f, false, frame_, layer.height_word);
 }
 
 void VkCompositor::LogOnce(int kind, int prio, const char *what) {
@@ -784,7 +784,7 @@ int VkCompositor::ComposeNow(const Target &target, const Layer *layers, size_t c
       return -1;
     }
     src[i] = cache_->Get(l.buffer, l.width, l.height, l.stride, l.format, l.usage, f, false,
-                         frame);
+                         frame, l.height_word);
     if (src[i] == nullptr) {
       LogOnce(kLogImport, ANDROID_LOG_WARN, "vk: the driver would not import a buffer");
       return -1;

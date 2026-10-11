@@ -158,6 +158,43 @@ uint32_t GpuReadableBytes(int hal_format) {
   }
 }
 
+/* The height to tell the executor's driver for a buffer, and where in the
+ * handle the allocator keeps the height it would otherwise read.
+ *
+ * The driver lays an imported buffer out by its own rule from that height
+ * and does not read the allocator's block height (libglcore FUN_006736aa,
+ * task-500): for most heights its rule picks smaller blocks than the
+ * allocator did, and the layer comes out in columns of misplaced rows --
+ * the taskbar at 145 rows, the status bar at 43. Rounded up to the
+ * allocator's block, the height is one the rule maps to the allocator's
+ * own arrangement for every height, and it is memory the buffer has. */
+void ImportHeight(buffer_handle_t handle, uint32_t height, uint32_t *out,
+                  int32_t *word) {
+  *out = height;
+  *word = -1;
+  NvGralloc::Surface surface{};
+  const void *raw = nullptr;
+  size_t count = 0;
+  auto *gralloc = NvGralloc::GetInstance();
+  if (gralloc == nullptr || !gralloc->DescribeSurface(handle, &surface) ||
+      surface.layout != NvGralloc::kLayoutBlocklinear ||
+      !gralloc->GetRawSurfaces(handle, &raw, &count))
+    return;
+  const uint32_t rows = 8u << surface.block_height_log2;
+  const uint32_t padded = (height + rows - 1) / rows * rows;
+  if (padded == height)
+    return;
+  /* The descriptor's height, as an index into the handle's data -- only
+   * if the descriptor lives there and says what the buffer says. */
+  const auto *words = reinterpret_cast<const int *>(raw);
+  const ptrdiff_t at = words + 1 - handle->data;
+  if (at < handle->numFds || at >= handle->numFds + handle->numInts ||
+      static_cast<uint32_t>(handle->data[at]) != height)
+    return;
+  *out = padded;
+  *word = static_cast<int32_t>(at);
+}
+
 /* A layer as the GPU executor takes it: placement, crop, turn, blending,
  * the buffer or the solid colour, and the rounded corners. */
 hwc::vk::Layer ToVkLayer(const LayerData &ld, std::pair<uint32_t, uint32_t> size) {
@@ -174,7 +211,7 @@ hwc::vk::Layer ToVkLayer(const LayerData &ld, std::pair<uint32_t, uint32_t> size
     const auto handle = static_cast<buffer_handle_t>(ld.bi->handle);
     l.buffer = handle;
     l.width = ld.bi->width;
-    l.height = ld.bi->height;
+    ImportHeight(handle, ld.bi->height, &l.height, &l.height_word);
     l.format = NvGralloc::GetInstance()->GetHalFormat(handle);
     const uint32_t bytes = GpuReadableBytes(l.format);
     l.stride = bytes != 0 ? ld.bi->pitches[0] / bytes : ld.bi->width;

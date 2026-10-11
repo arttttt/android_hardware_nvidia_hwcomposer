@@ -18,6 +18,8 @@
 
 #include <sys/stat.h>
 
+#include <cutils/native_handle.h>
+
 #include <algorithm>
 
 namespace android::hwc::vk {
@@ -76,6 +78,10 @@ void ImageCache::Destroy(const Entry &e) {
     vk.DestroyImageView(dev_.device(), e.view, nullptr);
   if (e.image != VK_NULL_HANDLE)
     vk.DestroyImage(dev_.device(), e.image, nullptr);
+  if (e.copy != nullptr) {
+    native_handle_close(e.copy);
+    native_handle_delete(e.copy);
+  }
 }
 
 void ImageCache::SetAside(Entry e) {
@@ -93,7 +99,7 @@ void ImageCache::Retire(uint64_t frame) {
 ImageCache::Entry *ImageCache::Get(const native_handle_t *handle, uint32_t width,
                                    uint32_t height, uint32_t stride, int32_t hal_format,
                                    uint64_t usage, VkFormat format, bool target,
-                                   uint64_t frame) {
+                                   uint64_t frame, int32_t height_word) {
   const uint32_t hash = HashHandle(handle);
   const uint64_t inode = InodeOf(handle);
   const Key key{handle, target};
@@ -118,10 +124,24 @@ ImageCache::Entry *ImageCache::Get(const native_handle_t *handle, uint32_t width
     entries_.erase(oldest);
   }
 
+  /* The height the driver reads is the allocator's word in the handle,
+   * and it lays the buffer out by its own rule from it. Told the height
+   * rounded up to the allocator's block instead -- memory the buffer has
+   * anyway -- its rule lands on the allocator's arrangement. */
+  native_handle_t *copy = nullptr;
+  const int words = handle->numFds + handle->numInts;
+  if (height_word >= handle->numFds && height_word < words &&
+      static_cast<uint32_t>(handle->data[height_word]) != height) {
+    copy = native_handle_clone(handle);
+    if (copy == nullptr)
+      return nullptr;
+    copy->data[height_word] = static_cast<int>(height);
+  }
+
   const VulkanPfn &vk = *dev_.pfn();
   NativeBuffer nb = {};
   nb.sType = kNativeBufferType;
-  nb.handle = handle;
+  nb.handle = copy != nullptr ? copy : handle;
   nb.stride = static_cast<int>(stride);
   nb.format = hal_format;
   nb.usage = static_cast<int>(usage);
@@ -144,8 +164,11 @@ ImageCache::Entry *ImageCache::Get(const native_handle_t *handle, uint32_t width
   e.hash = hash;
   e.inode = inode;
   e.last_frame = frame;
-  if (vk.CreateImage(dev_.device(), &ci, nullptr, &e.image) != VK_SUCCESS)
+  e.copy = copy;
+  if (vk.CreateImage(dev_.device(), &ci, nullptr, &e.image) != VK_SUCCESS) {
+    Destroy(e);
     return nullptr;
+  }
 
   VkImageViewCreateInfo vi = {};
   vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
