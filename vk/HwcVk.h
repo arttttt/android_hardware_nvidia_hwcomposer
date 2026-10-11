@@ -40,7 +40,7 @@ namespace android::hwc::vk {
 
 /* Bumped whenever anything below changes shape. The composer refuses a
  * library that answers another number. */
-constexpr uint32_t apiVersion = 4;
+constexpr uint32_t apiVersion = 5;
 
 /* One layer to draw. Rectangles are in pixels; `dst` is in the target's
  * own space, whose origin is wherever the composer puts the target. */
@@ -50,6 +50,14 @@ struct Layer {
   const native_handle_t *buffer = nullptr;
   uint32_t width = 0;  /* the buffer's own size */
   uint32_t height = 0;
+  /* Where in `buffer`'s data the allocator keeps the height the driver
+   * reads, or -1. Set when `height` above is not that word's value: the
+   * driver lays an imported buffer out by its own rule from that height,
+   * which for most heights is not the allocator's, so the library imports
+   * a copy of the handle carrying `height` there instead -- the height
+   * rounded up to the allocator's block, which the driver's rule maps to
+   * the allocator's own arrangement. */
+  int32_t height_word = -1;
   uint32_t stride = 0; /* in pixels */
   int32_t format = 0;  /* HAL_PIXEL_FORMAT_* */
   uint64_t usage = 0;
