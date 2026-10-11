@@ -1694,7 +1694,10 @@ HwcDisplay::CreateLayerToPlaneJoiningPlan(
       CreateLayerToPlaneJoiningPlan(GetPipe(), std::move(composition_layers),
                                     std::move(cursor_layer), prefer_merge);
   if (composition) {
-    composition->client_index = client_plan_index;
+    /* The rank the client entry ended at, which the steering may have
+     * moved by lowering a drawing layer beneath the merge. */
+    if (client_plan_index)
+      composition->client_index = composition->RankOf(*client_plan_index);
     const auto outcome = static_cast<size_t>(composition->steering);
     if (outcome < kSteeringOutcomes) {
       steering_outcomes_[outcome]++;

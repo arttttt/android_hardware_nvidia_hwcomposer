@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "compositor/LayerData.h"
+#include "compositor/MergeGroup.h"
 #include "display/DisplayPipeline.h"
 #include "display/Plane.h"
 
@@ -237,38 +238,66 @@ bool PlaceSteered(LayerToPlaneJoiningPlan &plan,
   };
   plan.run_len = run_len;
 
+  /* The contiguous runs, for the record: what the steering could have
+   * had without moving anything. */
   size_t live_here = 0;
   for (size_t i = 0; i < run_len; i++)
     if (composition[i].live)
       live_here++;
-
-  bool found = run_uniform(0);
-  size_t run_begin = 0;
-  size_t fewest_live = live_here;
-  if (found) {
+  if (run_uniform(0))
     record(0, live_here);
-    plan.chosen_run = 0;
-  }
   for (size_t i = run_len; i < composition.size(); i++) {
     if (composition[i - run_len].live)
       live_here--;
     if (composition[i].live)
       live_here++;
-    const size_t begin = i - run_len + 1;
-    if (!run_uniform(begin))
-      continue;
-    record(begin, live_here);
-    if (!found || live_here < fewest_live) {
-      found = true;
-      fewest_live = live_here;
-      run_begin = begin;
-      plan.chosen_run = plan.runs.size() - 1;
-    }
+    if (run_uniform(i - run_len + 1))
+      record(i - run_len + 1, live_here);
   }
-  if (!found) {
+
+  /* The group itself, which need not be contiguous as the stack came: a
+   * drawing layer between quiet ones -- the taskbar between the status
+   * bar and the screen decorations, say -- is lowered beneath the group
+   * when it covers none of the members it passes, so the quiet members
+   * hold still together and the cache answers every frame while the
+   * drawing layer takes a window of its own. Overlapping layers never
+   * change order, so the panel shows the same picture. */
+  std::vector<GroupMember> members;
+  members.reserve(composition.size());
+  for (const auto &dhl : composition) {
+    GroupMember m;
+    m.live = dhl.live;
+    if (const auto &r = dhl.pi.display_frame.i_rect)
+      m.frame = GroupMember::Frame{r->left, r->top, r->right, r->bottom};
+    const LayerTransform &t = dhl.pi.transform;
+    m.turn = (t.hflip ? 1U : 0U) | (t.vflip ? 2U : 0U) |
+             (t.rotate90 ? 4U : 0U);
+    members.push_back(m);
+  }
+  const auto group = ChooseMergeGroup(members, run_len);
+  if (!group) {
     plan.steering = Steering::kMixedTurn;
     return false;
   }
+
+  if (group->lowered != 0) {
+    std::vector<LayerData> reordered;
+    reordered.reserve(composition.size());
+    for (size_t input : group->order)
+      reordered.push_back(std::move(composition[input]));
+    composition = std::move(reordered);
+    plan.rank_of_input.assign(composition.size(), 0);
+    for (size_t rank = 0; rank < group->order.size(); rank++)
+      plan.rank_of_input[group->order[rank]] = static_cast<int>(rank);
+    record(group->begin, group->live);
+    plan.runs.back().lowered = group->lowered;
+    plan.chosen_run = plan.runs.size() - 1;
+  } else {
+    for (size_t r = 0; r < plan.runs.size(); r++)
+      if (plan.runs[r].begin == group->begin)
+        plan.chosen_run = r;
+  }
+  const size_t run_begin = group->begin;
 
   /* Seat everything tentatively -- the plan's z comes from position in
    * the plan, not from which window shows a layer, so the quiet run may

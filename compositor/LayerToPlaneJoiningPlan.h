@@ -94,12 +94,26 @@ struct LayerToPlaneJoiningPlan {
      * the run a merging plane: a run that cannot be seated is not a
      * choice the planner had. */
     bool seatable = false;
+    /* Drawing layers lowered beneath the group to make it; nonzero only
+     * for a group that was not a contiguous run of the stack as it came. */
+    size_t lowered = 0;
   };
   std::vector<Run> runs;
   /* Which of `runs` was taken, when the plan was steered. */
   size_t chosen_run = 0;
   /* How wide the runs were: the merge's width for this frame. */
   size_t run_len = 0;
+
+  /* The rank in `plan` of each layer of the composition as it was handed
+   * in. The identity unless the steering lowered a drawing layer beneath
+   * the group, which moves ranks -- and a caller that remembered where it
+   * put a layer, the client entry above all, must ask here. */
+  std::vector<int> rank_of_input;
+  int RankOf(int input) const {
+    return input >= 0 && static_cast<size_t>(input) < rank_of_input.size()
+               ? rank_of_input[static_cast<size_t>(input)]
+               : input;
+  }
 
 
   static auto CreateLayerToPlaneJoiningPlan(

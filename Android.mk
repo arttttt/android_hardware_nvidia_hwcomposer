@@ -118,6 +118,7 @@ LOCAL_SRC_FILES := \
     compositor/GenericCompositionPlanner.cpp \
     compositor/HdcpController.cpp \
     compositor/LayerToPlaneJoiningPlan.cpp \
+    compositor/MergeGroup.cpp \
     display/DrmMode.cpp \
     display/DrmProperty.cpp \
     display/VSyncWorker.cpp \
