@@ -19,6 +19,7 @@
 #include "HwcDisplay.h"
 
 #include <cutils/trace.h>
+#include <hardware/gralloc.h>
 #include <drm/drm_mode.h>
 #include <linux/time.h>
 #include <ui/GraphicTypes.h>
@@ -49,6 +50,8 @@
 #include "backend/BackendDisplayCapabilities.h"
 #include "backend/BackendManager.h"
 #include "bufferinfo/BufferInfo.h"
+#include "bufferinfo/BufferInfoGetter.h"
+#include "bufferinfo/NvGralloc.h"
 #include "compositor/CompositionPlanner.h"
 #include "compositor/DisplayInfo.h"
 #include "compositor/FlatteningController.h"
@@ -70,6 +73,7 @@
 #include "hwc/HwcDisplayConfigs.h"
 #include "hwc/HwcLayer.h"
 #include "stats/DisplayConfigurationResultReporter.h"
+#include "tegra/GpuExecutor.h"
 #include "stats/DisplayHotplugConnectModeDetectedAtomReporter.h"
 #include "stats/Stats.h"
 #include "utils/ColorUtil.h"
@@ -136,6 +140,148 @@ void UpdateClientTargetIfNeeded(const HwcLayer &client_layer,
 }
 
 }  // namespace
+
+namespace {
+
+/* The formats the GPU executor reads, by gralloc's own number; its bytes a
+ * pixel, or 0 for one it does not read. */
+uint32_t GpuReadableBytes(int hal_format) {
+  switch (hal_format) {
+    case HAL_PIXEL_FORMAT_RGBA_8888:
+    case HAL_PIXEL_FORMAT_RGBX_8888:
+    case HAL_PIXEL_FORMAT_BGRA_8888:
+      return 4;
+    case HAL_PIXEL_FORMAT_RGB_565:
+      return 2;
+    default:
+      return 0;
+  }
+}
+
+}  // namespace
+
+bool HwcDisplay::GpuCanDrawClient(
+    const CompositionPlanner::ValidatedComposition &composition) const {
+  /* A colour transform or layers in different colourspaces need colour
+   * work the executor does not do yet: those stay the client's. */
+  if (composition.flatten_reason == FlattenReason::kCtmWithOffset ||
+      composition.flatten_reason ==
+          FlattenReason::kNoPerPlaneColorspaceSupport)
+    return false;
+
+  bool any = false;
+  for (const auto &[layer, type] : composition.composition_types) {
+    if (type != CompositionType::kClient)
+      continue;
+    any = true;
+    const LayerData &ld = layer->GetLayerData();
+    if (!ld.bi) {
+      if (!ld.solid_color)
+        return false;
+      continue;
+    }
+    if (GpuReadableBytes(NvGralloc::GetInstance()->GetHalFormat(
+            static_cast<buffer_handle_t>(ld.bi->handle))) == 0)
+      return false;
+  }
+  return any;
+}
+
+void HwcDisplay::SeatGpuBuffer(buffer_handle_t buffer, SharedFd fence) {
+  auto bo = BufferInfoGetter::GetInstance()->GetBoInfo(buffer);
+  if (!bo)
+    return;
+  HwcLayer::LayerProperties lp;
+  lp.buffer = HwcLayer::Buffer{
+      .bi = bo.value(),
+      .fb = GetPipe().importer->GetOrCreateFbId(&bo.value()),
+      .fence = std::move(fence),
+  };
+  const auto size = GetSize();
+  lp.display_frame = DstRectInfo{IRect{0, 0, static_cast<int32_t>(size.first),
+                                       static_cast<int32_t>(size.second)}};
+  lp.source_crop = SrcRectInfo{FRect{0.F, 0.F, static_cast<float>(size.first),
+                                     static_cast<float>(size.second)}};
+  client_layer_.SetLayerProperties(lp);
+}
+
+bool HwcDisplay::DrawClientOnGpu(
+    const CompositionPlanner::ValidatedComposition &composition) {
+  auto *gpu = GetPipe().GetGpuExecutor();
+  if (gpu == nullptr)
+    return false;
+
+  /* The client range, bottom first, as the client would have drawn it. */
+  std::vector<const HwcLayer *> range;
+  for (const auto &[layer, type] : composition.composition_types)
+    if (type == CompositionType::kClient)
+      range.push_back(layer);
+  std::sort(range.begin(), range.end(), [](const HwcLayer *a, const HwcLayer *b) {
+    return a->GetZOrder() < b->GetZOrder();
+  });
+
+  const auto size = GetSize();
+  std::vector<hwc::vk::Layer> layers;
+  layers.reserve(range.size());
+  for (const HwcLayer *layer : range) {
+    const LayerData &ld = layer->GetLayerData();
+    hwc::vk::Layer l;
+    const auto &df = ld.pi.display_frame.i_rect;
+    l.dst_left = df ? df->left : 0;
+    l.dst_top = df ? df->top : 0;
+    l.dst_right = df ? df->right : static_cast<int32_t>(size.first);
+    l.dst_bottom = df ? df->bottom : static_cast<int32_t>(size.second);
+    l.alpha = ld.pi.alpha;
+    l.transform = (ld.pi.transform.hflip ? 1 : 0) | (ld.pi.transform.vflip ? 2 : 0) |
+                  (ld.pi.transform.rotate90 ? 4 : 0);
+    if (ld.bi) {
+      const auto handle = static_cast<buffer_handle_t>(ld.bi->handle);
+      l.buffer = handle;
+      l.width = ld.bi->width;
+      l.height = ld.bi->height;
+      l.format = NvGralloc::GetInstance()->GetHalFormat(handle);
+      const uint32_t bytes = GpuReadableBytes(l.format);
+      l.stride = bytes != 0 ? ld.bi->pitches[0] / bytes : ld.bi->width;
+      /* A client layer's usage; the driver reads the layout from the
+       * handle itself. */
+      l.usage = GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_RENDER |
+                GRALLOC_USAGE_HW_COMPOSER;
+      l.acquire_fence = ld.acquire_fence ? *ld.acquire_fence : -1;
+      const auto &sc = ld.pi.source_crop.f_rect;
+      l.src_left = sc ? sc->left : 0.F;
+      l.src_top = sc ? sc->top : 0.F;
+      l.src_right = sc ? sc->right : static_cast<float>(ld.bi->width);
+      l.src_bottom = sc ? sc->bottom : static_cast<float>(ld.bi->height);
+      l.premultiplied = ld.bi->blend_mode != BufferBlendMode::kCoverage;
+      l.opaque = ld.bi->blend_mode == BufferBlendMode::kNone;
+    } else if (ld.solid_color) {
+      std::copy(ld.solid_color->begin(), ld.solid_color->end(), l.color);
+    }
+    if (ld.effects.HasCorners()) {
+      l.corner_left = ld.effects.corners[0];
+      l.corner_top = ld.effects.corners[1];
+      l.corner_right = ld.effects.corners[2];
+      l.corner_bottom = ld.effects.corners[3];
+      l.corner_radius = ld.effects.corners[4];
+    }
+    layers.push_back(l);
+  }
+
+  auto drawn = gpu->Compose(layers);
+  if (!drawn) {
+    /* Refused: the client was told these layers are the device's, so the
+     * frame shows the executor's last picture. Said once a run of them. */
+    static bool said = false;
+    if (!said) {
+      ALOGW("gpu executor refused a frame; showing its last one");
+      said = true;
+    }
+    return false;
+  }
+  last_gpu_use_ns_ = GetTimeMonotonicNs();
+  SeatGpuBuffer(drawn->buffer, std::move(drawn->fence));
+  return true;
+}
 
 auto HwcDisplay::GetDisplayName() const -> std::string {
   std::ostringstream stream;
@@ -446,9 +592,29 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
    * plan is where that is decided. */
   RefreshDisplayProfile();
 
+  /* With the GPU executor drawing what the client would have, the client
+   * never hands over a target -- so one of the executor's buffers stands in
+   * while the plan is weighed, the plan needing a usable client target to
+   * seat the client range at all. */
+  auto *gpu = GetPipe().GetGpuExecutor();
+  if (gpu != nullptr && !client_layer_.IsLayerUsableAsDevice())
+    SeatGpuBuffer(gpu->Current(), {});
+
   auto validation_result = pipeline_->planner->ValidateDisplay(this);
   validated_composition_.emplace(std::move(validation_result.composition));
   staged_composition_reused_ = validation_result.short_circuited;
+
+  if (gpu != nullptr && GpuCanDrawClient(*validated_composition_)) {
+    validated_composition_->gpu_draws_client = true;
+    /* The GPU is brought up now if it has been idle long enough to have
+     * powered down: the frame's drawing comes at commit, and even the
+     * millisecond or two between is half the cost of a cold start
+     * (measured on tools/hwcvk_stand). When to warm is to move into the
+     * governor beside the merge engine's warm-up. */
+    constexpr int64_t kGpuIdleNs = 500'000'000;
+    if (GetTimeMonotonicNs() - last_gpu_use_ns_ > kGpuIdleNs)
+      gpu->Warm();
+  }
 
   // Iterate through the layers to find which layers actually changed.
   std::vector<ChangedLayer> changed_layers;
@@ -458,7 +624,18 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
     ALOGE_IF(it == validated_composition_->composition_types.end(),
              "Backend did not composite layer %" PRId64 "", id);
     if (it != validated_composition_->composition_types.end()) {
-      layer.SetValidatedType(it->second);
+      CompositionType type = it->second;
+      /* Drawn by the composer's GPU executor: the client is told the layer
+       * is the device's, so it composes nothing. A solid colour keeps its
+       * own type -- the framework does not change a solid colour into a
+       * device layer -- and is drawn all the same. */
+      if (validated_composition_->gpu_draws_client &&
+          type == CompositionType::kClient) {
+        type = layer.GetSfType() == CompositionType::kSolidColor
+                   ? CompositionType::kSolidColor
+                   : CompositionType::kDevice;
+      }
+      layer.SetValidatedType(type);
     }
     if (layer.IsTypeChanged()) {
       changed_layers.emplace_back(id, layer.GetValidatedType());
@@ -1769,6 +1946,8 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
    * so the answer names a step rather than a range. */
   const int64_t t0 = GetTimeMonotonicNs();
 
+  const bool gpu_drew = validated_composition_->gpu_draws_client &&
+                        DrawClientOnGpu(validated_composition_.value());
   PrepareCompositionForCommit(validated_composition_.value());
   const int64_t t1 = GetTimeMonotonicNs();
 
@@ -1816,6 +1995,8 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
   const int64_t t3 = GetTimeMonotonicNs();
 
   out_present_fence = result->present_fence;
+  if (gpu_drew)
+    GetPipe().GetGpuExecutor()->Presented(out_present_fence);
 
   /* Kept apart from the one above, which the client may be told loosely on
    * purpose. This one answers when a buffer comes free and cannot be. */

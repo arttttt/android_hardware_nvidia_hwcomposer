@@ -327,7 +327,12 @@ std::tuple<size_t, size_t> GenericCompositionPlanner::GetClientLayers(
 
 bool GenericCompositionPlanner::IsClientLayer(const ICompositorDisplay* display,
                                               const HwcLayer* layer) {
-  return !HardwareSupportsLayerType(layer->GetSfType()) ||
+  /* A layer with an effect -- rounded corners, a shadow, blur, stretch --
+   * can be shown by no window as it is meant to look. It goes to the
+   * client range: drawn by the composer's GPU executor where there is one,
+   * and by the client, which knows the effect too, where there is not. */
+  return layer->GetLayerData().effects.Any() ||
+         !HardwareSupportsLayerType(layer->GetSfType()) ||
          !layer->IsLayerUsableAsDevice() || display->CtmByGpu() ||
          (layer->GetLayerData().pi.RequireScalingOrPhasing() &&
           display->ForcedScalingWithGpu());

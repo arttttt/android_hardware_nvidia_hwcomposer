@@ -74,6 +74,10 @@ class CompositionPlanner {
     // failure iff |flatten_reason| is |kValidateFailed| and the error code is
     // 0.
     int error_code = 0;
+    // Whether the layers typed kClient are drawn by the composer's own GPU
+    // executor rather than by the client, which is then told they are
+    // device layers. Kept with the plan, so a reused plan keeps it.
+    bool gpu_draws_client = false;
 
     bool operator==(const ValidatedComposition& other) const {
       return composition_types == other.composition_types &&
@@ -81,7 +85,8 @@ class CompositionPlanner {
              composition_plan == other.composition_plan &&
              flatten_reason == other.flatten_reason &&
              cursor_plane_validated == other.cursor_plane_validated &&
-             error_code == other.error_code;
+             error_code == other.error_code &&
+             gpu_draws_client == other.gpu_draws_client;
     }
   };
 

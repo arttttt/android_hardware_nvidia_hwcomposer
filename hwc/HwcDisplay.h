@@ -530,6 +530,17 @@ class HwcDisplay : public ICompositorDisplay {
    * would be a copy onto itself. */
   bool staged_composition_reused_ = false;
 
+  /* The composer's own GPU executor, when it draws what the plan leaves to
+   * the client. Whether every layer so left can be drawn by it; drawing them
+   * into its next buffer and seating that as the client target; the last
+   * time it was asked, for the warm-up. */
+  bool GpuCanDrawClient(
+      const CompositionPlanner::ValidatedComposition &composition) const;
+  bool DrawClientOnGpu(
+      const CompositionPlanner::ValidatedComposition &composition);
+  void SeatGpuBuffer(buffer_handle_t buffer, SharedFd fence);
+  int64_t last_gpu_use_ns_ = 0;
+
   /* Display-level PlanInvalidator bits; the layers carry their own. Starts
    * all-dirty so the first frame of a life is planned in full, and every
    * failure path re-raises it. Mutable for the same reason the layer's is:
