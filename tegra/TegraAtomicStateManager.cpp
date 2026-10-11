@@ -50,6 +50,7 @@
 #include "display/Plane.h"
 #include "display/PipelineBinding.h"
 #include "tegra/MergeDescription.h"
+#include "tegra/PictureCapture.h"
 #include "tegra/TegraConnector.h"
 #include "tegra/FbDevice.h"
 #include "tegra/TegraFormat.h"
@@ -1103,87 +1104,54 @@ void TegraAtomicStateManager::RememberMerge(
   last_merge_fence_ = drawn;
 }
 
-/* A picture of what the engine actually drew, taken out of the slot it
- * drew into.
- *
- * Until this existed the only place that composition could be seen was the
- * panel, and the panel answers in sentences a person has to type: it took
- * a build, a restart and somebody's eyes to learn one fact about one
- * frame. Every question that has cost us a day -- which way a turn went,
- * whether it was mirrored, whether a member landed where its rectangle
- * said -- is a question about these bytes, and these bytes have been
- * mapped in this process the whole time.
- *
- * Sampled every fourth pixel along both axes: small enough to pull in a
- * moment, large enough that an orientation, a mirror and a misplaced
- * member are all plain. Written as the simplest format that carries a
- * picture, because whatever reads it will not be this program.
- *
- * The number asked for is how many frames in a row to catch, because the
- * defects left are the ones that live in movement: a frame caught at
- * leisure shows a scene that has settled, and a scene that has settled has
- * been proved right by other means already. A run of frames through a
- * rotation can be walked afterwards until the wrong one is found. Asking
- * again with the same number asks nothing -- a fresh number starts a fresh
- * run.
- *
- * A positive number catches only frames that carried a turn, which is what
- * the run was made for. A negative one catches every frame drawn, turned
- * or not: a defect that has nothing to do with a turn -- a member that
- * arrives empty -- lives in the frames the positive run skips. */
-void TegraAtomicStateManager::WriteMergedPicture(
-    const hwc::VendorBuffer &target, const SharedFd &done, bool turned) {
-  const int arm = property_get_int32("vendor.hwc.test.dumpmerge", 0);
-  if (arm != merge_picture_arm_) {
-    merge_picture_arm_ = arm;
-    merge_picture_left_ = arm < 0 ? -arm : arm;
-    merge_picture_seq_ = 0;
+namespace {
+
+/* The windows a frame put on the panel, one to a line, in the controller's
+ * own terms: which window, from what memory, how far back, which part of the
+ * buffer and where on the panel. The order the planner stacked them in is
+ * only visible here -- no picture shows it. */
+std::string DescribeWindows(const std::vector<hwc::DcHead::Window> &windows) {
+  std::string out;
+  for (const auto &w : windows) {
+    char line[256];
+    snprintf(line, sizeof(line),
+             "win %d fd %d z %u src %.1f,%.1f %.1fx%.1f -> %d,%d %dx%d "
+             "fmt %u flags 0x%x bh %u blend %u alpha %u stride %u fence %d\n",
+             w.index, w.bufferFd, w.z, w.sourceX, w.sourceY, w.sourceWidth,
+             w.sourceHeight, w.outX, w.outY, w.outWidth, w.outHeight,
+             w.pixelFormat, w.flags, w.blockHeightLog2, w.blend,
+             w.globalAlpha, w.stride, w.preFence);
+    out += line;
   }
-  if (merge_picture_left_ == 0 || (!turned && merge_picture_arm_ > 0))
-    return;
-  merge_picture_left_--;
-
-  if (target.pixels == nullptr || target.pitch == 0)
-    return;
-
-  /* The engine is still writing until this comes due, and a picture read
-   * before then is a picture of the frame before. */
-  if (done)
-    sync_wait(*done, 500);
-
-  /* Somewhere this process may actually write: the shell's own directory
-   * belongs to the shell, and the composer is not it. Numbered in the
-   * order they were drawn, so the run reads as the animation ran. */
-  char path[64];
-  snprintf(path, sizeof(path), "/data/misc/hwc-merge-%03d.ppm",
-           merge_picture_seq_++);
-  FILE *out = fopen(path, "wb");
-  if (out == nullptr) {
-    ALOGE("no picture: %s: %s", path, strerror(errno));
-    return;
-  }
-
-  constexpr uint32_t kStep = 4;
-  const uint32_t width = target.width / kStep;
-  const uint32_t height = target.height / kStep;
-  fprintf(out, "P6\n%u %u\n255\n", width, height);
-
-  const auto *bytes = reinterpret_cast<const uint8_t *>(target.pixels);
-  std::vector<uint8_t> row(static_cast<size_t>(width) * 3);
-  for (uint32_t y = 0; y < height; ++y) {
-    const auto *line = reinterpret_cast<const uint32_t *>(
-        bytes + static_cast<size_t>(y) * kStep * target.pitch);
-    for (uint32_t x = 0; x < width; ++x) {
-      const uint32_t word = line[x * kStep];
-      row[x * 3 + 0] = static_cast<uint8_t>(word & 0xff);
-      row[x * 3 + 1] = static_cast<uint8_t>((word >> 8) & 0xff);
-      row[x * 3 + 2] = static_cast<uint8_t>((word >> 16) & 0xff);
-    }
-    fwrite(row.data(), 1, row.size(), out);
-  }
-  fclose(out);
-  ALOGI("picture of the group written to %s (%ux%u)", path, width, height);
+  return out;
 }
+
+/* A group as the planner sent it: where its window sits, and each member's
+ * part of its buffer and place inside the group. */
+std::string DescribeMerge(const TegraAtomicRequest::Merge &merge) {
+  char line[256];
+  snprintf(line, sizeof(line),
+           "merge into window %d slot %zu z %u at %d,%d %ux%u, %zu member(s)\n",
+           merge.window, merge.slot, merge.depth, merge.origin_x,
+           merge.origin_y, merge.width, merge.height, merge.layers.size());
+  std::string out = line;
+  for (size_t i = 0; i < merge.layers.size(); ++i) {
+    const auto &l = merge.layers[i];
+    snprintf(line, sizeof(line),
+             "  [%zu] id %" PRIu64 " turn %u src %.1f,%.1f-%.1f,%.1f -> "
+             "%d,%d-%d,%d alpha %.3f %s fence %d\n",
+             i, i < merge.source_ids.size() ? merge.source_ids[i] : 0,
+             i < merge.transforms.size() ? merge.transforms[i] : 0,
+             l.source_left, l.source_top, l.source_right, l.source_bottom,
+             l.display_left, l.display_top, l.display_right, l.display_bottom,
+             l.alpha, l.premultiplied ? "premult" : "coverage",
+             l.acquire_fence);
+    out += line;
+  }
+  return out;
+}
+
+}  // namespace
 
 int TegraAtomicStateManager::Execute(const AtomicRequest &request,
                                      AtomicCommitResult *out_result) {
@@ -1234,6 +1202,10 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
    */
   SharedFd merged;
   bool merge_reused = false;
+  /* What the engine drew into, kept for a picture of it once the frame is
+   * up; see PictureCapture. */
+  const hwc::VendorBuffer *merged_target = nullptr;
+  bool merged_turned = false;
   const auto &merge = tegra.GetMerge();
   if (!merge.layers.empty()) {
     if (vic_ == nullptr || scratch_ == nullptr) {
@@ -1338,7 +1310,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
           group_turn != 0 ||
           std::any_of(merge.transforms.begin(), merge.transforms.end(),
                       [](uint8_t bits) { return bits != 0; });
-      WriteMergedPicture(*target->vendor, merged, any_turn);
+      merged_target = target->vendor;
+      merged_turned = any_turn;
 
       const int64_t took = GetTimeMonotonicNs() - before_merge;
       merges_.frames++;
@@ -1458,6 +1431,32 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   }
 
   frames_executed_++;
+
+  /* After the flip, so the words carry every window the frame put up and
+   * the wait for the engine costs this frame nothing on the panel. */
+  using hwc::PictureCapture;
+  if (PictureCapture::Wanted(PictureCapture::Source::kFrame) ||
+      PictureCapture::Wanted(PictureCapture::Source::kMerge) ||
+      PictureCapture::Wanted(PictureCapture::Source::kMergeTurned)) {
+    char head[96];
+    snprintf(head, sizeof(head), "frame %" PRIu64 " plan %" PRIu64 "%s\n",
+             frames_executed_, planned_seq_,
+             merge_reused ? ", group shown from memory" : "");
+    std::string words = head;
+    if (!merge.layers.empty())
+      words += DescribeMerge(merge);
+    words += DescribeWindows(windows);
+    PictureCapture::WriteText(PictureCapture::Source::kFrame, words);
+    if (merged_target != nullptr) {
+      const auto source = PictureCapture::Wanted(PictureCapture::Source::kMerge)
+                              ? PictureCapture::Source::kMerge
+                              : PictureCapture::Source::kMergeTurned;
+      if (source == PictureCapture::Source::kMerge || merged_turned)
+        PictureCapture::Write(source, merged_target->pixels, merge.width,
+                              merge.height, merged_target->pitch, *merged,
+                              words);
+    }
+  }
 
   /* The frame as it went up: the ring's line is written only here, past
    * every refusal above, so what the ring says was shown was shown. */
