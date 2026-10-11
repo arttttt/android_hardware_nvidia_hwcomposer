@@ -222,11 +222,6 @@ hwc::vk::Layer ToVkLayer(const LayerData &ld, std::pair<uint32_t, uint32_t> size
      * handle itself. */
     l.usage = GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_RENDER |
               GRALLOC_USAGE_HW_COMPOSER;
-    /* Experiment only: the usage the driver is told, read once. */
-    static const int forced_usage =
-        property_get_int32("vendor.hwc.test.vkusage", -1);
-    if (forced_usage >= 0)
-      l.usage = static_cast<uint64_t>(forced_usage);
     l.acquire_fence = ld.acquire_fence ? *ld.acquire_fence : -1;
     const auto &sc = ld.pi.source_crop.f_rect;
     l.src_left = sc ? sc->left : 0.F;
