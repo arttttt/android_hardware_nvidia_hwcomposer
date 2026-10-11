@@ -20,7 +20,6 @@
 #include <cstdint>
 #include <string>
 
-#include <cutils/native_handle.h>
 
 namespace android {
 namespace hwc {
@@ -28,13 +27,11 @@ namespace hwc {
 /* Pictures of what this composer drew, and what it was told to draw, taken
  * when somebody asks and at no other time.
  *
- * Every composition this process makes for itself -- the image engine's
- * merges, the GPU's client range -- lands in a buffer this process can map,
- * and every question about a defect that lives one frame long is a question
- * about those bytes. Which engine drew it makes no difference to the
- * question: a picture is a picture. So any source hands its buffer here,
- * with the words that say what the frame was made of, and gets back a file
- * pair under /data/misc:
+ * Every question about a defect that lives one frame long is a question
+ * about what some buffer held at that frame, and which engine filled it
+ * makes no difference to the question: a picture is a picture. So any
+ * source hands its picture here, with the words that say what the frame was
+ * made of, and gets back a file pair under /data/misc:
  *
  *   hwc-cap-NNNN-<source>.ppm   every fourth pixel along both axes
  *   hwc-cap-NNNN-<source>.txt   what the source said about the frame
@@ -46,10 +43,20 @@ namespace hwc {
  * Wanted(), which is one load. The ask is two properties, read when
  * `dumpsys SurfaceFlinger` runs --
  *
- *   vendor.hwc.test.capture       how many frames each source gives; 0 stops
- *   vendor.hwc.test.capture.from  which sources, comma separated, of
- *                                 merge, merge-turned, gpu, frame, panel;
- *                                 merge, gpu and frame when unset
+ *   vendor.hwc.test.capture         how many frames each source gives; 0
+ *                                   stops
+ *   vendor.hwc.test.capture.from    which sources, comma separated, of
+ *                                   merge, merge-turned, gpu, frame, panel;
+ *                                   merge, gpu and frame when unset
+ *   vendor.hwc.test.capture.words   1: words only, nothing that waits
+ *   vendor.hwc.test.capture.window  the one window a panel picture shows,
+ *                                   with its alpha beside it; -1 for all
+ *
+ * The panel source is the one to look at a frame through: the image engine
+ * lays the flip's windows down as the controller does, and the frame keeps
+ * its pace. The GPU source is words only -- a processor lock of the
+ * executor's buffer does not hand back what the GPU wrote; its picture is
+ * the panel's with that one window asked for.
  *
  * -- and a dump that finds the same two values as the last one asks nothing,
  * so a run is not restarted by every dump that happens to come along. A new
@@ -94,12 +101,6 @@ class PictureCapture {
   static void Write(Source source, const void *pixels, uint32_t width,
                     uint32_t height, uint32_t pitch, int done,
                     const std::string &text);
-
-  /* The same for an allocator's buffer, in whatever arrangement it was
-   * made: memory arranged in blocks is read back into rows here, which
-   * locking it does not do. */
-  static void WriteBuffer(Source source, buffer_handle_t buffer, uint32_t width,
-                          uint32_t height, int done, const std::string &text);
 
   /* The words alone, for a frame with nothing to picture. */
   static void WriteText(Source source, const std::string &text);

@@ -391,12 +391,11 @@ bool HwcDisplay::DrawClientOnGpu(
                                              : gpu->Current()));
     const std::string words =
         head + DescribeLayers(composition, GetSize()) + begun_words_;
-    if (drawn && !PictureCapture::WordsOnly())
-      PictureCapture::WriteBuffer(PictureCapture::Source::kGpu, drawn->buffer,
-                                  gpu->width(), gpu->height(),
-                                  drawn->fence ? *drawn->fence : -1, words);
-    else
-      PictureCapture::WriteText(PictureCapture::Source::kGpu, words);
+    /* Words only: what the GPU drew is seen through the panel source with
+     * one window asked for, read by the image engine as the controller
+     * reads it. A processor lock of the executor's buffer does not hand
+     * back what the GPU wrote. */
+    PictureCapture::WriteText(PictureCapture::Source::kGpu, words);
   }
   if (!drawn) {
     /* Refused: the client was told these layers are the device's, so the
