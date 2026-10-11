@@ -25,6 +25,8 @@
 #include <ui/GraphicTypes.h>
 #include <utils/Trace.h>
 #include <xf86drmMode.h>
+#include <cutils/properties.h>
+#include <sync/sync.h>
 
 #include <algorithm>
 #include <array>
@@ -355,6 +357,12 @@ bool HwcDisplay::DrawClientOnGpu(
     }
     return false;
   }
+  /* Experiment only: the frame waits here for the GPU to finish, so that
+   * whatever reads the buffer next reads it drawn. Read once per process. */
+  static const bool wait_for_gpu =
+      property_get_bool("vendor.hwc.test.gpuwait", false);
+  if (wait_for_gpu && drawn->fence)
+    sync_wait(*drawn->fence, 100);
   last_gpu_use_ns_ = GetTimeMonotonicNs();
   SeatGpuBuffer(drawn->buffer, std::move(drawn->fence));
   return true;
