@@ -409,12 +409,19 @@ int main(int argc, char **argv) {
 
   VkSemaphoreCreateInfo sci = {};
   sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-  VkSemaphore src_ready, dst_ready;
+  VkSemaphore src_ready, dst_ready, src_drawn, dst_drawn;
   VK(vk.CreateSemaphore(dev, &sci, nullptr, &src_ready));
   VK(vk.CreateSemaphore(dev, &sci, nullptr, &dst_ready));
+  VK(vk.CreateSemaphore(dev, &sci, nullptr, &src_drawn));
+  VK(vk.CreateSemaphore(dev, &sci, nullptr, &dst_drawn));
 
-  /* --- the draw, twenty times, fence to fence. --- */
+  /* --- the draw, twenty times, fence to fence. The last run cuts wider
+   * corners and the target is read the moment its release fence comes
+   * due, with nothing else waited for: a fence that came due before the
+   * drawing would leave the narrower corners of the run before. --- */
   constexpr int kRuns = 20;
+  constexpr float kLastRadius = 256.f;
+  int failures = 0;
   double total = 0, worst = 0;
   for (int run = 0; run < kRuns; run++) {
     const double t0 = NowMs();
@@ -451,7 +458,8 @@ int main(int argc, char **argv) {
     vk.CmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
     vk.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
     vk.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pl, 0, 1, &ds, 0, nullptr);
-    const float pc[3] = {float(kW), float(kH), kRadius};
+    const bool last = run == kRuns - 1;
+    const float pc[3] = {float(kW), float(kH), last ? kLastRadius : kRadius};
     vk.CmdPushConstants(cmd, pl, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), pc);
     vk.CmdDraw(cmd, 3, 1, 0, 0);
     vk.CmdEndRenderPass(cmd);
@@ -467,20 +475,32 @@ int main(int argc, char **argv) {
     sub_i.pWaitDstStageMask = stages_w;
     sub_i.commandBufferCount = 1;
     sub_i.pCommandBuffers = &cmd;
+    VkSemaphore drawn[2] = {src_drawn, dst_drawn};
+    sub_i.signalSemaphoreCount = 2;
+    sub_i.pSignalSemaphores = drawn;
     VK(vk.QueueSubmit(queue, 1, &sub_i, VK_NULL_HANDLE));
 
+    /* Each image is handed back on the drawing's own semaphore, so its
+     * fence comes due when the drawing is done and not before. */
     int done = -1;
-    VK(vk.QueueSignalReleaseImageANDROID(queue, 0, nullptr, dst_img, &done));
-    if (done >= 0) {
-      if (!WaitFd(done)) FAIL("release fence never signalled");
-      close(done);
-    } else {
-      vk.QueueWaitIdle(queue);
-    }
-    /* The source was acquired too; give it back the same way. */
+    VK(vk.QueueSignalReleaseImageANDROID(queue, 1, &dst_drawn, dst_img, &done));
     int src_done = -1;
-    VK(vk.QueueSignalReleaseImageANDROID(queue, 0, nullptr, src_img, &src_done));
+    VK(vk.QueueSignalReleaseImageANDROID(queue, 1, &src_drawn, src_img, &src_done));
+    if (done < 0) FAIL("no release fence for the target");
+    if (!WaitFd(done)) FAIL("release fence never signalled");
+    close(done);
     if (src_done >= 0) close(src_done);
+
+    if (last) {
+      void *lp = nullptr;
+      if (dst->lock(GRALLOC_USAGE_SW_READ_OFTEN, &lp) != NO_ERROR || !lp) FAIL("lock dst");
+      const uint32_t got = static_cast<const uint32_t *>(lp)[60 * dst->getStride() + 60];
+      dst->unlock();
+      const bool ok = got == 0;
+      P("%s fence honest: 60,60 cut by the last run's wider corner: 0x%08x (want 0)\n",
+        ok ? "ok  " : "BAD ", got);
+      failures += ok ? 0 : 1;
+    }
     vk.QueueWaitIdle(queue);
 
     const double ms = NowMs() - t0;
@@ -496,11 +516,11 @@ int main(int argc, char **argv) {
   if (dst->lock(GRALLOC_USAGE_SW_READ_OFTEN, &p) != NO_ERROR || !p) FAIL("lock dst");
   const auto *px = static_cast<const uint32_t *>(p);
   const uint32_t stride = dst->getStride();
-  int failures = 0;
   struct Probe {
     uint32_t x, y, want;
     const char *what;
   } probes[] = {
+      {60, 60, 0, "inside the wide corner"},
       {0, 0, 0, "top-left corner cut"},
       {kW - 1, 0, 0, "top-right corner cut"},
       {0, kH - 1, 0, "bottom-left corner cut"},
@@ -509,7 +529,7 @@ int main(int argc, char **argv) {
       {3 * kW / 4, kH / 4, kGreen, "green quadrant"},
       {kW / 4, 3 * kH / 4, kBlue, "blue quadrant"},
       {3 * kW / 4, 3 * kH / 4, kWhite, "white quadrant"},
-      {kW / 2 - 4, 0, kRed, "top edge, inside the corner"},
+      {kW / 2 - 4, 0, kRed, "top edge, between the corners"},
   };
   for (const Probe &pr : probes) {
     const uint32_t got = px[pr.y * stride + pr.x];
