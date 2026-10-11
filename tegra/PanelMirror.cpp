@@ -17,6 +17,7 @@
 #include "tegra/PanelMirror.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 #include <sync/sync.h>
@@ -64,7 +65,22 @@ void PanelMirror::Lift() {
 }
 
 void PanelMirror::WriteOut() {
+  /* A window alone is asked for to see its buffer as the controller reads
+   * it, and what blends through a buffer is its alpha: kept beside the
+   * picture, one byte a pixel. */
+  const bool alpha = PictureCapture::OnlyWindow() >= 0;
   for (const Kept &k : kept_) {
+    if (alpha && !k.pixels.empty()) {
+      char path[96];
+      snprintf(path, sizeof(path), "/data/misc/hwc-cap-%04d-panel-alpha.pgm",
+               k.seq);
+      if (FILE *out = fopen(path, "wb")) {
+        fprintf(out, "P5\n%u %u\n255\n", width_, height_);
+        for (size_t i = 3; i < k.pixels.size(); i += 4)
+          fputc(k.pixels[i], out);
+        fclose(out);
+      }
+    }
     if (k.pixels.empty())
       PictureCapture::WriteTakenText(k.seq, PictureCapture::Source::kPanel,
                                      k.words);
@@ -100,7 +116,10 @@ void PanelMirror::Frame(std::vector<Window> windows, const std::string &words) {
   std::sort(windows.begin(), windows.end(),
             [](const Window &a, const Window &b) { return a.depth > b.depth; });
   std::vector<VicSession::Layer> layers;
+  const int only = PictureCapture::OnlyWindow();
   for (const Window &w : windows) {
+    if (only >= 0 && w.index != only)
+      continue;
     VicSession::Layer l = w.layer;
     l.display_left /= static_cast<int32_t>(kScale);
     l.display_top /= static_cast<int32_t>(kScale);

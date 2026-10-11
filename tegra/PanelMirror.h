@@ -52,6 +52,7 @@ class PanelMirror {
    * the fence the controller waited on. `depth` is the controller's: the
    * larger, the further back. */
   struct Window {
+    int32_t index = -1;
     uint32_t depth = 0;
     VicSession::Layer layer{};
   };

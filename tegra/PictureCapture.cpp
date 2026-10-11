@@ -50,6 +50,7 @@ constexpr const char *kNames[kSources] = {"merge", "merge-turned", "gpu",
 std::array<std::atomic<int>, kSources> left{};
 std::atomic<int> next_seq{0};
 std::atomic<bool> words_only{false};
+std::atomic<int> only_window{-1};
 
 /* The last ask, so that a dump repeating it starts nothing. The dump's side
  * only. */
@@ -152,6 +153,8 @@ std::string PictureCapture::Arm() {
 
   words_only.store(property_get_bool("vendor.hwc.test.capture.words", false),
                    std::memory_order_relaxed);
+  only_window.store(property_get_int32("vendor.hwc.test.capture.window", -1),
+                    std::memory_order_relaxed);
 
   std::lock_guard<std::mutex> guard(arm_lock);
   const std::string ask = std::to_string(frames) + "/" + from;
@@ -173,6 +176,10 @@ std::string PictureCapture::Arm() {
             std::to_string(left[i].load(std::memory_order_relaxed));
   line += ", next #" + std::to_string(next_seq.load(std::memory_order_relaxed));
   return line;
+}
+
+int PictureCapture::OnlyWindow() {
+  return only_window.load(std::memory_order_relaxed);
 }
 
 bool PictureCapture::WordsOnly() {

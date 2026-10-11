@@ -807,7 +807,8 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
                           DepthForZPos(joining.z_pos), &windows[slot]))
         return nullptr;
       if (mirrored)
-        panel.push_back({DepthForZPos(joining.z_pos),
+        panel.push_back({static_cast<int32_t>(plane_id),
+                         DepthForZPos(joining.z_pos),
                          MergeLayerFrom(joining.layer)});
 
     }
@@ -1485,6 +1486,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
           merge_reused ? last_merge_vendor_ : merged_target;
       if (!merge.layers.empty() && group != nullptr) {
         hwc::PanelMirror::Window w;
+        w.index = windows[merge.slot].index;
         w.depth = windows[merge.slot].z;
         w.layer.handle = nullptr;
         w.layer.vendor = group;

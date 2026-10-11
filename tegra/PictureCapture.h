@@ -79,6 +79,11 @@ class PictureCapture {
    * vendor.hwc.test.capture.words=1, read with the rest of the ask. */
   static bool WordsOnly();
 
+  /* The one window a panel picture is to show, over nothing, or -1 for all
+   * of them: vendor.hwc.test.capture.window, read with the rest of the
+   * ask. One window alone is that buffer as the controller reads it. */
+  static int OnlyWindow();
+
   /* Whether `source` still owes frames. All the frame ever pays. */
   static bool Wanted(Source source);
 
