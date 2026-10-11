@@ -19,8 +19,10 @@
 
 #define LOG_TAG "drmhwc"
 
+#include <algorithm>
 #include <cinttypes>
 #include <cmath>
+#include <cstring>
 #include <memory>
 #include <optional>
 
@@ -1567,11 +1569,56 @@ static int32_t SetCursorPosition(hwc2_device_t *device,
   return 0;
 }
 
-static int32_t SetLayerColor(hwc2_device_t * /*device*/,
-                             hwc2_display_t /*display*/, hwc2_layer_t /*layer*/,
-                             hwc_color_t /*color*/) {
+/* Kept rather than dropped: a solid-colour layer is drawn by the
+ * composer's GPU executor, which needs the colour to draw it. */
+static int32_t SetLayerColor(hwc2_device_t *device, hwc2_display_t display,
+                             hwc2_layer_t layer, hwc_color_t color) {
   ALOGV("SetLayerColor");
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+  GET_LAYER(layer);
+  ilayer->SetSolidColor(color.r, color.g, color.b, color.a);
   return 0;
+}
+
+/* The effects SurfaceFlinger hands over instead of composing them on the
+ * GPU (device tree patches/frameworks/native/0003). Declared mandatory:
+ * they change the picture. */
+static int32_t GetLayerGenericMetadataKey(hwc2_device_t * /*device*/,
+                                          uint32_t key_index,
+                                          uint32_t *out_key_length,
+                                          char *out_key, bool *out_mandatory) {
+  if (key_index >= kEffectKeys.size()) {
+    *out_key_length = 0;
+    return 0;
+  }
+  const char *key = kEffectKeys[key_index];
+  const auto length = static_cast<uint32_t>(strlen(key));
+  if (out_key == nullptr) {
+    *out_key_length = length;
+    return 0;
+  }
+  memcpy(out_key, key, std::min(length, *out_key_length));
+  *out_key_length = length;
+  if (out_mandatory != nullptr)
+    *out_mandatory = true;
+  return 0;
+}
+
+static int32_t SetLayerGenericMetadata(hwc2_device_t *device,
+                                       hwc2_display_t display,
+                                       hwc2_layer_t layer, uint32_t key_length,
+                                       const char *key, bool /*mandatory*/,
+                                       uint32_t value_length,
+                                       const uint8_t *value) {
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+  GET_LAYER(layer);
+  const auto result = ilayer->ApplyEffectMetadata(key, key_length, value,
+                                                  value_length);
+  return result == EffectResult::kApplied
+             ? 0
+             : static_cast<int32_t>(HWC2::Error::BadParameter);
 }
 
 static int32_t SetLayerCompositionType(hwc2_device_t *device,
@@ -1848,6 +1895,10 @@ static hwc2_function_pointer_t HookDevGetFunction(struct hwc2_device * /*dev*/,
       return (hwc2_function_pointer_t)SetLayerBuffer;
     case HWC2::FunctionDescriptor::SetLayerColor:
       return (hwc2_function_pointer_t)SetLayerColor;
+    case HWC2::FunctionDescriptor::SetLayerGenericMetadata:
+      return (hwc2_function_pointer_t)SetLayerGenericMetadata;
+    case HWC2::FunctionDescriptor::GetLayerGenericMetadataKey:
+      return (hwc2_function_pointer_t)GetLayerGenericMetadataKey;
     case HWC2::FunctionDescriptor::SetLayerCompositionType:
       return (hwc2_function_pointer_t)SetLayerCompositionType;
     case HWC2::FunctionDescriptor::SetLayerDataspace:

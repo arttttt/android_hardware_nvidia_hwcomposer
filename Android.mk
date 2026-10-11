@@ -117,6 +117,7 @@ LOCAL_SRC_FILES := \
     compositor/FlatteningEventAtomReporter.cpp \
     compositor/GenericCompositionPlanner.cpp \
     compositor/HdcpController.cpp \
+    compositor/LayerEffects.cpp \
     compositor/LayerToPlaneJoiningPlan.cpp \
     compositor/MergeGroup.cpp \
     display/DrmMode.cpp \

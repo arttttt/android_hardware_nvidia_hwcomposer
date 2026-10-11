@@ -204,6 +204,16 @@ class HwcLayer {
 
  public:
   bool IsLayerUsableAsDevice() const;
+
+  /* setLayerGenericMetadata, for the keys of compositor/LayerEffects.h.
+   * Raises kEffects only when the layer gains or loses an effect; a value
+   * that only moves -- a radius animating -- is read at commit. */
+  EffectResult ApplyEffectMetadata(const char *key, size_t key_length,
+                                   const uint8_t *value, size_t value_length);
+
+  /* setLayerColor: the colour of a solid-colour layer, as the framework
+   * sends it, 0 to 255 a channel. */
+  void SetSolidColor(uint8_t r, uint8_t g, uint8_t b, uint8_t a);
 };
 
 }  // namespace android::drm_hwcomposer

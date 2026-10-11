@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -24,6 +25,7 @@
 
 #include "bufferinfo/BufferInfo.h"
 #include "compositor/DisplayInfo.h"
+#include "compositor/LayerEffects.h"
 #include "utils/fd.h"
 
 namespace android::drm_hwcomposer {
@@ -273,6 +275,13 @@ struct LayerData {
    * was copied from. The joining plan reads it to keep drawing layers
    * out of the merge; nothing below the planner looks at it. */
   bool live = false;
+
+  /* What SurfaceFlinger left the composer to draw on this layer: effects
+   * through generic layer metadata, and the colour of a solid-colour
+   * layer, straight RGBA from 0 to 1. Both are drawn by the composer's
+   * GPU executor and by nothing else. */
+  LayerEffects effects;
+  std::optional<std::array<float, 4>> solid_color;
 };
 
 }  // namespace android::drm_hwcomposer

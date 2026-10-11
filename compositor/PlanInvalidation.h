@@ -65,6 +65,13 @@ enum PlanInvalidator : uint32_t {
    * transition only -- a layer that keeps drawing, or keeps not
    * drawing, raises nothing frame to frame. */
   kLayerActivity = 1U << 16,
+
+  /* A layer gained or lost an effect (rounded corners, shadow, blur,
+   * stretch) or a solid colour: it has to be drawn by the composer's own
+   * GPU executor, which changes where it is seated. The effect's values
+   * changing frame to frame -- a radius animating -- raises nothing; the
+   * commit reads them from live state. */
+  kEffects = 1U << 17,
 };
 
 }  // namespace android::drm_hwcomposer

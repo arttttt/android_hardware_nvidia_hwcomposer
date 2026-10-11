@@ -210,6 +210,29 @@ void HwcLayer::PopulateLayerData() {
   }
 }
 
+EffectResult HwcLayer::ApplyEffectMetadata(const char *key, size_t key_length,
+                                           const uint8_t *value,
+                                           size_t value_length) {
+  const bool had = layer_data_.effects.Any();
+  const EffectResult result = drm_hwcomposer::ApplyEffectMetadata(
+      key, key_length, value, value_length, &layer_data_.effects);
+  if (result == EffectResult::kApplied && had != layer_data_.effects.Any()) {
+    plan_invalidators_ |= kEffects;
+  }
+  return result;
+}
+
+void HwcLayer::SetSolidColor(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+  const std::array<float, 4> c = {static_cast<float>(r) / 255.F,
+                                  static_cast<float>(g) / 255.F,
+                                  static_cast<float>(b) / 255.F,
+                                  static_cast<float>(a) / 255.F};
+  if (!layer_data_.solid_color) {
+    plan_invalidators_ |= kEffects;
+  }
+  layer_data_.solid_color = c;
+}
+
 bool HwcLayer::RefreshLiveness() const {
   const bool live = std::chrono::steady_clock::now() - last_activity_ <
                     kLayerQuietDelay;
