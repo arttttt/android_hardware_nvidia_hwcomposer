@@ -132,6 +132,29 @@ void Check(const uint32_t *px, uint32_t stride, uint32_t x, uint32_t y, uint32_t
   failures += ok ? 0 : 1;
 }
 
+/* The three-layer scene as it must come out, read back through gralloc;
+ * false only when the target could not be read at all. */
+bool CheckThree(const sp<GraphicBuffer> &target, const char *how) {
+  void *p = nullptr;
+  if (target->lock(GRALLOC_USAGE_SW_READ_OFTEN, &p) != NO_ERROR || !p) {
+    fprintf(stderr, "FAIL: lock target (%s)\n", how);
+    return false;
+  }
+  fprintf(stderr, "%s:\n", how);
+  const auto *px = static_cast<const uint32_t *>(p);
+  const uint32_t s = target->getStride();
+  Check(px, s, 0, 0, 0, "corner cut");
+  Check(px, s, kW - 1, kH - 1, 0, "corner cut");
+  Check(px, s, 1152, 512, kGreen, "green quadrant");
+  Check(px, s, 384, 1536, kBlue, "blue quadrant");
+  Check(px, s, 50, 200, kRed, "red, beside the solid");
+  Check(px, s, 200, 200, 0xff800080, "half blue over red");
+  Check(px, s, 716, 910, kWhite, "turned: white half on top");
+  Check(px, s, 716, 955, kBlack, "turned: black half below");
+  target->unlock();
+  return true;
+}
+
 /* One call, fence to fence, the target taken as free. */
 double Once(hv::Compositor *c, hv::Target t, const hv::Layer *layers, size_t n) {
   t.ready_fence = -1;
@@ -256,30 +279,54 @@ int main(int argc, char **argv) {
       worst = ms;
     if (run == 0)
       fprintf(stderr, "first call: %.2f ms\n", ms);
-    if (run == kRuns - 1) {
-      void *p = nullptr;
-      if (target->lock(GRALLOC_USAGE_SW_READ_OFTEN, &p) != NO_ERROR || !p) {
-        fprintf(stderr, "FAIL: lock target\n");
-        return 1;
-      }
-      const auto *px = static_cast<const uint32_t *>(p);
-      const uint32_t s = target->getStride();
-      Check(px, s, 0, 0, 0, "corner cut");
-      Check(px, s, kW - 1, kH - 1, 0, "corner cut");
-      Check(px, s, 1152, 512, kGreen, "green quadrant");
-      Check(px, s, 384, 1536, kBlue, "blue quadrant");
-      Check(px, s, 50, 200, kRed, "red, beside the solid");
-      Check(px, s, 200, 200, 0xff800080, "half blue over red");
-      Check(px, s, 716, 910, kWhite, "turned: white half on top");
-      Check(px, s, 716, 955, kBlack, "turned: black half below");
-      target->unlock();
-    }
+    if (run == kRuns - 1 && !CheckThree(target, "compose"))
+      return 1;
     ready = fd; /* the target is free once this frame's drawing is done */
+  }
+  fprintf(stderr, "three layers into %ux%u: mean %.2f ms, worst %.2f ms over %d\n", kW, kH,
+          total / kRuns, worst, kRuns);
+
+  /* The same drawing in two halves, as the composer runs it: begun at
+   * validate, collected at commit. The picture must be the same, and the
+   * collection cheap once the drawing has had its head start. */
+  {
+    /* A target of its own, never drawn: what it shows can only be this. */
+    sp<GraphicBuffer> fresh_target = Make(kW, kH, scanout, "stand target 2");
+    if (!fresh_target) {
+      fprintf(stderr, "FAIL: a second target\n");
+      return 1;
+    }
+    hv::Target t2 = t;
+    t2.buffer = fresh_target->handle;
+    t2.stride = fresh_target->getStride();
+    t2.ready_fence = -1;
+    if (!c->Begin(t2, layers, 3)) {
+      fprintf(stderr, "FAIL: Begin refused\n");
+      return 1;
+    }
+    if (c->Begin(t2, layers, 3)) {
+      fprintf(stderr, "FAIL: a second Begin was taken over an unfinished one\n");
+      return 1;
+    }
+    usleep(8 * 1000);
+    const double t0 = NowMs();
+    const int fd = c->Finish();
+    const double collect_ms = NowMs() - t0;
+    if (fd < 0 || !WaitFd(fd)) {
+      fprintf(stderr, "FAIL: Begin/Finish gave no fence that came due\n");
+      return 1;
+    }
+    close(fd);
+    fprintf(stderr, "begun 8 ms ahead, collected in %.2f ms\n", collect_ms);
+    if (!CheckThree(fresh_target, "begin/finish"))
+      return 1;
+    if (c->Finish() != -1) {
+      fprintf(stderr, "FAIL: Finish with nothing begun gave a fence\n");
+      return 1;
+    }
   }
   if (ready >= 0)
     close(ready);
-  fprintf(stderr, "three layers into %ux%u: mean %.2f ms, worst %.2f ms over %d\n", kW, kH,
-          total / kRuns, worst, kRuns);
 
   /* After a pause long enough for the GPU to power down, and with a
    * buffer the executor has never seen. */

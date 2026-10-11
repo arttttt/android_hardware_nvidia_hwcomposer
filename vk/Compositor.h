@@ -52,6 +52,8 @@ class VkCompositor : public Compositor {
   ~VkCompositor() override;
 
   int Compose(const Target &target, const Layer *layers, size_t count) override;
+  bool Begin(const Target &target, const Layer *layers, size_t count) override;
+  int Finish() override;
   bool Warm() override;
   void Prepare(const Layer &layer) override;
 
@@ -133,6 +135,16 @@ class VkCompositor : public Compositor {
   uint64_t retired_ = 0;
 
   std::set<int> logged_;
+
+  /* What Begin was handed, copied, with fences of its own -- read by the
+   * thread until the drawing is sent, then by Finish to close them. */
+  struct Begun {
+    Target target;
+    std::vector<Layer> layers;
+    std::promise<int> done;
+    std::future<int> fence;
+  };
+  std::unique_ptr<Begun> begun_;
 
   std::thread thread_;
   std::mutex mutex_;

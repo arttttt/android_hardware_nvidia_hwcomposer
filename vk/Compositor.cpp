@@ -161,6 +161,39 @@ int VkCompositor::Compose(const Target &target, const Layer *layers, size_t coun
   return fence.get();
 }
 
+bool VkCompositor::Begin(const Target &target, const Layer *layers, size_t count) {
+  if (begun_)
+    return false;
+  auto begun = std::make_unique<Begun>();
+  begun->target = target;
+  begun->target.ready_fence = target.ready_fence >= 0 ? dup(target.ready_fence) : -1;
+  begun->layers.assign(layers, layers + count);
+  for (Layer &l : begun->layers)
+    l.acquire_fence = l.acquire_fence >= 0 ? dup(l.acquire_fence) : -1;
+  begun->fence = begun->done.get_future();
+  begun_ = std::move(begun);
+
+  Begun *b = begun_.get();
+  Post([this, b] {
+    b->done.set_value(ComposeNow(b->target, b->layers.data(), b->layers.size()));
+  });
+  Post([this] { cache_->Retire(retired_); });
+  return true;
+}
+
+int VkCompositor::Finish() {
+  if (!begun_)
+    return -1;
+  const int fence = begun_->fence.get();
+  if (begun_->target.ready_fence >= 0)
+    close(begun_->target.ready_fence);
+  for (const Layer &l : begun_->layers)
+    if (l.acquire_fence >= 0)
+      close(l.acquire_fence);
+  begun_.reset();
+  return fence;
+}
+
 bool VkCompositor::Warm() {
   Post([this] { WarmNow(); });
   return true;
@@ -634,6 +667,13 @@ VkCompositor::~VkCompositor() {
   wake_.notify_one();
   if (thread_.joinable())
     thread_.join();
+  /* A drawing begun and never finished: the thread ran it before it
+   * stopped, so its fence and the copies Begin took are closed here. */
+  if (begun_) {
+    const int fence = Finish();
+    if (fence >= 0)
+      close(fence);
+  }
 }
 
 /* On the thread, after its last work: everything Vulkan goes down where it

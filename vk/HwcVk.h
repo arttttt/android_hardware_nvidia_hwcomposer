@@ -40,7 +40,7 @@ namespace android::hwc::vk {
 
 /* Bumped whenever anything below changes shape. The composer refuses a
  * library that answers another number. */
-constexpr uint32_t apiVersion = 3;
+constexpr uint32_t apiVersion = 4;
 
 /* One layer to draw. Rectangles are in pixels; `dst` is in the target's
  * own space, whose origin is wherever the composer puts the target. */
@@ -110,6 +110,16 @@ class Compositor {
    * having drawn nothing, so the caller can take another way. Never waits
    * on the CPU for the GPU. */
   virtual int Compose(const Target &target, const Layer *layers, size_t count) = 0;
+
+  /* Compose in two halves, for a caller with other work to do meanwhile:
+   * Begin queues the drawing and returns at once, Finish waits for it to
+   * be sent and returns what Compose would have. Begin copies what it is
+   * given -- the layers, and a duplicate of every fence -- so nothing need
+   * outlive the call. One drawing begun at a time: Begin refuses (false)
+   * while the last one is unfinished, and Finish with nothing begun
+   * returns -1. */
+  virtual bool Begin(const Target &target, const Layer *layers, size_t count) = 0;
+  virtual int Finish() = 0;
 
   /* Brings the GPU up ahead of a composition: a tiny drawing into a
    * buffer of the library's own, sent and not waited for. False if the
