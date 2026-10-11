@@ -249,5 +249,7 @@ include $(BUILD_SHARED_LIBRARY)
 
 # The measuring stands under tools/ are found only through here: the build
 # does not descend past a directory that has its own Android.mk.
-include $(LOCAL_PATH)/tools/hwcvk_probe/Android.mk
-include $(LOCAL_PATH)/tools/hwcvk_stand/Android.mk
+# Each sets LOCAL_PATH to its own directory, so the path is taken first.
+HWC_TOOLS := $(LOCAL_PATH)/tools
+include $(HWC_TOOLS)/hwcvk_probe/Android.mk
+include $(HWC_TOOLS)/hwcvk_stand/Android.mk
