@@ -158,6 +158,7 @@ LOCAL_SRC_FILES := \
     tegra/EngineWarmer.cpp \
     tegra/FbDevice.cpp \
     tegra/GovernorLibrary.cpp \
+    tegra/GpuExecutor.cpp \
     tegra/MergeDescription.cpp \
     tegra/TegraDisplayPipeline.cpp \
     tegra/TegraVSyncSource.cpp \

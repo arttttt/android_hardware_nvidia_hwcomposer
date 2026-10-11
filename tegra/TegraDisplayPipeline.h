@@ -26,6 +26,7 @@
 #include "tegra/DcHead.h"
 #include "tegra/FbDevice.h"
 #include "tegra/CompositionGovernor.h"
+#include "tegra/GpuExecutor.h"
 #include "tegra/TegraConnector.h"
 #include "tegra/TegraCrtc.h"
 #include "tegra/TegraPlane.h"
@@ -60,6 +61,8 @@ public:
 
     VSyncSource &GetVSyncSource() override { return *mVSync; }
 
+    GpuExecutor *GetGpuExecutor() override { return mGpu.get(); }
+
     DcHead &head() { return *mHead; }
 
 private:
@@ -89,6 +92,11 @@ private:
     /* Where the engine writes. Made only alongside it, and the two live and
      * die together -- see the constructor. */
     std::unique_ptr<ScratchPool> mScratch;
+
+    /* The composer's own GPU executor and its buffers, sized to the panel,
+     * or null on a device without hwcvk.tegra.so -- where the client keeps
+     * composing what the planes cannot take. */
+    std::unique_ptr<GpuExecutor> mGpu;
 
     /* Owned here and bound in the constructor, unlike the connector, which
      * belongs to the device. A head is not shared between displays and has

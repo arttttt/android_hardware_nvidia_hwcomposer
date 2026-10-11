@@ -54,6 +54,7 @@
 namespace android {
 
 namespace hwc {
+class GpuExecutor;
 class VSyncSource;
 }  // namespace hwc
 
@@ -91,6 +92,11 @@ struct DisplayPipeline {
   virtual Connector *FindWritebackConnectorForPipeline() const {
     return nullptr;
   }
+
+  /* The composer's own GPU executor, which draws what the planes cannot take
+   * instead of the client, or null where there is none -- the default, and
+   * every display then leaves that to the client as before. */
+  virtual hwc::GpuExecutor *GetGpuExecutor() { return nullptr; }
 
   /* Not owned, and outliving the pipeline. */
   Device *device{};

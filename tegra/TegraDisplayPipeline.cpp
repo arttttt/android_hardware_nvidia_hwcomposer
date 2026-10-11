@@ -154,6 +154,16 @@ TegraDisplayPipeline::TegraDisplayPipeline(TegraConnector &tegraConnector,
      * policy library. */
     mCompositionGovernor = CompositionGovernor::Load(mVic.get());
 
+    /* Independent of VIC: the GPU draws what neither the windows nor the
+     * merge take. Null is the ordinary answer without the library. */
+    {
+        const auto &modes = tegraConnector.GetModes();
+        if (!modes.empty()) {
+            const auto &mode = modes.front().GetRawMode();
+            mGpu = GpuExecutor::Open(mode.hdisplay, mode.vdisplay);
+        }
+    }
+
     /* After the engine, and it has to be: the state manager is handed both
      * and would otherwise be handed nothing on the very boot where they were
      * wanted. */
@@ -192,6 +202,7 @@ TegraDisplayPipeline::~TegraDisplayPipeline() {
     /* Before the engine, and it has to be: the policy library's thread is
      * joined here, and it may be inside a warm-up pass on that engine. */
     mCompositionGovernor.reset();
+    mGpu.reset();
     mVic.reset();
     mScratch.reset();
     planner.reset();
