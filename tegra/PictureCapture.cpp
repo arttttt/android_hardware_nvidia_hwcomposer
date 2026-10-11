@@ -257,6 +257,21 @@ void PictureCapture::WriteBuffer(Source source, buffer_handle_t buffer,
   const auto *base = static_cast<const uint8_t *>(mapped);
   const uint32_t pitch = s.pitch;
   const uint32_t log2 = s.block_height_log2;
+
+  /* The bytes as the lock handed them over, whole, when asked: what an
+   * arrangement read wrongly looks like can only be settled against them.
+   * Rows up to a whole block, which is how far the memory runs. */
+  if (property_get_bool("vendor.hwc.test.capture.raw", false)) {
+    const uint32_t rows = 8u << log2;
+    const size_t size = static_cast<size_t>(pitch) *
+                        ((height + rows - 1) / rows * rows);
+    const std::string path = PathFor(seq, source, "raw");
+    FILE *out = fopen(path.c_str(), "wb");
+    if (out != nullptr) {
+      fwrite(base, 1, size, out);
+      fclose(out);
+    }
+  }
   if (s.layout == drm_hwcomposer::NvGralloc::kLayoutBlocklinear) {
     WritePicture(seq, source, width, height, [&](uint32_t x, uint32_t y) {
       uint32_t word;
