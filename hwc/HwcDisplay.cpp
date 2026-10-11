@@ -358,6 +358,19 @@ void HwcDisplay::BeginClientOnGpu(
   for (const HwcLayer *layer : range)
     layers.push_back(ToVkLayer(layer->GetLayerData(), size));
 
+  /* What the drawing was begun with, kept only while a capture asks:
+   * the words written at present describe the layers as they are then. */
+  if (hwc::PictureCapture::Wanted(hwc::PictureCapture::Source::kGpu)) {
+    begun_words_.clear();
+    for (const auto &l : layers) {
+      char line[160];
+      snprintf(line, sizeof(line),
+               "begun: -> %d,%d-%d,%d corners %.0f,%.0f-%.0f,%.0f r %.1f\n",
+               l.dst_left, l.dst_top, l.dst_right, l.dst_bottom, l.corner_left,
+               l.corner_top, l.corner_right, l.corner_bottom, l.corner_radius);
+      begun_words_ += line;
+    }
+  }
   gpu_begun_ = gpu->Begin(layers);
 }
 
@@ -369,6 +382,7 @@ bool HwcDisplay::DrawClientOnGpu(
 
   /* Begun at validate, so the drawing ran while the client went from
    * validate to present; begun here only for a frame that skipped it. */
+  const bool begun_at_validate = gpu_begun_;
   if (!gpu_begun_)
     BeginClientOnGpu(composition);
   gpu_begun_ = false;
@@ -377,11 +391,13 @@ bool HwcDisplay::DrawClientOnGpu(
   using hwc::PictureCapture;
   if (PictureCapture::Wanted(PictureCapture::Source::kGpu)) {
     char head[96];
-    snprintf(head, sizeof(head), "%s; panel buffer %p\n",
+    snprintf(head, sizeof(head), "%s (begun at %s); panel buffer %p\n",
              drawn ? "drawn" : "REFUSED, last picture stays",
+             begun_at_validate ? "validate" : "present",
              static_cast<const void *>(drawn ? drawn->buffer
                                              : gpu->Current()));
-    const std::string words = head + DescribeLayers(composition, GetSize());
+    const std::string words =
+        head + DescribeLayers(composition, GetSize()) + begun_words_;
     if (drawn && !PictureCapture::WordsOnly())
       PictureCapture::WriteBuffer(PictureCapture::Source::kGpu, drawn->buffer,
                                   gpu->width(), gpu->height(),
