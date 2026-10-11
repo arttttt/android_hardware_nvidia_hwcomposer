@@ -153,6 +153,11 @@ int VkCompositor::Compose(const Target &target, const Layer *layers, size_t coun
   std::promise<int> done;
   auto fence = done.get_future();
   Post([&] { done.set_value(ComposeNow(target, layers, count)); });
+  /* Images the GPU is done with go after the fence is handed back: the
+   * last reference to a closed app's buffer is often ours, and freeing it
+   * (SMMU unmap, pages back to nvmap's pool) is milliseconds the frame
+   * need not wait for. */
+  Post([this] { cache_->Retire(retired_); });
   return fence.get();
 }
 
@@ -710,7 +715,6 @@ int VkCompositor::ComposeNow(const Target &target, const Layer *layers, size_t c
     vk.ResetFences(dev, 1, &slot.done);
     slot.busy = false;
     retired_ = std::max(retired_, slot.frame);
-    cache_->Retire(retired_);
   }
   const uint64_t frame = frame_ + 1;
 
