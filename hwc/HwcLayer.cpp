@@ -23,6 +23,7 @@
 #include "compositor/ICompositorDisplay.h"
 #include "compositor/LayerData.h"
 #include "compositor/PlanInvalidation.h"
+#include "utils/Logging.h"
 #include "utils/log.h"
 
 namespace android::drm_hwcomposer {
@@ -71,6 +72,11 @@ void HwcLayer::SetLayerProperties(const LayerProperties& layer_properties) {
      * what this layer did with its PREVIOUS buffer -- the client sets buffers
      * before asking for a new validation.
      */
+    HWC_LOGD("layer %p: buffer %p replaces %p%s", this,
+             layer_properties.buffer->bi.handle,
+             layer_data_.bi ? layer_data_.bi->handle : nullptr,
+             prior_buffer_scanout_flag_ ? ", before the last one was released"
+                                        : "");
     prior_buffer_scanout_flag_ = validated_type_ != CompositionType::kClient;
 
     /* Which buffer that was, taken before it is written over. Not every layer

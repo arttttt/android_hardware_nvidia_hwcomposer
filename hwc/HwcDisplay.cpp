@@ -649,9 +649,13 @@ auto HwcDisplay::PresentStagedComposition(
        * back late, the client draws into one fewer than it owns, and a client
        * with three of them that is handed back one late is drawing into two.
        */
-      out_release_fences.emplace_back(l.first,
-                                      EngineFenceFor(l.second.GetPriorBuffer())
-                                          .value_or(release_fence_));
+      const auto engine = EngineFenceFor(l.second.GetPriorBuffer());
+      const auto &now = l.second.GetLayerData();
+      HWC_LOGD("layer %" PRId64 " %p: releases %p by the %s fence, now %p",
+               l.first, &l.second, l.second.GetPriorBuffer(),
+               engine ? "engine" : "flip",
+               now.bi ? now.bi->handle : nullptr);
+      out_release_fences.emplace_back(l.first, engine.value_or(release_fence_));
       l.second.ClearPriorBufferScanOutFlag();
     }
   }

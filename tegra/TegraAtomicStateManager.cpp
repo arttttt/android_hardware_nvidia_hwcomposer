@@ -1534,8 +1534,11 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       out_result->engine_fence = merged;
       out_result->engine_read.reserve(merge.layers.size());
       for (const auto &layer : merge.layers)
-        if (layer.handle != nullptr)
+        if (layer.handle != nullptr) {
           out_result->engine_read.push_back(layer.handle);
+          HWC_LOGD("engine read %p for fence %d", layer.handle,
+                   *merged);
+        }
     }
   }
 
