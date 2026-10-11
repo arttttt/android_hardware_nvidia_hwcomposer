@@ -1458,6 +1458,14 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
     if (!merge.layers.empty())
       words += DescribeMerge(merge);
     words += DescribeWindows(windows);
+    /* Which buffer sat where: the plan's own rows, bottom first. A window
+     * that shows an older picture shows it under an older id. */
+    for (const auto &row : tegra.GetFrameNote().layers) {
+      char line[96];
+      snprintf(line, sizeof(line), "layer id %" PRIu64 " seat %c plane %u at %d,%d %dx%d\n",
+               row.id, row.seat, row.plane, row.x, row.y, row.w, row.h);
+      words += line;
+    }
     PictureCapture::WriteText(PictureCapture::Source::kFrame, words);
     if (merged_target != nullptr && !PictureCapture::WordsOnly()) {
       const auto source = PictureCapture::Wanted(PictureCapture::Source::kMerge)
