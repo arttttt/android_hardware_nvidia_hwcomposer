@@ -49,10 +49,11 @@ class EngineClock {
 
   bool usable() const { return fd_ >= 0 && !refused_; }
 
-  /* What the engine's clock reads now, megahertz. Not free: the kernel
-   * switches the engine on to read its clock and off again after, so on a
-   * powered-down engine this is the whole power-up. Empty if it could not
-   * be asked. */
+  /* The clock devfreq has the engine at, megahertz, read from its sysfs
+   * node. Not the engine's own clock request: the kernel switches the
+   * engine on to answer that one, so on a powered-down engine asking was
+   * the whole power-up, on this thread, ahead of the floor and the
+   * processor lift. Empty if it could not be read. */
   std::optional<uint32_t> CurrentMhz();
 
   /* Files a floor of `mhz` on this descriptor; the kernel takes the larger
@@ -70,6 +71,7 @@ class EngineClock {
 
   GovernorHost &host_;
   int fd_ = -1;
+  int devfreq_fd_ = -1;
   bool refused_ = false;
   uint32_t floor_mhz_ = 0;
 };

@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -32,6 +33,7 @@ namespace android::hwc::governor::tegra {
 namespace {
 
 constexpr const char *devicePath = "/dev/nvhost-vic";
+constexpr const char *devfreqPath = "/sys/class/devfreq/vic03.0/cur_freq";
 
 /* nvhost's per-descriptor clock request, spelled out rather than taken from
  * the kernel's header: that header is GPL and is not exported. Rate in
@@ -42,7 +44,6 @@ struct ClockRateArgs {
   uint32_t rate;
   uint32_t moduleid;
 };
-constexpr unsigned int ioctlGetClockRate = _IOWR('H', 9, ClockRateArgs);
 constexpr unsigned int ioctlSetClockRate = _IOW('H', 10, ClockRateArgs);
 
 }  // namespace
@@ -50,6 +51,8 @@ constexpr unsigned int ioctlSetClockRate = _IOW('H', 10, ClockRateArgs);
 EngineClock::~EngineClock() {
   if (fd_ >= 0)
     close(fd_);
+  if (devfreq_fd_ >= 0)
+    close(devfreq_fd_);
 }
 
 bool EngineClock::Open() {
@@ -58,16 +61,27 @@ bool EngineClock::Open() {
     LogErrno(host_, ANDROID_LOG_ERROR, devicePath, errno);
     return false;
   }
+  /* Without it the floor is compared with itself alone, which is never
+   * wrong: the kernel takes the larger of a floor and devfreq's clock. */
+  devfreq_fd_ = open(devfreqPath, O_RDONLY | O_CLOEXEC);
+  if (devfreq_fd_ < 0)
+    LogErrno(host_, ANDROID_LOG_WARN, devfreqPath, errno);
   return true;
 }
 
 std::optional<uint32_t> EngineClock::CurrentMhz() {
-  if (!usable())
+  if (devfreq_fd_ < 0)
     return std::nullopt;
-  ClockRateArgs args = {0, 0};
-  if (ioctl(fd_, ioctlGetClockRate, &args) < 0)
+  char buf[24];
+  const ssize_t n = pread(devfreq_fd_, buf, sizeof(buf) - 1, 0);
+  if (n <= 0)
     return std::nullopt;
-  return args.rate / 1000000U;
+  buf[n] = '\0';
+  char *end = nullptr;
+  const unsigned long hz = strtoul(buf, &end, 10);
+  if (end == buf)
+    return std::nullopt;
+  return static_cast<uint32_t>(hz / 1000000UL);
 }
 
 bool EngineClock::Request(uint32_t rate_hz, const char *what) {

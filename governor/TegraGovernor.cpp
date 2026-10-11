@@ -384,12 +384,13 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
   }
   host_.TraceInt("hwc_gov_deferred_mhz", int32_t(deferred_mhz_));
 
-  /* Only upward from what the engine is already doing, by devfreq's doing
-   * or by a floor still standing from the previous merge. A standing
-   * floor is kept standing: this merge's fence will extend it. */
-  const uint32_t have =
-      std::max(engine_.CurrentMhz().value_or(0), engine_.floor_mhz());
-  const bool raised = ask > have && engine_.SetFloor(ask);
+  /* Only upward from what the engine is already doing, by a floor still
+   * standing from the previous merge or by devfreq's doing -- devfreq
+   * asked only when the floor alone would not answer. A standing floor is
+   * kept standing: this merge's fence will extend it. */
+  const bool raised = ask > engine_.floor_mhz() &&
+                      ask > engine_.CurrentMhz().value_or(0) &&
+                      engine_.SetFloor(ask);
   if (raised || engine_.floor_mhz() != 0) {
     /* A floor for a merge still to come waits for its report; one for a
      * merge already in flight follows that merge's fence -- and if the
