@@ -39,6 +39,7 @@
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -131,6 +132,18 @@ void Check(const uint32_t *px, uint32_t stride, uint32_t x, uint32_t y, uint32_t
   failures += ok ? 0 : 1;
 }
 
+/* One call, fence to fence, the target taken as free. */
+double Once(hv::Compositor *c, hv::Target t, const hv::Layer *layers, size_t n) {
+  t.ready_fence = -1;
+  const double t0 = NowMs();
+  const int fd = c->Compose(t, layers, n);
+  if (fd < 0)
+    return -1;
+  WaitFd(fd);
+  close(fd);
+  return NowMs() - t0;
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -201,6 +214,24 @@ int main(int argc, char **argv) {
   t.format = target->getPixelFormat();
   t.usage = target->getUsage();
 
+  /* "warm": one small composition before anything else, to see what of
+   * the first call's cost is the pipeline's first use rather than the
+   * buffers' import. */
+  if (argc > 2 && !strcmp(argv[2], "warm")) {
+    sp<GraphicBuffer> tiny = Make(16, 16, scanout, "stand tiny");
+    hv::Layer solid;
+    solid.dst_right = 16;
+    solid.dst_bottom = 16;
+    solid.color[3] = 1.f;
+    hv::Target tt;
+    tt.buffer = tiny->handle;
+    tt.width = tt.height = 16;
+    tt.stride = tiny->getStride();
+    tt.format = tiny->getPixelFormat();
+    tt.usage = tiny->getUsage();
+    fprintf(stderr, "warm-up, 16x16 solid: %.2f ms\n", Once(c, tt, &solid, 1));
+  }
+
   constexpr int kRuns = 20;
   double total = 0, worst = 0;
   int ready = -1;
@@ -249,6 +280,18 @@ int main(int argc, char **argv) {
     close(ready);
   fprintf(stderr, "three layers into %ux%u: mean %.2f ms, worst %.2f ms over %d\n", kW, kH,
           total / kRuns, worst, kRuns);
+
+  /* After a pause long enough for the GPU to power down, and with a
+   * buffer the executor has never seen. */
+  usleep(1500 * 1000);
+  fprintf(stderr, "after 1.5 s idle: %.2f ms\n", Once(c, t, layers, 3));
+  fprintf(stderr, "next, warm again: %.2f ms\n", Once(c, t, layers, 3));
+  sp<GraphicBuffer> fresh = Make(kW, kH, client, "stand fresh");
+  hv::Layer fl = LayerOf(fresh);
+  fl.dst_right = kW;
+  fl.dst_bottom = kH;
+  fprintf(stderr, "a buffer never seen: %.2f ms\n", Once(c, t, &fl, 1));
+  fprintf(stderr, "same buffer again: %.2f ms\n", Once(c, t, &fl, 1));
   destroy(c);
   fprintf(stderr, "%s\n", failures == 0 ? "PASS" : "FAIL");
   return failures == 0 ? 0 : 1;
