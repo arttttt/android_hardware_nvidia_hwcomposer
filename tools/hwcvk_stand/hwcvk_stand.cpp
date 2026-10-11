@@ -292,6 +292,16 @@ int main(int argc, char **argv) {
   fl.dst_bottom = kH;
   fprintf(stderr, "a buffer never seen: %.2f ms\n", Once(c, t, &fl, 1));
   fprintf(stderr, "same buffer again: %.2f ms\n", Once(c, t, &fl, 1));
+
+  /* The executor's own warm-up after a pause, with the composition coming
+   * that long after it: how much lead the governor would need to give. */
+  for (int lead_ms : {0, 5, 20, 40}) {
+    usleep(1500 * 1000);
+    const bool sent = c->Warm();
+    usleep(lead_ms * 1000);
+    fprintf(stderr, "after 1.5 s idle, warmed %2d ms ahead%s: %.2f ms\n", lead_ms,
+            sent ? "" : " (not sent)", Once(c, t, layers, 3));
+  }
   destroy(c);
   fprintf(stderr, "%s\n", failures == 0 ? "PASS" : "FAIL");
   return failures == 0 ? 0 : 1;
