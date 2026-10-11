@@ -1,0 +1,9 @@
+The Vulkan runtime of the camera HAL, taken as it is: the loader that picks
+the HAL module (vulkan.tegra.so through HMI) or the system libvulkan by what
+the driver offers, the entry-point table, and the device state that enables
+VK_ANDROID_native_buffer, the GLSL extension and the external fence and
+semaphore extensions.
+
+From android-camera-hal (lineage-19.1), isp/vulkan/runtime at ea2c91d.
+Changed here: only the log tags. Keep it in step with the camera's copy --
+a fix to the loader belongs in both.
