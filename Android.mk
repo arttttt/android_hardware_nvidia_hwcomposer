@@ -205,6 +205,49 @@ LOCAL_SRC_FILES := \
 
 include $(BUILD_SHARED_LIBRARY)
 
+# The composer's own GPU executor, as its own library like the governor:
+# what the display windows and VIC cannot take is drawn here, so
+# SurfaceFlinger never composes a frame. Loaded by this name from the same
+# directory through vk/HwcVk.h; the composer runs without it. Vulkan comes
+# up through the camera's runtime in vk/runtime.
+include $(CLEAR_VARS)
+
+LOCAL_MODULE := hwcvk.$(TARGET_BOARD_PLATFORM)
+LOCAL_MODULE_RELATIVE_PATH := hw
+LOCAL_MODULE_TAGS := optional
+LOCAL_PROPRIETARY_MODULE := true
+
+LOCAL_CFLAGS := \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -Wno-unused-parameter \
+    -std=c++17
+
+LOCAL_C_INCLUDES := $(LOCAL_PATH)
+LOCAL_HEADER_LIBRARIES := vulkan_headers
+
+LOCAL_SHARED_LIBRARIES := \
+    libcutils \
+    libdl \
+    liblog \
+    libutils
+
+LOCAL_SRC_FILES := \
+    vk/Compositor.cpp \
+    vk/Geometry.cpp \
+    vk/ImageCache.cpp \
+    vk/runtime/VulkanDeviceState.cpp \
+    vk/runtime/loader/HalHmiVulkanLoader.cpp \
+    vk/runtime/loader/SystemVulkanLoader.cpp \
+    vk/runtime/loader/VulkanLoader.cpp
+
+# The layer placement is checked on the workstation:
+# vk/tests/geometry_test.cpp says how.
+
+include $(BUILD_SHARED_LIBRARY)
+
 # The measuring stands under tools/ are found only through here: the build
 # does not descend past a directory that has its own Android.mk.
 include $(LOCAL_PATH)/tools/hwcvk_probe/Android.mk
+include $(LOCAL_PATH)/tools/hwcvk_stand/Android.mk

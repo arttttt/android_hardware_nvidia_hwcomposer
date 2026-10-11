@@ -1,0 +1,666 @@
+/*
+ * Copyright (C) 2026 Artem Bambalov
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "vk/Compositor.h"
+
+#include <android/log.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <cstring>
+
+#include "vk/Geometry.h"
+#include "vk/runtime/loader/VulkanPfn.h"
+#include "vk/shaders/compose.frag.spv.h"
+#include "vk/shaders/compose.vert.spv.h"
+
+namespace android::hwc::vk {
+
+namespace {
+
+/* HAL_PIXEL_FORMAT_*, spelled here rather than pulled from the graphics
+ * headers for four numbers. */
+constexpr int32_t kHalRgba8888 = 1;
+constexpr int32_t kHalRgbx8888 = 2;
+constexpr int32_t kHalRgb565 = 4;
+constexpr int32_t kHalBgra8888 = 5;
+
+/* What a gralloc format is read as, and whether its alpha means nothing;
+ * VK_FORMAT_UNDEFINED for a format this executor does not read. */
+VkFormat FormatOf(int32_t hal, bool *opaque) {
+  *opaque = false;
+  switch (hal) {
+    case kHalRgba8888:
+      return VK_FORMAT_R8G8B8A8_UNORM;
+    case kHalRgbx8888:
+      *opaque = true;
+      return VK_FORMAT_R8G8B8A8_UNORM;
+    case kHalBgra8888:
+      return VK_FORMAT_B8G8R8A8_UNORM;
+    case kHalRgb565:
+      *opaque = true;
+      return VK_FORMAT_R5G6B5_UNORM_PACK16;
+    default:
+      return VK_FORMAT_UNDEFINED;
+  }
+}
+
+/* Mirrors the push-constant block of vk/shaders/compose.{vert,frag}. */
+struct LayerConstants {
+  float ndc[4];
+  float uv_tl[2];
+  float uv_tr[2];
+  float uv_bl[2];
+  float pad0[2];
+  float color[4];
+  float corner[4];
+  float radius;
+  float alpha;
+  int32_t flags;
+  float pad1;
+};
+static_assert(sizeof(LayerConstants) == 96, "the shaders' push-constant block");
+
+constexpr int32_t kFlagSolid = 1;
+constexpr int32_t kFlagPremultiplied = 2;
+constexpr int32_t kFlagOpaque = 4;
+
+enum LogKind {
+  kLogFormat,
+  kLogImport,
+  kLogTarget,
+  kLogBusy,
+  kLogAcquire,
+  kLogSubmit,
+  kLogRelease,
+  kLogTooMany,
+};
+
+}  // namespace
+
+std::unique_ptr<VkCompositor> VkCompositor::Create(Host *host) {
+  std::unique_ptr<VkCompositor> c(new VkCompositor(host));
+  if (!c->Init())
+    return nullptr;
+  return c;
+}
+
+void VkCompositor::LogOnce(int kind, int prio, const char *what) {
+  if (host_ == nullptr || !logged_.insert(kind).second)
+    return;
+  host_->Log(prio, what);
+}
+
+bool VkCompositor::Init() {
+  if (!state_.init()) {
+    if (host_)
+      host_->Log(ANDROID_LOG_WARN, "vk: Vulkan did not come up; no GPU executor");
+    return false;
+  }
+  if (!state_.nativeBufferAvailable()) {
+    if (host_)
+      host_->Log(ANDROID_LOG_WARN, "vk: no VK_ANDROID_native_buffer; no zero-copy import");
+    return false;
+  }
+  if (!InitPipeline() || !InitSlots() || !InitDummy()) {
+    if (host_)
+      host_->Log(ANDROID_LOG_ERROR, "vk: the executor's pipeline would not build");
+    return false;
+  }
+  cache_ = std::make_unique<ImageCache>(state_, render_pass_);
+  return true;
+}
+
+bool VkCompositor::InitPipeline() {
+  const VulkanPfn &vk = *state_.pfn();
+  const VkDevice dev = state_.device();
+
+  /* The target is cleared, drawn and stored; what it held before does not
+   * matter, the layers cover what they cover and the rest is clear. */
+  VkAttachmentDescription att = {};
+  att.format = VK_FORMAT_R8G8B8A8_UNORM;
+  att.samples = VK_SAMPLE_COUNT_1_BIT;
+  att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  att.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  att.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  att.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  VkAttachmentReference ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+  VkSubpassDescription sub = {};
+  sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  sub.colorAttachmentCount = 1;
+  sub.pColorAttachments = &ref;
+  VkRenderPassCreateInfo rpi = {};
+  rpi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+  rpi.attachmentCount = 1;
+  rpi.pAttachments = &att;
+  rpi.subpassCount = 1;
+  rpi.pSubpasses = &sub;
+  if (vk.CreateRenderPass(dev, &rpi, nullptr, &render_pass_) != VK_SUCCESS)
+    return false;
+
+  VkSamplerCreateInfo si = {};
+  si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  si.magFilter = VK_FILTER_LINEAR;
+  si.minFilter = VK_FILTER_LINEAR;
+  si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  if (vk.CreateSampler(dev, &si, nullptr, &sampler_) != VK_SUCCESS)
+    return false;
+
+  VkDescriptorSetLayoutBinding b = {};
+  b.binding = 0;
+  b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  b.descriptorCount = 1;
+  b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  VkDescriptorSetLayoutCreateInfo dli = {};
+  dli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  dli.bindingCount = 1;
+  dli.pBindings = &b;
+  if (vk.CreateDescriptorSetLayout(dev, &dli, nullptr, &set_layout_) != VK_SUCCESS)
+    return false;
+
+  VkPushConstantRange pcr = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                             sizeof(LayerConstants)};
+  VkPipelineLayoutCreateInfo pli = {};
+  pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  pli.setLayoutCount = 1;
+  pli.pSetLayouts = &set_layout_;
+  pli.pushConstantRangeCount = 1;
+  pli.pPushConstantRanges = &pcr;
+  if (vk.CreatePipelineLayout(dev, &pli, nullptr, &pipeline_layout_) != VK_SUCCESS)
+    return false;
+
+  VkShaderModuleCreateInfo smi = {};
+  smi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  smi.codeSize = sizeof(kComposeVertSpv);
+  smi.pCode = kComposeVertSpv;
+  if (vk.CreateShaderModule(dev, &smi, nullptr, &vert_) != VK_SUCCESS)
+    return false;
+  smi.codeSize = sizeof(kComposeFragSpv);
+  smi.pCode = kComposeFragSpv;
+  if (vk.CreateShaderModule(dev, &smi, nullptr, &frag_) != VK_SUCCESS)
+    return false;
+
+  VkPipelineShaderStageCreateInfo stages[2] = {};
+  stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+  stages[0].module = vert_;
+  stages[0].pName = "main";
+  stages[1] = stages[0];
+  stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  stages[1].module = frag_;
+
+  VkPipelineVertexInputStateCreateInfo vin = {};
+  vin.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+  VkPipelineInputAssemblyStateCreateInfo ia = {};
+  ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+  ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+  /* Viewport and scissor follow the target, which is not always the same
+   * size: set per call. */
+  VkPipelineViewportStateCreateInfo vps = {};
+  vps.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+  vps.viewportCount = 1;
+  vps.scissorCount = 1;
+  VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+  VkPipelineDynamicStateCreateInfo ds = {};
+  ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+  ds.dynamicStateCount = 2;
+  ds.pDynamicStates = dyn;
+  VkPipelineRasterizationStateCreateInfo rs = {};
+  rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+  rs.polygonMode = VK_POLYGON_MODE_FILL;
+  rs.cullMode = VK_CULL_MODE_NONE;
+  rs.lineWidth = 1.f;
+  VkPipelineMultisampleStateCreateInfo ms = {};
+  ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+  /* Premultiplied over: the shader hands out premultiplied colour. */
+  VkPipelineColorBlendAttachmentState cba = {};
+  cba.blendEnable = VK_TRUE;
+  cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+  cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+  cba.colorBlendOp = VK_BLEND_OP_ADD;
+  cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+  cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+  cba.alphaBlendOp = VK_BLEND_OP_ADD;
+  cba.colorWriteMask = 0xf;
+  VkPipelineColorBlendStateCreateInfo cb = {};
+  cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  cb.attachmentCount = 1;
+  cb.pAttachments = &cba;
+
+  VkGraphicsPipelineCreateInfo gpi = {};
+  gpi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  gpi.stageCount = 2;
+  gpi.pStages = stages;
+  gpi.pVertexInputState = &vin;
+  gpi.pInputAssemblyState = &ia;
+  gpi.pViewportState = &vps;
+  gpi.pRasterizationState = &rs;
+  gpi.pMultisampleState = &ms;
+  gpi.pColorBlendState = &cb;
+  gpi.pDynamicState = &ds;
+  gpi.layout = pipeline_layout_;
+  gpi.renderPass = render_pass_;
+  return vk.CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpi, nullptr, &pipeline_) ==
+         VK_SUCCESS;
+}
+
+bool VkCompositor::InitSlots() {
+  const VulkanPfn &vk = *state_.pfn();
+  const VkDevice dev = state_.device();
+
+  VkCommandPoolCreateInfo cpi = {};
+  cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  cpi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  cpi.queueFamilyIndex = state_.queueFamily();
+  if (vk.CreateCommandPool(dev, &cpi, nullptr, &command_pool_) != VK_SUCCESS)
+    return false;
+
+  for (Slot &s : slots_) {
+    VkCommandBufferAllocateInfo cai = {};
+    cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cai.commandPool = command_pool_;
+    cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cai.commandBufferCount = 1;
+    if (vk.AllocateCommandBuffers(dev, &cai, &s.cmd) != VK_SUCCESS)
+      return false;
+
+    VkFenceCreateInfo fi = {};
+    fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    if (vk.CreateFence(dev, &fi, nullptr, &s.done) != VK_SUCCESS)
+      return false;
+
+    /* The slot's descriptor sets are allocated once and rewritten each
+     * call: one per layer, enough for the most a call takes. */
+    VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxLayers};
+    VkDescriptorPoolCreateInfo dpi = {};
+    dpi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    dpi.maxSets = kMaxLayers;
+    dpi.poolSizeCount = 1;
+    dpi.pPoolSizes = &ps;
+    if (vk.CreateDescriptorPool(dev, &dpi, nullptr, &s.pool) != VK_SUCCESS)
+      return false;
+    std::array<VkDescriptorSetLayout, kMaxLayers> layouts;
+    layouts.fill(set_layout_);
+    VkDescriptorSetAllocateInfo dai = {};
+    dai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dai.descriptorPool = s.pool;
+    dai.descriptorSetCount = kMaxLayers;
+    dai.pSetLayouts = layouts.data();
+    if (vk.AllocateDescriptorSets(dev, &dai, s.sets.data()) != VK_SUCCESS)
+      return false;
+
+    VkSemaphoreCreateInfo sci = {};
+    sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    for (size_t i = 0; i <= kMaxLayers; ++i) {
+      if (vk.CreateSemaphore(dev, &sci, nullptr, &s.acquired[i]) != VK_SUCCESS ||
+          vk.CreateSemaphore(dev, &sci, nullptr, &s.drawn[i]) != VK_SUCCESS)
+        return false;
+    }
+  }
+  return true;
+}
+
+bool VkCompositor::InitDummy() {
+  const VulkanPfn &vk = *state_.pfn();
+  const VkDevice dev = state_.device();
+
+  VkImageCreateInfo ci = {};
+  ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  ci.imageType = VK_IMAGE_TYPE_2D;
+  ci.format = VK_FORMAT_R8G8B8A8_UNORM;
+  ci.extent = {1, 1, 1};
+  ci.mipLevels = 1;
+  ci.arrayLayers = 1;
+  ci.samples = VK_SAMPLE_COUNT_1_BIT;
+  ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+  ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+  ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  if (vk.CreateImage(dev, &ci, nullptr, &dummy_image_) != VK_SUCCESS)
+    return false;
+  VkMemoryRequirements req;
+  vk.GetImageMemoryRequirements(dev, dummy_image_, &req);
+  VkMemoryAllocateInfo mai = {};
+  mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  mai.allocationSize = req.size;
+  mai.memoryTypeIndex =
+      state_.findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  if (mai.memoryTypeIndex == UINT32_MAX ||
+      vk.AllocateMemory(dev, &mai, nullptr, &dummy_memory_) != VK_SUCCESS ||
+      vk.BindImageMemory(dev, dummy_image_, dummy_memory_, 0) != VK_SUCCESS)
+    return false;
+  VkImageViewCreateInfo vi = {};
+  vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  vi.image = dummy_image_;
+  vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  vi.format = VK_FORMAT_R8G8B8A8_UNORM;
+  vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  if (vk.CreateImageView(dev, &vi, nullptr, &dummy_view_) != VK_SUCCESS)
+    return false;
+
+  /* Into the layout every sampled image here is read in, once, at start;
+   * waiting is fine here and nowhere else. */
+  VkCommandBuffer cmd = slots_[0].cmd;
+  VkCommandBufferBeginInfo bi = {};
+  bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  if (vk.BeginCommandBuffer(cmd, &bi) != VK_SUCCESS)
+    return false;
+  VkImageMemoryBarrier ib = {};
+  ib.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  ib.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  ib.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+  ib.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  ib.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  ib.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  ib.image = dummy_image_;
+  ib.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &ib);
+  if (vk.EndCommandBuffer(cmd) != VK_SUCCESS)
+    return false;
+  VkSubmitInfo sub = {};
+  sub.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  sub.commandBufferCount = 1;
+  sub.pCommandBuffers = &cmd;
+  if (vk.QueueSubmit(state_.queue(), 1, &sub, VK_NULL_HANDLE) != VK_SUCCESS)
+    return false;
+  return vk.QueueWaitIdle(state_.queue()) == VK_SUCCESS;
+}
+
+VkCompositor::~VkCompositor() {
+  if (!state_.isReady())
+    return;
+  const VulkanPfn &vk = *state_.pfn();
+  const VkDevice dev = state_.device();
+  vk.DeviceWaitIdle(dev);
+  cache_.reset();
+  for (Slot &s : slots_) {
+    for (size_t i = 0; i <= kMaxLayers; ++i) {
+      if (s.acquired[i])
+        vk.DestroySemaphore(dev, s.acquired[i], nullptr);
+      if (s.drawn[i])
+        vk.DestroySemaphore(dev, s.drawn[i], nullptr);
+    }
+    if (s.pool)
+      vk.DestroyDescriptorPool(dev, s.pool, nullptr);
+    if (s.done)
+      vk.DestroyFence(dev, s.done, nullptr);
+  }
+  if (command_pool_)
+    vk.DestroyCommandPool(dev, command_pool_, nullptr);
+  if (dummy_view_)
+    vk.DestroyImageView(dev, dummy_view_, nullptr);
+  if (dummy_image_)
+    vk.DestroyImage(dev, dummy_image_, nullptr);
+  if (dummy_memory_)
+    vk.FreeMemory(dev, dummy_memory_, nullptr);
+  if (pipeline_)
+    vk.DestroyPipeline(dev, pipeline_, nullptr);
+  if (vert_)
+    vk.DestroyShaderModule(dev, vert_, nullptr);
+  if (frag_)
+    vk.DestroyShaderModule(dev, frag_, nullptr);
+  if (pipeline_layout_)
+    vk.DestroyPipelineLayout(dev, pipeline_layout_, nullptr);
+  if (set_layout_)
+    vk.DestroyDescriptorSetLayout(dev, set_layout_, nullptr);
+  if (sampler_)
+    vk.DestroySampler(dev, sampler_, nullptr);
+  if (render_pass_)
+    vk.DestroyRenderPass(dev, render_pass_, nullptr);
+  state_.destroy();
+}
+
+int VkCompositor::Compose(const Target &target, const Layer *layers, size_t count) {
+  if (count == 0 || layers == nullptr || target.buffer == nullptr)
+    return -1;
+  if (count > kMaxLayers) {
+    LogOnce(kLogTooMany, ANDROID_LOG_WARN, "vk: refused a call with more layers than it takes");
+    return -1;
+  }
+
+  const VulkanPfn &vk = *state_.pfn();
+  const VkDevice dev = state_.device();
+
+  /* The next slot, if its last work is done; asked, not waited for. */
+  Slot &slot = slots_[next_slot_];
+  if (slot.busy) {
+    if (vk.WaitForFences(dev, 1, &slot.done, VK_TRUE, 0) != VK_SUCCESS) {
+      LogOnce(kLogBusy, ANDROID_LOG_INFO, "vk: a call found every slot still drawing");
+      return -1;
+    }
+    vk.ResetFences(dev, 1, &slot.done);
+    slot.busy = false;
+    retired_ = std::max(retired_, slot.frame);
+    cache_->Retire(retired_);
+  }
+  const uint64_t frame = frame_ + 1;
+
+  /* Every image first: nothing is acquired until all of them are known. */
+  bool target_opaque = false;
+  if (target.format != kHalRgba8888) {
+    LogOnce(kLogTarget, ANDROID_LOG_WARN, "vk: a target not in RGBA 8888");
+    return -1;
+  }
+  ImageCache::Entry *dst =
+      cache_->Get(target.buffer, target.width, target.height, target.stride, target.format,
+                  target.usage, FormatOf(target.format, &target_opaque), true, frame);
+  if (dst == nullptr) {
+    LogOnce(kLogImport, ANDROID_LOG_WARN, "vk: the driver would not import a buffer");
+    return -1;
+  }
+
+  std::array<ImageCache::Entry *, kMaxLayers> src{};
+  std::array<bool, kMaxLayers> opaque{};
+  for (size_t i = 0; i < count; ++i) {
+    const Layer &l = layers[i];
+    if (l.buffer == nullptr)
+      continue;
+    const VkFormat f = FormatOf(l.format, &opaque[i]);
+    if (f == VK_FORMAT_UNDEFINED) {
+      LogOnce(kLogFormat, ANDROID_LOG_INFO, "vk: refused a layer in a format it does not read");
+      return -1;
+    }
+    src[i] = cache_->Get(l.buffer, l.width, l.height, l.stride, l.format, l.usage, f, false,
+                         frame);
+    if (src[i] == nullptr) {
+      LogOnce(kLogImport, ANDROID_LOG_WARN, "vk: the driver would not import a buffer");
+      return -1;
+    }
+  }
+
+  /* One descriptor set per layer, the slot's own, rewritten. */
+  const auto &sets = slot.sets;
+  std::array<VkDescriptorImageInfo, kMaxLayers> infos{};
+  std::array<VkWriteDescriptorSet, kMaxLayers> writes{};
+  for (size_t i = 0; i < count; ++i) {
+    infos[i] = {sampler_, src[i] ? src[i]->view : dummy_view_, VK_IMAGE_LAYOUT_GENERAL};
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet = sets[i];
+    writes[i].descriptorCount = 1;
+    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[i].pImageInfo = &infos[i];
+  }
+  vk.UpdateDescriptorSets(dev, static_cast<uint32_t>(count), writes.data(), 0, nullptr);
+
+  /* The distinct images of the call: a buffer that appears twice is
+   * acquired and released once. Index 0 is the target. */
+  std::array<VkImage, kMaxLayers + 1> images{};
+  std::array<int, kMaxLayers + 1> fences{};
+  size_t n_images = 0;
+  images[n_images] = dst->image;
+  fences[n_images++] = target.ready_fence;
+  for (size_t i = 0; i < count; ++i) {
+    if (src[i] == nullptr)
+      continue;
+    const auto end = images.begin() + n_images;
+    if (std::find(images.begin(), end, src[i]->image) != end)
+      continue;
+    images[n_images] = src[i]->image;
+    fences[n_images++] = layers[i].acquire_fence;
+  }
+
+  VkCommandBuffer cmd = slot.cmd;
+  vk.ResetCommandBuffer(cmd, 0);
+  VkCommandBufferBeginInfo bi = {};
+  bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  vk.BeginCommandBuffer(cmd, &bi);
+
+  /* The clients' pictures are read as they are: GENERAL to GENERAL, never
+   * from UNDEFINED, which would let the driver drop them. */
+  std::array<VkImageMemoryBarrier, kMaxLayers> barriers{};
+  for (size_t k = 1; k < n_images; ++k) {
+    VkImageMemoryBarrier &ib = barriers[k - 1];
+    ib.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    ib.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    ib.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    ib.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    ib.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    ib.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    ib.image = images[k];
+    ib.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  }
+  if (n_images > 1)
+    vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
+                          static_cast<uint32_t>(n_images - 1), barriers.data());
+
+  VkClearValue clear = {};
+  const VkRect2D area = {{0, 0}, {target.width, target.height}};
+  VkRenderPassBeginInfo rbi = {};
+  rbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+  rbi.renderPass = render_pass_;
+  rbi.framebuffer = dst->framebuffer;
+  rbi.renderArea = area;
+  rbi.clearValueCount = 1;
+  rbi.pClearValues = &clear;
+  vk.CmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+  vk.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+  const VkViewport vp = {0, 0, static_cast<float>(target.width),
+                         static_cast<float>(target.height), 0, 1};
+  vk.CmdSetViewport(cmd, 0, 1, &vp);
+  vk.CmdSetScissor(cmd, 0, 1, &area);
+
+  for (size_t i = 0; i < count; ++i) {
+    const Layer &l = layers[i];
+    const Quad q = PlaceLayer(l.src_left, l.src_top, l.src_right, l.src_bottom,
+                              l.buffer ? l.width : 1, l.buffer ? l.height : 1, l.dst_left,
+                              l.dst_top, l.dst_right, l.dst_bottom, l.transform, target.width,
+                              target.height);
+    LayerConstants pc = {};
+    pc.ndc[0] = q.ndc_left;
+    pc.ndc[1] = q.ndc_top;
+    pc.ndc[2] = q.ndc_right;
+    pc.ndc[3] = q.ndc_bottom;
+    std::memcpy(pc.uv_tl, q.uv_tl, sizeof(pc.uv_tl));
+    std::memcpy(pc.uv_tr, q.uv_tr, sizeof(pc.uv_tr));
+    std::memcpy(pc.uv_bl, q.uv_bl, sizeof(pc.uv_bl));
+    std::memcpy(pc.color, l.color, sizeof(pc.color));
+    pc.corner[0] = l.corner_left;
+    pc.corner[1] = l.corner_top;
+    pc.corner[2] = l.corner_right;
+    pc.corner[3] = l.corner_bottom;
+    pc.radius = l.corner_radius;
+    pc.alpha = l.alpha;
+    pc.flags = (l.buffer == nullptr ? kFlagSolid : 0) | (l.premultiplied ? kFlagPremultiplied : 0) |
+               (l.opaque || opaque[i] ? kFlagOpaque : 0);
+    vk.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1,
+                             &sets[i], 0, nullptr);
+    vk.CmdPushConstants(cmd, pipeline_layout_,
+                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc),
+                        &pc);
+    vk.CmdDraw(cmd, 4, 1, 0, 0);
+  }
+  vk.CmdEndRenderPass(cmd);
+  vk.EndCommandBuffer(cmd);
+
+  /* Acquire: the GPU waits on each fence through the image's semaphore.
+   * The fd is the driver's from here, so it is given a copy. */
+  size_t acquired = 0;
+  for (; acquired < n_images; ++acquired) {
+    const int fd = fences[acquired] >= 0 ? dup(fences[acquired]) : -1;
+    if (vk.AcquireImageANDROID(dev, images[acquired], fd, slot.acquired[acquired],
+                               VK_NULL_HANDLE) != VK_SUCCESS)
+      break;
+  }
+
+  VkSubmitInfo sub = {};
+  sub.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  std::array<VkPipelineStageFlags, kMaxLayers + 1> stages;
+  stages.fill(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+  sub.waitSemaphoreCount = static_cast<uint32_t>(acquired);
+  sub.pWaitSemaphores = slot.acquired.data();
+  sub.pWaitDstStageMask = stages.data();
+  sub.signalSemaphoreCount = static_cast<uint32_t>(acquired);
+  sub.pSignalSemaphores = slot.drawn.data();
+  /* A refused acquire still has to give back what was acquired: the work
+   * goes out with no drawing in it, only the semaphores, and the call
+   * refuses. */
+  const bool whole = acquired == n_images;
+  sub.commandBufferCount = whole ? 1 : 0;
+  sub.pCommandBuffers = &cmd;
+  if (!whole)
+    LogOnce(kLogAcquire, ANDROID_LOG_WARN, "vk: the driver would not acquire a buffer");
+  if (vk.QueueSubmit(state_.queue(), 1, &sub, slot.done) != VK_SUCCESS) {
+    LogOnce(kLogSubmit, ANDROID_LOG_ERROR, "vk: submit failed");
+    return -1;
+  }
+  slot.busy = true;
+  slot.frame = frame;
+  frame_ = frame;
+  next_slot_ = (next_slot_ + 1) % kSlots;
+
+  /* Each image released on its own drawn semaphore; the target's fence is
+   * the caller's, the sources' are covered by it and closed. */
+  int out = -1;
+  for (size_t k = 0; k < acquired; ++k) {
+    int fd = -1;
+    if (vk.QueueSignalReleaseImageANDROID(state_.queue(), 1, &slot.drawn[k], images[k], &fd) !=
+        VK_SUCCESS) {
+      LogOnce(kLogRelease, ANDROID_LOG_ERROR, "vk: release failed");
+      continue;
+    }
+    if (k == 0 && whole)
+      out = fd;
+    else if (fd >= 0)
+      close(fd);
+  }
+  return out;
+}
+
+}  // namespace android::hwc::vk
+
+extern "C" {
+
+uint32_t hwc_vk_api_version() {
+  return android::hwc::vk::apiVersion;
+}
+
+android::hwc::vk::Compositor *hwc_vk_create(android::hwc::vk::Host *host) {
+  return android::hwc::vk::VkCompositor::Create(host).release();
+}
+
+void hwc_vk_destroy(android::hwc::vk::Compositor *compositor) {
+  delete compositor;
+}
+}
