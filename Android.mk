@@ -204,3 +204,7 @@ LOCAL_SRC_FILES := \
 # governor/tests/merge_plan_test.cpp says how.
 
 include $(BUILD_SHARED_LIBRARY)
+
+# The measuring stands under tools/ are found only through here: the build
+# does not descend past a directory that has its own Android.mk.
+include $(LOCAL_PATH)/tools/hwcvk_probe/Android.mk
