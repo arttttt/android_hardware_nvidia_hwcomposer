@@ -578,7 +578,7 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * The number last asked for, how many frames of the run are still owed,
    * and where in the run the next one goes. */
   void WriteMergedPicture(const hwc::VendorBuffer &target,
-                          const SharedFd &done);
+                          const SharedFd &done, bool turned);
   int merge_picture_arm_ = 0;
   int merge_picture_left_ = 0;
   int merge_picture_seq_ = 0;

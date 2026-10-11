@@ -1125,16 +1125,21 @@ void TegraAtomicStateManager::RememberMerge(
  * been proved right by other means already. A run of frames through a
  * rotation can be walked afterwards until the wrong one is found. Asking
  * again with the same number asks nothing -- a fresh number starts a fresh
- * run. */
+ * run.
+ *
+ * A positive number catches only frames that carried a turn, which is what
+ * the run was made for. A negative one catches every frame drawn, turned
+ * or not: a defect that has nothing to do with a turn -- a member that
+ * arrives empty -- lives in the frames the positive run skips. */
 void TegraAtomicStateManager::WriteMergedPicture(
-    const hwc::VendorBuffer &target, const SharedFd &done) {
+    const hwc::VendorBuffer &target, const SharedFd &done, bool turned) {
   const int arm = property_get_int32("vendor.hwc.test.dumpmerge", 0);
   if (arm != merge_picture_arm_) {
     merge_picture_arm_ = arm;
-    merge_picture_left_ = arm > 0 ? arm : 0;
+    merge_picture_left_ = arm < 0 ? -arm : arm;
     merge_picture_seq_ = 0;
   }
-  if (merge_picture_left_ == 0)
+  if (merge_picture_left_ == 0 || (!turned && merge_picture_arm_ > 0))
     return;
   merge_picture_left_--;
 
@@ -1324,17 +1329,16 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         return -EINVAL;
       }
 
-      /* Only frames that carried a turn are worth a place in the run. A
-       * still portrait scene draws merge after merge with nothing turned
-       * in any of them, and a run armed before a rotation would spend
-       * itself on those and catch the rotation's last frames or none.
-       * Counted the same way it is drawn: any member turned at all. */
+      /* A run armed for a rotation keeps its place for the frames that
+       * carried a turn. A still portrait scene draws merge after merge with
+       * nothing turned in any of them, and such a run would spend itself
+       * on those and catch the rotation's last frames or none. Counted the
+       * same way it is drawn: any member turned at all. */
       const bool any_turn =
           group_turn != 0 ||
           std::any_of(merge.transforms.begin(), merge.transforms.end(),
                       [](uint8_t bits) { return bits != 0; });
-      if (any_turn)
-        WriteMergedPicture(*target->vendor, merged);
+      WriteMergedPicture(*target->vendor, merged, any_turn);
 
       const int64_t took = GetTimeMonotonicNs() - before_merge;
       merges_.frames++;
