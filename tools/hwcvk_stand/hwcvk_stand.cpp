@@ -293,6 +293,16 @@ int main(int argc, char **argv) {
   fprintf(stderr, "a buffer never seen: %.2f ms\n", Once(c, t, &fl, 1));
   fprintf(stderr, "same buffer again: %.2f ms\n", Once(c, t, &fl, 1));
 
+  /* A buffer never seen, but prepared when it "arrived": the import is
+   * paid on the executor's thread before the call that draws it. */
+  sp<GraphicBuffer> early = Make(kW, kH, client, "stand early");
+  hv::Layer el = LayerOf(early);
+  el.dst_right = kW;
+  el.dst_bottom = kH;
+  c->Prepare(el);
+  usleep(20 * 1000);
+  fprintf(stderr, "a buffer never drawn, prepared 20 ms ahead: %.2f ms\n", Once(c, t, &el, 1));
+
   /* The executor's own warm-up after a pause, with the composition coming
    * that long after it: how much lead the governor would need to give. */
   for (int lead_ms : {0, 5, 20, 40}) {
