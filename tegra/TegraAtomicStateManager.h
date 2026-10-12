@@ -609,12 +609,7 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * the others. A slot whose drawing went wrong -- refused, or never
    * shown -- is drawn whole next time. Off with vendor.hwc.partial=0, read
    * once. */
-  struct SlotPicture {
-    partial::Snapshot held;
-    SharedFd drawn;
-  };
-  std::map<const hwc::ScratchPool::Slot *, SlotPicture> slot_pictures_;
-  partial::DamageHistory merge_damage_;
+  partial::SlotPictures slot_pictures_{partial::Engine{}};
   bool partial_ = true;
   static bool PartialFromProperty();
 
