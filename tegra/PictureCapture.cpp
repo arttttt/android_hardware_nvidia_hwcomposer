@@ -39,7 +39,7 @@ namespace {
 
 constexpr size_t kSources = static_cast<size_t>(PictureCapture::Source::kCount);
 constexpr const char *kNames[kSources] = {"merge", "merge-turned", "gpu",
-                                          "frame", "panel"};
+                                          "frame", "panel", "occlusion"};
 
 /* The whole of what the frame side touches: how many each source still owes,
  * and where the numbering stands. */

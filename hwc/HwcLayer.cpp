@@ -16,7 +16,10 @@
 
 #include "HwcLayer.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <vector>
 
 #include "bufferinfo/BufferInfo.h"
 #include "compositor/DisplayInfo.h"
@@ -131,14 +134,14 @@ void HwcLayer::SetLayerProperties(const LayerProperties& layer_properties) {
     sf_type_ = layer_properties.composition_type.value();
   }
   if (layer_properties.display_frame) {
-    if (layer_data_.pi.display_frame != layer_properties.display_frame
-                                            .value()) {
+    if (sf_display_frame_ != layer_properties.display_frame.value()) {
       plan_invalidators_ |= kDisplayFrame;
       /* Movement without redrawing -- a window dragged, not repainted --
        * is a live layer that never posts a buffer. */
       last_activity_ = std::chrono::steady_clock::now();
     }
-    layer_data_.pi.display_frame = layer_properties.display_frame.value();
+    sf_display_frame_ = layer_properties.display_frame.value();
+    layer_data_.pi.display_frame = sf_display_frame_;
   }
   if (layer_properties.alpha) {
     if (layer_data_.pi.alpha != layer_properties.alpha.value()) {
@@ -150,11 +153,12 @@ void HwcLayer::SetLayerProperties(const LayerProperties& layer_properties) {
     layer_data_.pi.alpha = layer_properties.alpha.value();
   }
   if (layer_properties.source_crop) {
-    if (layer_data_.pi.source_crop != layer_properties.source_crop.value()) {
+    if (sf_source_crop_ != layer_properties.source_crop.value()) {
       plan_invalidators_ |= kSourceCrop;
       last_activity_ = std::chrono::steady_clock::now();
     }
-    layer_data_.pi.source_crop = layer_properties.source_crop.value();
+    sf_source_crop_ = layer_properties.source_crop.value();
+    layer_data_.pi.source_crop = sf_source_crop_;
   }
   if (layer_properties.transform) {
     const LayerTransform& incoming = layer_properties.transform.value();
@@ -264,6 +268,79 @@ uint32_t HwcLayer::GetPixOps() const {
     return df.i_rect->Width() * df.i_rect->Height();
   }
   return parent_->GetSize().first * parent_->GetSize().second;
+}
+
+void HwcLayer::SetVisibleRegion(std::vector<IRect> region) {
+  if (region.size() != sf_visible_.size() ||
+      !std::equal(region.begin(), region.end(), sf_visible_.begin()))
+    plan_invalidators_ |= kDisplayFrame;
+  sf_visible_ = std::move(region);
+}
+
+occlusion::Layer HwcLayer::OcclusionInput(const IRect &screen) const {
+  occlusion::Layer l;
+  l.frame = sf_display_frame_.i_rect ? *sf_display_frame_.i_rect : screen;
+  l.visible = sf_visible_;
+
+  /* Opaque as the framework says it: a buffer it blends with nothing, or a
+   * solid colour with no alpha in it -- either at full plane alpha. */
+  const bool full_alpha = layer_data_.pi.alpha >= kAlphaOpaque;
+  if (layer_data_.bi)
+    l.opaque = full_alpha &&
+               layer_data_.bi->blend_mode == BufferBlendMode::kNone;
+  else if (layer_data_.solid_color)
+    l.opaque = full_alpha && (*layer_data_.solid_color)[3] >= 1.F;
+
+  const auto &corners = layer_data_.effects.corners;
+  if (layer_data_.effects.HasCorners()) {
+    l.corner_crop = IRect{static_cast<int32_t>(std::floor(corners[0])),
+                          static_cast<int32_t>(std::floor(corners[1])),
+                          static_cast<int32_t>(std::ceil(corners[2])),
+                          static_cast<int32_t>(std::ceil(corners[3]))};
+    l.radius = corners[4];
+  }
+
+  /* What reaches past the frame is never cut down to a part of it, and
+   * the pointer is not the occlusion's to move. */
+  l.keep = sf_type_ == CompositionType::kCursor ||
+           layer_data_.effects.ReachesPastFrame();
+  return l;
+}
+
+void HwcLayer::ApplyOcclusion(const occlusion::Shown &shown) {
+  DstRectInfo frame = sf_display_frame_;
+  SrcRectInfo crop = sf_source_crop_;
+
+  if (!shown.hidden && frame.i_rect && shown.bounds != *frame.i_rect) {
+    /* A missing crop is the whole buffer; a layer with no buffer has no
+     * source to narrow, and only its frame moves. */
+    std::optional<FRect> source = crop.f_rect;
+    if (!source && layer_data_.bi)
+      source = FRect{0.F, 0.F, static_cast<float>(layer_data_.bi->width),
+                     static_cast<float>(layer_data_.bi->height)};
+    const auto &t = layer_data_.pi.transform;
+    if (source) {
+      const auto narrowed = occlusion::CropSource(*source, *frame.i_rect,
+                                                  shown.bounds, t.hflip,
+                                                  t.vflip, t.rotate90);
+      if (narrowed) {
+        frame.i_rect = shown.bounds;
+        crop.f_rect = narrowed;
+      }
+    } else if (!t.rotate90) {
+      frame.i_rect = shown.bounds;
+    }
+  }
+
+  /* A change in what is shown is a change in the plan, as SurfaceFlinger
+   * moving the layer would be. */
+  if (frame != layer_data_.pi.display_frame || hidden_ != shown.hidden)
+    plan_invalidators_ |= kDisplayFrame;
+  if (crop != layer_data_.pi.source_crop)
+    plan_invalidators_ |= kSourceCrop;
+  layer_data_.pi.display_frame = frame;
+  layer_data_.pi.source_crop = crop;
+  hidden_ = shown.hidden;
 }
 
 }  // namespace android::drm_hwcomposer

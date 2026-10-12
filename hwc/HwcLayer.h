@@ -21,10 +21,12 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include "bufferinfo/BufferInfo.h"
 #include "compositor/DisplayInfo.h"
 #include "compositor/LayerData.h"
+#include "compositor/Occlusion.h"
 #include "utils/fd.h"
 
 namespace android::drm_hwcomposer {
@@ -75,13 +77,6 @@ class HwcLayer {
     validated_type_ = type;
   }
   bool IsTypeChanged() const {
-    // Occluded layers are exposed as client composited to
-    // SurfaceFlinger.
-    if (sf_type_ == CompositionType::kClient &&
-        validated_type_ == CompositionType::kDeviceOccluded) {
-      return false;
-    }
-
     return sf_type_ != validated_type_;
   }
 
@@ -163,6 +158,23 @@ class HwcLayer {
   // client-composited.
   uint32_t GetPixOps() const;
 
+  /* SurfaceFlinger's visible region for the layer, in the display's space;
+   * sent only when the geometry changes, so kept until replaced. */
+  void SetVisibleRegion(std::vector<IRect> region);
+
+  /* The layer as the occlusion takes it, on a display of `screen`. */
+  occlusion::Layer OcclusionInput(const IRect &screen) const;
+
+  /* What the occlusion found of the layer. A hidden layer is not shown at
+   * all; one seen only in part is shown cropped -- its display frame and
+   * source crop narrowed to the part -- in the layer data every reader
+   * takes, while what SurfaceFlinger set is kept to start again from. */
+  void ApplyOcclusion(const occlusion::Shown &shown);
+
+  bool IsHidden() const {
+    return hidden_;
+  }
+
  private:
   void PopulateLayerData();
 
@@ -174,6 +186,13 @@ class HwcLayer {
 
   uint32_t z_order_ = 0;
   LayerData layer_data_;
+
+  /* What SurfaceFlinger set, before the occlusion narrowed it into
+   * layer_data_.pi; and what it said can be seen. */
+  DstRectInfo sf_display_frame_{};
+  SrcRectInfo sf_source_crop_{};
+  std::vector<IRect> sf_visible_;
+  bool hidden_ = false;
 
   /* The following buffer data can have 2 sources:
    * 1 - Mapper@4 metadata API

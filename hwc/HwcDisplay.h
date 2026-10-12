@@ -257,6 +257,10 @@ class HwcDisplay : public ICompositorDisplay {
    * would otherwise wait for the next thing that did. */
   bool RefreshDisplayProfile();
 
+  /* Works out what of each layer can be seen and tells each layer; see
+   * compositor/Occlusion.h. Off with vendor.hwc.occlusion=0, read once. */
+  void ResolveOcclusion();
+
   auto SetContentType(ContentType content_type) {
     content_type_ = content_type;
   }

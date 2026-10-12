@@ -724,6 +724,11 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
    * plan is where that is decided. */
   RefreshDisplayProfile();
 
+  /* What of each layer can be seen, before the plan: a hidden layer takes
+   * no window, no place in a merge and no GPU time, and one seen in part
+   * is shown cropped to that part. */
+  ResolveOcclusion();
+
   /* With the GPU executor drawing what the client would have, the client
    * never hands over a target -- so one of the executor's buffers stands in
    * while the plan is weighed, the plan needing a usable client target to
@@ -740,7 +745,7 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
     const auto size = GetSize();
     for (const auto &[_, layer] : layers_) {
       const LayerData &ld = layer.GetLayerData();
-      if (ld.bi)
+      if (ld.bi && !layer.IsHidden())
         gpu->Prepare(ToVkLayer(ld, size));
     }
   }
@@ -748,6 +753,12 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
   auto validation_result = pipeline_->planner->ValidateDisplay(this);
   validated_composition_.emplace(std::move(validation_result.composition));
   staged_composition_reused_ = validation_result.short_circuited;
+  /* The planner never saw the hidden layers; they are in the frame all the
+   * same, as layers nothing shows. */
+  for (const auto &[_, layer] : layers_)
+    if (layer.IsHidden())
+      validated_composition_->composition_types[&layer] =
+          CompositionType::kDeviceOccluded;
 
   if (gpu != nullptr && GpuCanDrawClient(*validated_composition_)) {
     validated_composition_->gpu_draws_client = true;
@@ -786,6 +797,14 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
                    ? CompositionType::kSolidColor
                    : CompositionType::kDevice;
       }
+      /* Hidden: the device's as far as the client knows, so it draws
+       * nothing of it either; the composer simply shows nothing of it. HWC2
+       * has no type of its own for this, and the internal one must not
+       * reach the client as a number it reads otherwise. */
+      if (type == CompositionType::kDeviceOccluded)
+        type = layer.GetSfType() == CompositionType::kSolidColor
+                   ? CompositionType::kSolidColor
+                   : CompositionType::kDevice;
       layer.SetValidatedType(type);
     }
     if (layer.IsTypeChanged()) {
@@ -927,7 +946,8 @@ auto HwcDisplay::PresentStagedComposition(
     validated_composition_ = CompositionPlanner::ValidatedComposition{};
     for (const auto &[id, layer] : layers_) {
       validated_composition_->composition_types
-          .emplace(&layer, layer.GetValidatedType());
+          .emplace(&layer, layer.IsHidden() ? CompositionType::kDeviceOccluded
+                                            : layer.GetValidatedType());
     }
   }
 
@@ -2287,12 +2307,69 @@ bool HwcDisplay::ForcedScalingWithGpu() const {
 }
 
 
+void HwcDisplay::ResolveOcclusion() {
+  /* Read once: a switch for comparing, not something to flip mid-frame. */
+  static const bool enabled = Properties::Occlusion();
+
+  std::vector<HwcLayer *> order;
+  order.reserve(layers_.size());
+  for (auto &[_, layer] : layers_)
+    order.push_back(&layer);
+
+  std::sort(order.begin(), order.end(),
+            [](const HwcLayer *lhs, const HwcLayer *rhs) {
+              return lhs->GetZOrder() < rhs->GetZOrder();
+            });
+
+  const auto size = GetSize();
+  const IRect screen{0, 0, static_cast<int32_t>(size.first),
+                     static_cast<int32_t>(size.second)};
+  std::vector<occlusion::Layer> input;
+  input.reserve(order.size());
+  for (const HwcLayer *layer : order)
+    input.push_back(layer->OcclusionInput(screen));
+
+  /* Off: every layer whole, as SurfaceFlinger set it. */
+  std::vector<occlusion::Shown> shown(input.size());
+  if (enabled)
+    shown = occlusion::Resolve(input);
+  else
+    for (size_t i = 0; i < input.size(); ++i)
+      shown[i].bounds = input[i].frame;
+  for (size_t i = 0; i < order.size(); ++i)
+    order[i]->ApplyOcclusion(shown[i]);
+
+  /* Asked for only: each layer, bottom first, as it came and as shown. */
+  using hwc::PictureCapture;
+  if (PictureCapture::Wanted(PictureCapture::Source::kOcclusion)) {
+    std::string words;
+    for (size_t i = 0; i < order.size(); ++i) {
+      const occlusion::Layer &in = input[i];
+      const auto &df = order[i]->GetLayerData().pi.display_frame.i_rect;
+      char line[192];
+      snprintf(line, sizeof(line),
+               "z %u %s%s%s frame %d,%d-%d,%d -> %s %d,%d-%d,%d sf-rects %zu "
+               "r %.1f\n",
+               order[i]->GetZOrder(), in.opaque ? "opaque" : "translucent",
+               in.keep ? " kept" : "", order[i]->IsHidden() ? " HIDDEN" : "",
+               in.frame.left, in.frame.top, in.frame.right, in.frame.bottom,
+               df && *df != in.frame ? "CROPPED" : "shown",
+               df ? df->left : 0, df ? df->top : 0, df ? df->right : 0,
+               df ? df->bottom : 0, in.visible.size(), in.radius);
+      words += line;
+    }
+    PictureCapture::WriteText(PictureCapture::Source::kOcclusion, words);
+  }
+}
+
 std::vector<const HwcLayer *> HwcDisplay::GetOrderLayersByZPos() const {
   std::vector<const HwcLayer *> ordered_layers;
   ordered_layers.reserve(layers_.size());
 
+  /* The planner's view: a hidden layer is nothing to place. */
   for (const auto &[handle, layer] : layers_) {
-    ordered_layers.emplace_back(&layer);
+    if (!layer.IsHidden())
+      ordered_layers.emplace_back(&layer);
   }
 
   std::sort(std::begin(ordered_layers), std::end(ordered_layers),
