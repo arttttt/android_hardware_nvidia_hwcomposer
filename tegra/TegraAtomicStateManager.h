@@ -27,6 +27,7 @@
 #include "display/AtomicStateManager.h"
 #include "display/DrmMode.h"
 #include "compositor/LayerData.h"
+#include "compositor/PartialRedraw.h"
 #include "compositor/PictureMemory.h"
 #include "tegra/PanelMirror.h"
 #include "tegra/CompositionGovernor.h"
@@ -125,9 +126,14 @@ class TegraAtomicRequest : public AtomicRequest {
      * keeps the identity and moves the count. */
     std::vector<uint64_t> generations;
 
-    /* Each member's damage, in step with `layers` -- filled only while a
-     * capture asks for the frame's words. */
+    /* Each member's damage, in step with `layers`: what its client said
+     * changed in this frame of its buffer. What a buffer drawn before is
+     * redrawn in part by, and what the frame's words show. */
     std::vector<DamageInfo> damages;
+
+    /* Which layer each member is, in step with `layers`: what its frames
+     * and their damage are counted against, whichever buffer each is in. */
+    std::vector<uint64_t> serials;
 
     /* How each member is turned, in step with `layers`: the framework's
      * bits, hflip | vflip << 1 | rotate90 << 2, nought for most. The merge
@@ -308,6 +314,7 @@ class TegraAtomicStateManager : public AtomicStateManager {
     throttle_to_one_frame_ = ThrottleFromProperty();
     report_engine_reads_ = EngineReadsFromProperty();
     merge_cache_ = MergeCacheFromProperty();
+    partial_ = PartialFromProperty();
     cmu_ctm_ = CmuFromProperty();
     calibrated_home_ = Properties::CalibratedColorMode();
   }
@@ -526,6 +533,15 @@ class TegraAtomicStateManager : public AtomicStateManager {
      * whole engine pass for a single layer, and its share decides whether
      * it is worth hunting for at all. */
     uint64_t members[5] = {0, 0, 0, 0, 0};
+
+    /* Of the drawn frames, those drawn only where something changed, and
+     * how much of their groups that came to, in pixels drawn against
+     * pixels a whole redraw would have; and frames whose slot already held
+     * the picture, for which the engine was not woken at all. */
+    uint64_t partial = 0;
+    uint64_t partial_pixels = 0;
+    uint64_t partial_group_pixels = 0;
+    uint64_t untouched = 0;
   };
   FenceCounters fences_;
   MergeCounters merges_;
@@ -585,6 +601,22 @@ class TegraAtomicStateManager : public AtomicStateManager {
 
   bool merge_cache_ = true;
   static bool MergeCacheFromProperty();
+
+  /* Redrawing a slot only where its picture changed since it was last
+   * drawn into; see compositor/PartialRedraw.h. Each slot remembers what it
+   * holds and the fence its last drawing came due on; the members' damage
+   * is kept a few frames back, since a slot comes round again only after
+   * the others. A slot whose drawing went wrong -- refused, or never
+   * shown -- is drawn whole next time. Off with vendor.hwc.partial=0, read
+   * once. */
+  struct SlotPicture {
+    partial::Snapshot held;
+    SharedFd drawn;
+  };
+  std::map<const hwc::ScratchPool::Slot *, SlotPicture> slot_pictures_;
+  partial::DamageHistory merge_damage_;
+  bool partial_ = true;
+  static bool PartialFromProperty();
 
   /* Puts the frame's colour transform into the head's colour pipeline, or
    * puts the pipeline back when the transform is the identity. Called once
