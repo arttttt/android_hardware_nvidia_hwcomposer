@@ -21,7 +21,9 @@
 #include <map>
 #include <vector>
 
+#include "compositor/PictureMemory.h"
 #include "compositor/Rect.h"
+#include "utils/fd.h"
 
 namespace android::drm_hwcomposer::partial {
 
@@ -34,21 +36,13 @@ namespace android::drm_hwcomposer::partial {
  * since: the damage their clients sent, frame by frame of their buffers.
  * Only that is drawn again; the engine leaves the rest of the buffer as it
  * was. Anything it cannot account for -- a member moved, resized, turned,
- * scaled, a frame of a buffer whose damage was never seen -- and the buffer
- * is drawn whole. */
-
-/* One member of a picture, keyed by its layer rather than its buffer: a
- * layer's frames go through several buffers, and the damage is between
- * one frame and the next whichever buffer each is in. */
-struct Member {
-  uint64_t serial = 0;
-  uint64_t generation = 0;
-  FRect src{};
-  IRect dst{};
-  float alpha = 1.F;
-  bool premultiplied = true;
-  uint8_t transform = 0;
-};
+ * recoloured, a frame of a buffer whose damage was never seen -- and the
+ * buffer is drawn whole.
+ *
+ * A member is the one the memory of drawn pictures keeps, its layer's
+ * serial included: a layer's frames go through several buffers, and the
+ * damage is between one frame and the next whichever buffer each is in. */
+using Member = PictureMemory::Member;
 
 /* What each layer's clients said changed, frame by frame of its buffers: in
  * the buffer's own pixels, no rectangles for "all of it", one empty
@@ -110,14 +104,62 @@ struct Plan {
 constexpr uint32_t kMostPartialInARow = 30;
 constexpr float kMostPartialShare = 0.5F;
 
+/* What an engine can be trusted to draw in part. One that clips by itself
+ * draws a scaled member exactly, cut or not -- the GPU, by its scissor; one
+ * whose members have to be cut before it sees them would read a scaled one
+ * from a shifted phase, and seams would show. */
+struct Engine {
+  bool draws_scaled_in_part = false;
+};
+
 /* What to draw into a buffer whose snapshot is `held`, for a picture of
  * `width` by `height` made of `members`. */
 Plan Decide(const Snapshot &held, uint32_t width, uint32_t height,
-            const std::vector<Member> &members, const DamageHistory &history);
+            const std::vector<Member> &members, const DamageHistory &history,
+            Engine engine);
 
 /* A member cut down to the part of it that lands inside `bound`: the place
  * trimmed, and the part of the buffer read trimmed in proportion. False
  * when nothing of it lands there. */
 bool ClipTo(const IRect &bound, FRect *src, IRect *dst);
+
+/* The buffers one engine draws into, each with what it holds and the fence
+ * its last drawing came due on, and the damage of the members drawn. Keyed
+ * by whatever names a buffer to its owner, which must outlive this. */
+class SlotPictures {
+ public:
+  explicit SlotPictures(Engine engine) : engine_(engine) {}
+
+  /* A member's frame and its damage, to be found by a buffer that comes
+   * round later. Every member of every picture drawn, before deciding. */
+  void Record(const Member &m, const std::vector<IRect> &damage) {
+    history_.Record(m.serial, m.generation, damage);
+  }
+
+  Plan Decide(const void *slot, uint32_t width, uint32_t height,
+              const std::vector<Member> &members) const;
+
+  /* `slot` now holds this picture, drawn by `plan`, done at `fence`. */
+  void Drawn(const void *slot, uint32_t width, uint32_t height,
+             std::vector<Member> members, const Plan &plan,
+             SharedFd fence);
+
+  /* What `slot` holds is no longer known: its drawing was refused, or
+   * dropped, or replaced by something this does not see. */
+  void Lost(const void *slot);
+
+  /* The fence the slot's last drawing came due on: what a buffer shown
+   * undrawn is shown against. */
+  SharedFd Fence(const void *slot) const;
+
+ private:
+  struct Held {
+    Snapshot snapshot;
+    SharedFd fence;
+  };
+  Engine engine_;
+  std::map<const void *, Held> slots_;
+  DamageHistory history_;
+};
 
 }  // namespace android::drm_hwcomposer::partial

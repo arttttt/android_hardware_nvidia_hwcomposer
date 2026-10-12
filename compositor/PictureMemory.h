@@ -50,6 +50,10 @@ class PictureMemory {
   struct Member {
     uint64_t source = 0;
     uint64_t generation = 0;
+    /* Which layer it is, whichever buffer its frame is in: what a frame's
+     * damage is counted against. Not part of what a picture is recognised
+     * by here -- the buffer and its frame already say who drew it. */
+    uint64_t serial = 0;
     bool solid = false;
     std::array<float, 4> color{};
 

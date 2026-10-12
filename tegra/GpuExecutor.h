@@ -24,6 +24,7 @@
 
 #include <cutils/native_handle.h>
 
+#include "compositor/Rect.h"
 #include "utils/fd.h"
 #include "vk/HwcVk.h"
 
@@ -68,9 +69,25 @@ class GpuExecutor {
    * buffer and the fence its drawing signals -- nothing when the library
    * refused the work, and the buffer's turn is then given back. A Begin
    * over an unfinished one drops the earlier drawing; nothing was shown of
-   * it, and the buffer's turn was never taken. */
-  bool Begin(std::vector<vk::Layer> &layers);
+   * it, and the buffer's turn was never taken.
+   *
+   * `dirty`, when given, draws only that rectangle of the buffer and keeps
+   * the rest as it holds it; see vk::Target. */
+  bool Begin(std::vector<vk::Layer> &layers,
+             const drm_hwcomposer::IRect *dirty = nullptr);
   std::optional<Drawn> Finish();
+
+  /* The next buffer already holds the picture wanted: it takes its turn
+   * undrawn, to be shown against `fence` -- the one its own drawing came
+   * due on. Drops a drawing begun and not finished, as Begin does. */
+  Drawn Keep(drm_hwcomposer::SharedFd fence);
+
+  /* Which buffer the next drawing goes into, as a name for whoever keeps
+   * track of what each holds; and whether a drawing begun into it is not
+   * finished yet -- dropped by the next Begin or Keep, having written who
+   * knows how much of it. */
+  const void *NextSlot() const { return &slots_[(at_ + 1) % slots_.size()]; }
+  bool Pending() const { return begun_at_.has_value(); }
 
   /* A frame went up against `fence`; see ScratchPool::Presented. */
   void Presented(const drm_hwcomposer::SharedFd &fence);
@@ -92,6 +109,8 @@ class GpuExecutor {
 
  private:
   GpuExecutor() = default;
+
+  void DropBegun();
 
   struct Slot {
     buffer_handle_t buffer = nullptr;

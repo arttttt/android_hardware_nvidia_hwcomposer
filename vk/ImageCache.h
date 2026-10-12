@@ -54,6 +54,10 @@ class ImageCache {
     /* The copy of the handle the image was imported from, when the
      * height had to be told differently; owned, closed with the image. */
     native_handle_t *copy = nullptr;
+    /* A target drawn into at least once: its contents are a picture of
+     * ours, and it was left in the attachment layout -- what a drawing of
+     * only part of it builds on. */
+    bool drawn = false;
   };
 
   /* `render_pass` is the one targets are framed for. */

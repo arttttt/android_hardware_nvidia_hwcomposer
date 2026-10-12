@@ -19,6 +19,8 @@
 #include <dlfcn.h>
 #include <unistd.h>
 
+#include <utility>
+
 #include <android/log.h>
 #include <hardware/gralloc.h>
 
@@ -119,13 +121,18 @@ GpuExecutor::~GpuExecutor() {
     dlclose(library_);
 }
 
-bool GpuExecutor::Begin(std::vector<vk::Layer> &layers) {
+void GpuExecutor::DropBegun() {
   if (begun_at_) {
     const int dropped = compositor_->Finish();
     if (dropped >= 0)
       close(dropped);
     begun_at_.reset();
   }
+}
+
+bool GpuExecutor::Begin(std::vector<vk::Layer> &layers,
+                        const drm_hwcomposer::IRect *dirty) {
+  DropBegun();
 
   const size_t at = (at_ + 1) % slots_.size();
   const Slot &slot = slots_[at];
@@ -138,6 +145,13 @@ bool GpuExecutor::Begin(std::vector<vk::Layer> &layers) {
   target.format = kTargetFormat;
   target.usage = kTargetUsage;
   target.ready_fence = slot.freed_when ? *slot.freed_when : -1;
+  if (dirty != nullptr) {
+    target.partial = true;
+    target.dirty_left = dirty->left;
+    target.dirty_top = dirty->top;
+    target.dirty_right = dirty->right;
+    target.dirty_bottom = dirty->bottom;
+  }
 
   if (!compositor_->Begin(target, layers.data(), layers.size()))
     return false;
@@ -155,6 +169,12 @@ std::optional<GpuExecutor::Drawn> GpuExecutor::Finish() {
     return std::nullopt;
   at_ = at;
   return Drawn{slots_[at].buffer, drm_hwcomposer::MakeSharedFd(fd)};
+}
+
+GpuExecutor::Drawn GpuExecutor::Keep(drm_hwcomposer::SharedFd fence) {
+  DropBegun();
+  at_ = (at_ + 1) % slots_.size();
+  return Drawn{slots_[at_].buffer, std::move(fence)};
 }
 
 void GpuExecutor::Presented(const drm_hwcomposer::SharedFd &fence) {

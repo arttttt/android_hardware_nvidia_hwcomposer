@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace android::drm_hwcomposer::partial {
 
@@ -40,18 +41,45 @@ int32_t Up(int32_t v, int32_t grain) {
   return (v + grain - 1) / grain * grain;
 }
 
-bool SameGeometry(const Member &a, const Member &b) {
-  return a.serial == b.serial && a.src == b.src && a.dst == b.dst &&
-         a.alpha == b.alpha && a.premultiplied == b.premultiplied &&
-         a.transform == b.transform;
+/* Everything about a member but which frame of it: equal, and the only
+ * difference between the two pictures is in its pixels. */
+bool SameButFrame(const Member &a, const Member &b) {
+  return a.serial == b.serial && a.solid == b.solid && a.color == b.color &&
+         a.src == b.src && a.dst == b.dst && a.alpha == b.alpha &&
+         a.premultiplied == b.premultiplied && a.opaque == b.opaque &&
+         a.transform == b.transform && a.corners == b.corners;
 }
 
-/* Drawn at its own size, unturned: a buffer pixel is a picture pixel, so
- * the damage maps across by an offset alone. */
-bool OneToOne(const Member &m) {
-  return m.transform == 0 &&
-         std::fabs(m.src.Width() - static_cast<float>(m.dst.Width())) < 0.01F &&
-         std::fabs(m.src.Height() - static_cast<float>(m.dst.Height())) < 0.01F;
+bool Scaled(const Member &m) {
+  return std::fabs(m.src.Width() - static_cast<float>(m.dst.Width())) >=
+             0.01F ||
+         std::fabs(m.src.Height() - static_cast<float>(m.dst.Height())) >=
+             0.01F;
+}
+
+/* A rectangle of the member's buffer, as the part of the picture it lands
+ * on. Scaled, the filter reads a pixel's neighbours too, so the box grows by
+ * one on every side; and nothing outside where the member lands. */
+IRect Onto(const IRect &r, const Member &m, bool scaled) {
+  const float sx = static_cast<float>(m.dst.Width()) / m.src.Width();
+  const float sy = static_cast<float>(m.dst.Height()) / m.src.Height();
+  const int32_t pad = scaled ? 1 : 0;
+  const auto x = [&](int32_t v, bool up) {
+    const float f = static_cast<float>(m.dst.left) +
+                    (static_cast<float>(v) - m.src.left) * sx;
+    return static_cast<int32_t>(up ? std::ceil(f - 0.001F)
+                                   : std::floor(f + 0.001F));
+  };
+  const auto y = [&](int32_t v, bool up) {
+    const float f = static_cast<float>(m.dst.top) +
+                    (static_cast<float>(v) - m.src.top) * sy;
+    return static_cast<int32_t>(up ? std::ceil(f - 0.001F)
+                                   : std::floor(f + 0.001F));
+  };
+  return {std::max(x(r.left, false) - pad, m.dst.left),
+          std::max(y(r.top, false) - pad, m.dst.top),
+          std::min(x(r.right, true) + pad, m.dst.right),
+          std::min(y(r.bottom, true) + pad, m.dst.bottom)};
 }
 
 }  // namespace
@@ -101,7 +129,8 @@ bool DamageHistory::Between(uint64_t serial, uint64_t from, uint64_t to,
 }
 
 Plan Decide(const Snapshot &held, uint32_t width, uint32_t height,
-            const std::vector<Member> &members, const DamageHistory &history) {
+            const std::vector<Member> &members, const DamageHistory &history,
+            Engine engine) {
   Plan full;
   if (!held.valid || held.width != width || held.height != height ||
       held.members.size() != members.size() ||
@@ -116,11 +145,22 @@ Plan Decide(const Snapshot &held, uint32_t width, uint32_t height,
   for (size_t i = 0; i < members.size(); ++i) {
     const Member &now = members[i];
     const Member &then = held.members[i];
-    if (!SameGeometry(now, then) || !OneToOne(now) ||
+    if (now.serial == 0 || !SameButFrame(now, then) ||
         now.generation < then.generation)
+      return full;
+    /* An engine that has its members cut for it reads a scaled one from a
+     * shifted phase wherever the cut falls -- changed or not, any of them
+     * the region crosses. */
+    const bool scaled = Scaled(now);
+    if (scaled && !engine.draws_scaled_in_part)
       return full;
     if (now.generation == then.generation)
       continue;
+
+    /* Damage is in the buffer's own axes; a turned member would need it
+     * turned too. */
+    if (now.transform != 0 || now.src.Width() <= 0 || now.src.Height() <= 0)
+      return full;
 
     std::vector<IRect> rects;
     bool whole = false;
@@ -128,25 +168,19 @@ Plan Decide(const Snapshot &held, uint32_t width, uint32_t height,
                          &whole))
       return full;
 
-    /* From the buffer's pixels to the picture's, and only inside where the
-     * member lands. */
-    const int32_t dx = now.dst.left - static_cast<int32_t>(now.src.left);
-    const int32_t dy = now.dst.top - static_cast<int32_t>(now.src.top);
+    std::vector<IRect> on;
     if (whole)
-      rects = {{now.dst.left - dx, now.dst.top - dy, now.dst.right - dx,
-                now.dst.bottom - dy}};
-    for (const IRect &r : rects) {
-      IRect on{std::max(r.left + dx, now.dst.left),
-               std::max(r.top + dy, now.dst.top),
-               std::min(r.right + dx, now.dst.right),
-               std::min(r.bottom + dy, now.dst.bottom)};
-      if (Empty(on))
+      on.push_back(now.dst);
+    for (const IRect &r : rects)
+      on.push_back(Onto(r, now, scaled));
+    for (const IRect &r : on) {
+      if (Empty(r))
         continue;
-      dirty = any ? IRect{std::min(dirty.left, on.left),
-                          std::min(dirty.top, on.top),
-                          std::max(dirty.right, on.right),
-                          std::max(dirty.bottom, on.bottom)}
-                  : on;
+      dirty = any ? IRect{std::min(dirty.left, r.left),
+                          std::min(dirty.top, r.top),
+                          std::max(dirty.right, r.right),
+                          std::max(dirty.bottom, r.bottom)}
+                  : r;
       any = true;
     }
   }
@@ -158,6 +192,8 @@ Plan Decide(const Snapshot &held, uint32_t width, uint32_t height,
            std::max(Down(dirty.top, kRowGrain), bounds.top),
            std::min(Up(dirty.right, kColumnGrain), bounds.right),
            std::min(Up(dirty.bottom, kRowGrain), bounds.bottom)};
+  if (Empty(dirty))
+    return Plan{Plan::Kind::kUnchanged, {}};
   const float share =
       static_cast<float>(dirty.Width()) * static_cast<float>(dirty.Height()) /
       (static_cast<float>(width) * static_cast<float>(height));
@@ -180,6 +216,46 @@ bool ClipTo(const IRect &bound, FRect *src, IRect *dst) {
           src->bottom - static_cast<float>(dst->bottom - in.bottom) * sy};
   *dst = in;
   return true;
+}
+
+Plan SlotPictures::Decide(const void *slot, uint32_t width, uint32_t height,
+                          const std::vector<Member> &members) const {
+  const auto it = slots_.find(slot);
+  if (it == slots_.end())
+    return {};
+  Plan plan = partial::Decide(it->second.snapshot, width, height, members,
+                              history_, engine_);
+  /* Shown undrawn means shown against the fence of its last drawing; with
+   * none to name, it is drawn. */
+  if (plan.kind == Plan::Kind::kUnchanged && !it->second.fence)
+    plan.kind = Plan::Kind::kFull;
+  return plan;
+}
+
+void SlotPictures::Drawn(const void *slot, uint32_t width, uint32_t height,
+                         std::vector<Member> members, const Plan &plan,
+                         SharedFd fence) {
+  Held &h = slots_[slot];
+  const uint32_t run = h.snapshot.partial_run;
+  h.snapshot.valid = true;
+  h.snapshot.width = width;
+  h.snapshot.height = height;
+  h.snapshot.members = std::move(members);
+  h.snapshot.partial_run = plan.kind == Plan::Kind::kPartial     ? run + 1
+                           : plan.kind == Plan::Kind::kUnchanged ? run
+                                                                 : 0;
+  h.fence = std::move(fence);
+}
+
+void SlotPictures::Lost(const void *slot) {
+  const auto it = slots_.find(slot);
+  if (it != slots_.end())
+    it->second.snapshot.valid = false;
+}
+
+SharedFd SlotPictures::Fence(const void *slot) const {
+  const auto it = slots_.find(slot);
+  return it == slots_.end() ? SharedFd{} : it->second.fence;
 }
 
 }  // namespace android::drm_hwcomposer::partial
