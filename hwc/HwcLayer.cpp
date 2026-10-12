@@ -303,9 +303,7 @@ occlusion::Layer HwcLayer::OcclusionInput(const IRect &screen) const {
   /* What reaches past the frame is never cut down to a part of it, and
    * the pointer is not the occlusion's to move. */
   l.keep = sf_type_ == CompositionType::kCursor ||
-           !layer_data_.effects.shadow.empty() ||
-           !layer_data_.effects.blur.empty() ||
-           !layer_data_.effects.stretch.empty();
+           layer_data_.effects.ReachesPastFrame();
   return l;
 }
 

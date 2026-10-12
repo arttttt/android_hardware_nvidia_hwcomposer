@@ -49,6 +49,9 @@ struct LayerEffects {
   /* Whether anything would be drawn differently for these. */
   bool Any() const;
   bool HasCorners() const { return corners[4] > 0.F; }
+  /* A shadow, a blur or a stretch: drawn past the layer's frame, or from
+   * what lies under it. Every key arrives every frame, zeros for none. */
+  bool ReachesPastFrame() const;
 
   bool operator==(const LayerEffects &o) const {
     return corners == o.corners && shadow == o.shadow && blur == o.blur &&

@@ -45,8 +45,12 @@ bool Floats(const uint8_t *value, size_t length, std::vector<float> *out) {
 
 }  // namespace
 
+bool LayerEffects::ReachesPastFrame() const {
+  return !AllZero(shadow) || !AllZero(blur) || !AllZero(stretch);
+}
+
 bool LayerEffects::Any() const {
-  return HasCorners() || !AllZero(shadow) || !AllZero(blur) || !AllZero(stretch);
+  return HasCorners() || ReachesPastFrame();
 }
 
 EffectResult ApplyEffectMetadata(const char *key, size_t key_length, const uint8_t *value,
