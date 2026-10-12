@@ -115,4 +115,9 @@ constexpr float kMostPartialShare = 0.5F;
 Plan Decide(const Snapshot &held, uint32_t width, uint32_t height,
             const std::vector<Member> &members, const DamageHistory &history);
 
+/* A member cut down to the part of it that lands inside `bound`: the place
+ * trimmed, and the part of the buffer read trimmed in proportion. False
+ * when nothing of it lands there. */
+bool ClipTo(const IRect &bound, FRect *src, IRect *dst);
+
 }  // namespace android::drm_hwcomposer::partial

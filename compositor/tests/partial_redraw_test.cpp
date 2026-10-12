@@ -185,9 +185,30 @@ void TestHistoryBounds() {
   CHECK(!h.Between(9, 19, 20, &rects, &whole));
 }
 
+/* A member cut to the region: place and source alike, in proportion when
+ * scaled; one outside the region is left out. */
+void TestClip() {
+  FRect src{0, 0, 1536, 145};
+  IRect dst{0, 1903, 1536, 2048};
+  CHECK(ClipTo({96, 1912, 208, 1964}, &src, &dst));
+  CHECK(dst == (IRect{96, 1912, 208, 1964}));
+  CHECK(src == (FRect{96, 9, 208, 61}));
+
+  FRect half{0, 0, 768, 1024};
+  IRect full{0, 0, 1536, 2048};
+  CHECK(ClipTo({16, 8, 112, 36}, &half, &full));
+  CHECK(half == (FRect{8, 4, 56, 18}));
+
+  FRect bar{0, 0, 1536, 43};
+  IRect top{0, 0, 1536, 43};
+  CHECK(!ClipTo({96, 1912, 208, 1964}, &bar, &top));
+  CHECK(top == (IRect{0, 0, 1536, 43}));
+}
+
 }  // namespace
 
 int main() {
+  TestClip();
   TestClockTick();
   TestOffsetIntoGroup();
   TestChainOfFrames();

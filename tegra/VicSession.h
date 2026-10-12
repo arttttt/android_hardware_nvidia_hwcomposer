@@ -26,6 +26,7 @@
 
 #include <cutils/native_handle.h>
 
+#include "compositor/Rect.h"
 #include "utils/fd.h"
 
 namespace android {
@@ -188,12 +189,22 @@ class VicSession {
    * the allocator made, and that is deliberate -- a second origin is a
    * second set of rules, and the last time this class had two, the one
    * nobody was watching wrote the fault we spent a month chasing in the
-   * other. */
+   * other.
+   *
+   * `dirty`, when given, narrows the write further, to that rectangle of
+   * the group: what lies outside it is left as the buffer already holds
+   * it, and each member is cut to the part of it that lands inside --
+   * members that land wholly outside are not read at all. For redrawing
+   * only what changed in a buffer drawn before; honoured only unturned,
+   * since a turn mirrors where members land and the rectangle would have
+   * to be mirrored with them. */
   drm_hwcomposer::SharedFd Compose(const VendorBuffer &target,
                                    const std::vector<Layer> &layers,
                                    uint32_t width = 0, uint32_t height = 0,
                                    int target_ready = -1,
-                                   uint32_t transform = 0);
+                                   uint32_t transform = 0,
+                                   const drm_hwcomposer::IRect *dirty =
+                                       nullptr);
 
   /* The target descriptor as it stood the last time a frame was handed to
    * the engine with a vendor-born target: the memory handle in the word
@@ -320,7 +331,8 @@ class VicSession {
                                        uint32_t width, uint32_t height,
                                        int target_ready,
                                        const uint32_t *probe_words,
-                                       uint32_t transform);
+                                       uint32_t transform,
+                                       const drm_hwcomposer::IRect *dirty);
 
   /* Their settings structure, held as a plain run of bytes.
    *

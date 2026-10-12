@@ -166,4 +166,20 @@ Plan Decide(const Snapshot &held, uint32_t width, uint32_t height,
   return Plan{Plan::Kind::kPartial, dirty};
 }
 
+bool ClipTo(const IRect &bound, FRect *src, IRect *dst) {
+  const IRect in{std::max(dst->left, bound.left), std::max(dst->top, bound.top),
+                 std::min(dst->right, bound.right),
+                 std::min(dst->bottom, bound.bottom)};
+  if (Empty(in))
+    return false;
+  const float sx = src->Width() / static_cast<float>(dst->Width());
+  const float sy = src->Height() / static_cast<float>(dst->Height());
+  *src = {src->left + static_cast<float>(in.left - dst->left) * sx,
+          src->top + static_cast<float>(in.top - dst->top) * sy,
+          src->right - static_cast<float>(dst->right - in.right) * sx,
+          src->bottom - static_cast<float>(dst->bottom - in.bottom) * sy};
+  *dst = in;
+  return true;
+}
+
 }  // namespace android::drm_hwcomposer::partial
