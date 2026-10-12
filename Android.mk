@@ -120,6 +120,7 @@ LOCAL_SRC_FILES := \
     compositor/LayerEffects.cpp \
     compositor/LayerToPlaneJoiningPlan.cpp \
     compositor/MergeGroup.cpp \
+    compositor/Occlusion.cpp \
     display/DrmMode.cpp \
     display/DrmProperty.cpp \
     display/VSyncWorker.cpp \
