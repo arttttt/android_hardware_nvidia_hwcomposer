@@ -349,7 +349,8 @@ bool HwcDisplay::GpuCanDrawClient(
   return any;
 }
 
-void HwcDisplay::SeatGpuBuffer(buffer_handle_t buffer, SharedFd fence) {
+void HwcDisplay::SeatGpuBuffer(buffer_handle_t buffer, SharedFd fence,
+                               const IRect &bounds) {
   auto bo = BufferInfoGetter::GetInstance()->GetBoInfo(buffer);
   if (!bo)
     return;
@@ -359,11 +360,16 @@ void HwcDisplay::SeatGpuBuffer(buffer_handle_t buffer, SharedFd fence) {
       .fb = GetPipe().importer->GetOrCreateFbId(&bo.value()),
       .fence = std::move(fence),
   };
+  /* The part the picture covers, or the whole buffer when nothing says;
+   * the rest of the buffer holds whatever an older picture left there,
+   * transparent where it lay on the screen, and is not shown. */
   const auto size = GetSize();
-  lp.display_frame = DstRectInfo{IRect{0, 0, static_cast<int32_t>(size.first),
-                                       static_cast<int32_t>(size.second)}};
-  lp.source_crop = SrcRectInfo{FRect{0.F, 0.F, static_cast<float>(size.first),
-                                     static_cast<float>(size.second)}};
+  IRect r{0, 0, static_cast<int32_t>(size.first), static_cast<int32_t>(size.second)};
+  if (bounds.right > bounds.left && bounds.bottom > bounds.top)
+    r = bounds;
+  lp.display_frame = DstRectInfo{r};
+  lp.source_crop = SrcRectInfo{FRect{static_cast<float>(r.left), static_cast<float>(r.top),
+                                     static_cast<float>(r.right), static_cast<float>(r.bottom)}};
   client_layer_.SetLayerProperties(lp);
 }
 
@@ -387,12 +393,24 @@ void HwcDisplay::BeginClientOnGpu(
   std::vector<PictureMemory::Member> members;
   layers.reserve(range.size());
   members.reserve(range.size());
+  IRect bounds{};
   for (const HwcLayer *layer : range) {
     const LayerData &ld = layer->GetLayerData();
     layers.push_back(ToVkLayer(ld, size));
     members.push_back(GpuMember(ld, layers.back()));
     gpu_slots_.Record(members.back(), ld.pi.damage.dmg_rects);
+    const auto &l = layers.back();
+    if (l.dst_right <= l.dst_left || l.dst_bottom <= l.dst_top)
+      continue;
+    bounds = bounds.right > bounds.left
+                 ? IRect{std::min(bounds.left, l.dst_left), std::min(bounds.top, l.dst_top),
+                         std::max(bounds.right, l.dst_right),
+                         std::max(bounds.bottom, l.dst_bottom)}
+                 : IRect{l.dst_left, l.dst_top, l.dst_right, l.dst_bottom};
   }
+  gpu_next_bounds_ = {std::max(bounds.left, 0), std::max(bounds.top, 0),
+                      std::min(bounds.right, static_cast<int32_t>(size.first)),
+                      std::min(bounds.bottom, static_cast<int32_t>(size.second))};
   gpu_keep_ = false;
 
   /* The picture the executor last drew, wanted again: nothing is drawn,
@@ -430,8 +448,14 @@ void HwcDisplay::BeginClientOnGpu(
       begun_words_ += line;
     }
   }
+  /* A whole drawing is still only of the range's own part: the executor
+   * draws a buffer it has drawn before only inside the area it is given,
+   * and one it has not drawn whole, as before. */
+  const bool bounded = gpu_next_bounds_.right > gpu_next_bounds_.left &&
+                       gpu_next_bounds_.bottom > gpu_next_bounds_.top;
   gpu_begun_ = gpu->Begin(
       layers, gpu_plan_.kind == partial::Plan::Kind::kPartial ? &gpu_plan_.dirty
+              : bounded                                       ? &gpu_next_bounds_
                                                               : nullptr);
 }
 
@@ -460,7 +484,8 @@ bool HwcDisplay::DrawClientOnGpu(
                                 head + DescribeLayers(composition, GetSize()));
     }
     last_gpu_use_ns_ = GetTimeMonotonicNs();
-    SeatGpuBuffer(gpu->Current(), gpu_drawn_fence_);
+    gpu_shown_bounds_ = gpu_next_bounds_;
+    SeatGpuBuffer(gpu->Current(), gpu_drawn_fence_, gpu_shown_bounds_);
     return true;
   }
 
@@ -513,7 +538,8 @@ bool HwcDisplay::DrawClientOnGpu(
   gpu_memory_.Remember(0, size.first, size.second, std::move(gpu_pending_));
   gpu_pending_.clear();
   gpu_drawn_fence_ = drawn->fence;
-  SeatGpuBuffer(drawn->buffer, std::move(drawn->fence));
+  gpu_shown_bounds_ = gpu_next_bounds_;
+  SeatGpuBuffer(drawn->buffer, std::move(drawn->fence), gpu_shown_bounds_);
   return true;
 }
 
@@ -842,7 +868,7 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
   auto *gpu = GetPipe().GetGpuExecutor();
   if (gpu != nullptr) {
     if (!client_layer_.IsLayerUsableAsDevice())
-      SeatGpuBuffer(gpu->Current(), {});
+      SeatGpuBuffer(gpu->Current(), {}, gpu_shown_bounds_);
     /* Every buffer handed to the executor's thread now, whatever window it
      * may end on: its first import costs milliseconds and is paid there,
      * off the frame, rather than in the commit that first draws it -- as
