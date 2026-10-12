@@ -571,9 +571,16 @@ class HwcDisplay : public ICompositorDisplay {
   partial::SlotPictures gpu_slots_{partial::Engine{true}};
   partial::Plan gpu_plan_;
   bool gpu_keep_ = false;
+  /* Where the client range lies on the panel: the drawing under way, and
+   * the picture last shown. Only that part of a buffer is drawn and only
+   * that part is seated, so neither the GPU nor whatever reads the client
+   * target spends anything on the empty rest of the screen. */
+  IRect gpu_next_bounds_{};
+  IRect gpu_shown_bounds_{};
   bool DrawClientOnGpu(
       const CompositionPlanner::ValidatedComposition &composition);
-  void SeatGpuBuffer(buffer_handle_t buffer, SharedFd fence);
+  void SeatGpuBuffer(buffer_handle_t buffer, SharedFd fence,
+                     const IRect &bounds);
   int64_t last_gpu_use_ns_ = 0;
 
   /* Display-level PlanInvalidator bits; the layers carry their own. Starts
