@@ -23,6 +23,12 @@ namespace android::drm_hwcomposer {
 PictureMemory::Verdict PictureMemory::Judge(
     int32_t seat, uint32_t width, uint32_t height,
     const std::vector<Member> &members) const {
+  return Compare(seat, width, height, members, false);
+}
+
+PictureMemory::Verdict PictureMemory::Compare(
+    int32_t seat, uint32_t width, uint32_t height,
+    const std::vector<Member> &members, bool frames_aside) const {
   if (!remembered_)
     return Verdict::kFirstSight;
   if (seat != seat_ || members.size() != members_.size())
@@ -34,12 +40,21 @@ PictureMemory::Verdict PictureMemory::Judge(
     const Member &m = members[i];
     const Member &r = members_[i];
 
-    if (!m.solid && m.source == 0)
-      return Verdict::kNameless;
-    if (m.solid != r.solid || m.source != r.source || m.color != r.color)
-      return Verdict::kChangedIdentity;
-    if (m.generation != r.generation)
-      return Verdict::kChangedFrame;
+    if (frames_aside) {
+      /* A newer frame of a layer may come in another of its buffers, so
+       * the layer is what is compared, not the buffer. */
+      if (m.serial == 0)
+        return Verdict::kNameless;
+      if (m.solid != r.solid || m.serial != r.serial || m.color != r.color)
+        return Verdict::kChangedIdentity;
+    } else {
+      if (!m.solid && m.source == 0)
+        return Verdict::kNameless;
+      if (m.solid != r.solid || m.source != r.source || m.color != r.color)
+        return Verdict::kChangedIdentity;
+      if (m.generation != r.generation)
+        return Verdict::kChangedFrame;
+    }
 
     /* Exact comparison on purpose, floats included: both sides came out of
      * the same description untouched, so anything unequal really is a
