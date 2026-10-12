@@ -241,6 +241,26 @@ hwc::vk::Layer ToVkLayer(const LayerData &ld, std::pair<uint32_t, uint32_t> size
   return l;
 }
 
+/* A layer of the client range as the memory of drawn pictures takes it:
+ * whose pixels and which frame of them, and everything the executor was
+ * told about how to draw it. */
+PictureMemory::Member GpuMember(const LayerData &ld, const hwc::vk::Layer &l) {
+  PictureMemory::Member m;
+  m.source = ld.bi ? ld.bi->unique_id : 0;
+  m.generation = ld.generation;
+  m.solid = !ld.bi;
+  std::copy(std::begin(l.color), std::end(l.color), m.color.begin());
+  m.src = {l.src_left, l.src_top, l.src_right, l.src_bottom};
+  m.dst = {l.dst_left, l.dst_top, l.dst_right, l.dst_bottom};
+  m.alpha = l.alpha;
+  m.premultiplied = l.premultiplied;
+  m.opaque = l.opaque;
+  m.transform = l.transform;
+  m.corners = {l.corner_left, l.corner_top, l.corner_right, l.corner_bottom,
+               l.corner_radius};
+  return m;
+}
+
 /* Every layer of the frame, bottom first, as the executor would take it:
  * what the plan made of it, what the client asked for, and the geometry,
  * blending and corners that went to the GPU. Which of them the GPU drew is
@@ -347,9 +367,22 @@ void HwcDisplay::BeginClientOnGpu(
 
   const auto size = GetSize();
   std::vector<hwc::vk::Layer> layers;
+  std::vector<PictureMemory::Member> members;
   layers.reserve(range.size());
-  for (const HwcLayer *layer : range)
+  members.reserve(range.size());
+  for (const HwcLayer *layer : range) {
     layers.push_back(ToVkLayer(layer->GetLayerData(), size));
+    members.push_back(GpuMember(layer->GetLayerData(), layers.back()));
+  }
+
+  /* The picture the executor last drew, wanted again: nothing is drawn,
+   * and its buffer goes up once more. */
+  if (gpu_memory_.Judge(0, size.first, size.second, members) ==
+      PictureMemory::Verdict::kSame) {
+    gpu_reuse_ = true;
+    return;
+  }
+  gpu_pending_ = std::move(members);
 
   /* What the drawing was begun with, kept only while a capture asks:
    * the words written at present describe the layers as they are then. */
@@ -375,13 +408,28 @@ bool HwcDisplay::DrawClientOnGpu(
 
   /* Begun at validate, so the drawing ran while the client went from
    * validate to present; begun here only for a frame that skipped it. */
-  const bool begun_at_validate = gpu_begun_;
-  if (!gpu_begun_)
+  const bool begun_at_validate = gpu_begun_ || gpu_reuse_;
+  if (!gpu_begun_ && !gpu_reuse_)
     BeginClientOnGpu(composition);
   gpu_begun_ = false;
 
-  auto drawn = gpu->Finish();
   using hwc::PictureCapture;
+  if (gpu_reuse_) {
+    gpu_reuse_ = false;
+    if (PictureCapture::Wanted(PictureCapture::Source::kGpu)) {
+      char head[96];
+      snprintf(head, sizeof(head), "reused (judged at %s); panel buffer %p\n",
+               begun_at_validate ? "validate" : "present",
+               static_cast<const void *>(gpu->Current()));
+      PictureCapture::WriteText(PictureCapture::Source::kGpu,
+                                head + DescribeLayers(composition, GetSize()));
+    }
+    last_gpu_use_ns_ = GetTimeMonotonicNs();
+    SeatGpuBuffer(gpu->Current(), gpu_drawn_fence_);
+    return true;
+  }
+
+  auto drawn = gpu->Finish();
   if (PictureCapture::Wanted(PictureCapture::Source::kGpu)) {
     char head[96];
     snprintf(head, sizeof(head), "%s (begun at %s); panel buffer %p\n",
@@ -405,9 +453,14 @@ bool HwcDisplay::DrawClientOnGpu(
       ALOGW("gpu executor refused a frame; showing its last one");
       said = true;
     }
+    gpu_memory_.Forget();
     return false;
   }
   last_gpu_use_ns_ = GetTimeMonotonicNs();
+  const auto size = GetSize();
+  gpu_memory_.Remember(0, size.first, size.second, std::move(gpu_pending_));
+  gpu_pending_.clear();
+  gpu_drawn_fence_ = drawn->fence;
   SeatGpuBuffer(drawn->buffer, std::move(drawn->fence));
   return true;
 }
@@ -686,6 +739,7 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
   /* A drawing begun for a validation that was never presented is not this
    * frame's; the executor drops it when the next one begins. */
   gpu_begun_ = false;
+  gpu_reuse_ = false;
 
   /* How many layers the client offered, said when the number changes.
    *
@@ -895,6 +949,7 @@ auto HwcDisplay::PresentStagedComposition(
     /* A frame the flip machinery never saw: whatever it remembers on the
      * strength of seeing every frame must not survive this one. */
     GetPipe().atomic_state_manager->NoteFrameUnjudged();
+    gpu_memory_.Forget();
     return true;
   }
 
@@ -2148,6 +2203,9 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
 
   const bool gpu_drew = validated_composition_->gpu_draws_client &&
                         DrawClientOnGpu(validated_composition_.value());
+  /* A frame the executor sat out is a frame its memory did not watch. */
+  if (!validated_composition_->gpu_draws_client)
+    gpu_memory_.Forget();
   PrepareCompositionForCommit(validated_composition_.value());
   const int64_t t1 = GetTimeMonotonicNs();
 
@@ -2176,6 +2234,7 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
     /* Given up before the flip machinery was asked -- a frame it never
      * judged, so nothing it remembers may outlive this one. */
     GetPipe().atomic_state_manager->NoteFrameUnjudged();
+    gpu_memory_.Forget();
     return CommitStatus::InternalFailure();
   }
 
@@ -2189,6 +2248,7 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
     /* Asked and refused is as unjudged as never asked -- the frame put
      * nothing on the panel, so nothing remembered of it may outlive it. */
     GetPipe().atomic_state_manager->NoteFrameUnjudged();
+    gpu_memory_.Forget();
     return status_or_result.GetStatus();
   }
 

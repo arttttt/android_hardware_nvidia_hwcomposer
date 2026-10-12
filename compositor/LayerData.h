@@ -222,6 +222,13 @@ struct LayerData {
   PresentInfo pi;
   SharedFd acquire_fence;
 
+  /* Which frame of the layer's content this is: counted up each time the
+   * client hands over a buffer, the same one again included. A buffer's
+   * identity says whose pixels; this says which of them -- a client that
+   * draws into the very buffer it showed last hands it over again, and the
+   * count is how that is told from showing it unchanged. */
+  uint64_t generation = 0;
+
   /* Given values of their own, and it matters.
    *
    * Every other member here builds itself. These two are plain enumerations,

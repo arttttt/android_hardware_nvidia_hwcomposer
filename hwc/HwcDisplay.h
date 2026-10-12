@@ -28,6 +28,7 @@
 #include <ui/ColorSpace.h>
 #include <ui/GraphicTypes.h>
 
+#include "compositor/PictureMemory.h"
 #include "compositor/CompositionPlanner.h"
 #include "compositor/DisplayInfo.h"
 #include "compositor/ICompositorDisplay.h"
@@ -555,6 +556,13 @@ class HwcDisplay : public ICompositorDisplay {
   /* A drawing of the client range is under way on the executor's thread. */
   std::string begun_words_;
   bool gpu_begun_ = false;
+  /* The client range is the picture the executor last drew: nothing is
+   * begun, and that buffer goes up again. What it was drawn of, what a
+   * begun drawing is of, and the fence the last drawing signals. */
+  bool gpu_reuse_ = false;
+  PictureMemory gpu_memory_;
+  std::vector<PictureMemory::Member> gpu_pending_;
+  SharedFd gpu_drawn_fence_;
   bool DrawClientOnGpu(
       const CompositionPlanner::ValidatedComposition &composition);
   void SeatGpuBuffer(buffer_handle_t buffer, SharedFd fence);
