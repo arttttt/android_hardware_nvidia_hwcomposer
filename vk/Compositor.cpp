@@ -436,6 +436,13 @@ bool VkCompositor::InitPipeline() {
   if (vk.CreateRenderPass(dev, &rpi, nullptr, &keep_pass_) != VK_SUCCESS)
     keep_pass_ = VK_NULL_HANDLE;
 
+  att.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  if (vk.CreateRenderPass(dev, &rpi, nullptr, &cover_keep_pass_) != VK_SUCCESS)
+    cover_keep_pass_ = VK_NULL_HANDLE;
+  att.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  if (vk.CreateRenderPass(dev, &rpi, nullptr, &cover_pass_) != VK_SUCCESS)
+    cover_pass_ = VK_NULL_HANDLE;
+
   VkSamplerCreateInfo si = {};
   si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
   si.magFilter = VK_FILTER_LINEAR;
@@ -749,6 +756,10 @@ void VkCompositor::Teardown() {
     vk.DestroySampler(dev, sampler_, nullptr);
   if (keep_pass_)
     vk.DestroyRenderPass(dev, keep_pass_, nullptr);
+  if (cover_pass_)
+    vk.DestroyRenderPass(dev, cover_pass_, nullptr);
+  if (cover_keep_pass_)
+    vk.DestroyRenderPass(dev, cover_keep_pass_, nullptr);
   if (render_pass_)
     vk.DestroyRenderPass(dev, render_pass_, nullptr);
   state_.destroy();
@@ -884,6 +895,19 @@ int VkCompositor::ComposeNow(const Target &target, const Layer *layers, size_t c
       area = {{l, t}, {static_cast<uint32_t>(r - l), static_cast<uint32_t>(b - t)}};
       pass = keep_pass_;
     }
+  }
+  /* Nothing to clear when the bottom layer writes every pixel of the area
+   * itself: opaque, whole plane alpha, no corners, and over all of it. */
+  {
+    const Layer &l = layers[0];
+    const bool hides = l.alpha >= 1.f && l.corner_radius <= 0.f &&
+                       (l.buffer != nullptr ? (l.opaque || opaque[0]) : l.color[3] >= 1.f);
+    const bool covers = l.dst_left <= area.offset.x && l.dst_top <= area.offset.y &&
+                        l.dst_right >= area.offset.x + static_cast<int32_t>(area.extent.width) &&
+                        l.dst_bottom >= area.offset.y + static_cast<int32_t>(area.extent.height);
+    const VkRenderPass cover = pass == keep_pass_ ? cover_keep_pass_ : cover_pass_;
+    if (hides && covers && cover != VK_NULL_HANDLE)
+      pass = cover;
   }
   VkRenderPassBeginInfo rbi = {};
   rbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
