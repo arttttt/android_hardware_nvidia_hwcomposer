@@ -170,6 +170,12 @@ auto Properties::GetCtmHandling() -> CtmHandling {
   return CtmHandling::kDrmOrGpu;
 }
 
+auto Properties::Occlusion() -> bool {
+  /* On unless told otherwise; read once, at the composer's start. */
+  static const bool wanted = property_get_bool("vendor.hwc.occlusion", 1) != 0;
+  return wanted;
+}
+
 auto Properties::CmuColorPipeline() -> bool {
   /* On unless told otherwise. Off unclaims the skip capability and idles
    * the colour pipeline in one move -- the framework tints in GL again, as

@@ -1770,11 +1770,28 @@ static int32_t SetLayerTransform(hwc2_device_t *device, hwc2_display_t display,
   return 0;
 }
 
-static int32_t SetLayerVisibleRegion(hwc2_device_t * /*device*/,
-                                     hwc2_display_t /*display*/,
-                                     hwc2_layer_t /*layer*/,
-                                     hwc_region_t /*visible*/) {
+static int32_t SetLayerVisibleRegion(hwc2_device_t *device,
+                                     hwc2_display_t display,
+                                     hwc2_layer_t layer,
+                                     hwc_region_t visible) {
   ALOGV("SetLayerVisibleRegion");
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+  GET_LAYER(layer);
+
+  /* What of the layer SurfaceFlinger itself found can be seen; the
+   * composer's occlusion starts from it. */
+  std::vector<IRect> region;
+  region.reserve(visible.numRects);
+  for (size_t i = 0; i < visible.numRects; ++i) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    const auto rect = visible.rects[i];
+    region.push_back(IRect{.left = rect.left,
+                           .top = rect.top,
+                           .right = rect.right,
+                           .bottom = rect.bottom});
+  }
+  ilayer->SetVisibleRegion(std::move(region));
   return 0;
 }
 

@@ -39,6 +39,10 @@ class Properties {
    * cannot disagree. */
   static auto CmuColorPipeline() -> bool;
 
+  /* Whether layers the ones above hide are left out or cropped; see
+   * compositor/Occlusion.h. A switch for comparing. */
+  static auto Occlusion() -> bool;
+
   /* Whether the pipeline's resting state corrects the panel's gamut toward
    * sRGB rather than showing the panel as it is. */
   static auto CalibratedColorMode() -> bool;
