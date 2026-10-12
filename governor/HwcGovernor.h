@@ -23,7 +23,8 @@
  *
  * The composer knows nothing about engine clocks, nvhost or pm_qos. What it
  * knows is when a frame with a merge was planned, when the merge went to
- * the engine, and when the frame was posted -- and it says so, in plain
+ * the engine, when its own GPU drawing was planned and went out, and when
+ * the frame was posted -- and it says so, in plain
  * numbers, to whatever implements Governor below. Everything that turns
  * those numbers into a clock request lives in a separate library,
  * hwcgovernor.<platform>.so, loaded by name at pipeline creation; a device
@@ -38,7 +39,7 @@
 
 namespace android::hwc::governor {
 
-constexpr uint32_t apiVersion = 2;
+constexpr uint32_t apiVersion = 3;
 
 /* The display's power mode, numbered as the composer's own enumeration. */
 enum class Power : uint8_t {
@@ -136,6 +137,16 @@ class Governor {
   /* The merge went to the engine. `merge_fence_fd` is a duplicate of the
    * engine's fence and belongs to the governor, which closes it. */
   virtual void MergeSubmitted(uint64_t seq, int merge_fence_fd) = 0;
+
+  /* Validate, after FramePlanned of the same `seq`: the composer's GPU is
+   * about to draw `pixels` of the client range. Called right before the
+   * drawing is handed to the GPU's thread, which starts on it at once. */
+  virtual void GpuPlanned(uint64_t seq, uint32_t pixels) = 0;
+
+  /* The GPU's drawing for `seq` went out. `gpu_fence_fd` is a duplicate of
+   * its fence and belongs to the governor, which closes it. Not called
+   * for a frame whose picture was kept or reused rather than drawn. */
+  virtual void GpuSubmitted(uint64_t seq, int gpu_fence_fd) = 0;
 
   /* The frame was posted to the controller. */
   virtual void FramePresented(uint64_t seq) = 0;

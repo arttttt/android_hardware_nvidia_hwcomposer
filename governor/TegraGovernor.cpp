@@ -32,7 +32,7 @@
 namespace android::hwc::governor::tegra {
 
 TegraGovernor::TegraGovernor(GovernorHost &host)
-    : host_(host), engine_(host), cpu_(host) {
+    : host_(host), engine_(host), gpu_clock_(host), cpu_(host) {
 }
 
 bool TegraGovernor::Start() {
@@ -55,6 +55,8 @@ bool TegraGovernor::Start() {
   if (!engine_.Open())
     host_.Log(ANDROID_LOG_ERROR, "no engine clock; running as a witness");
   cpu_.Open();
+  if (tuning_.gpu_boost != 0)
+    gpu_clock_.Open();
 
   thread_ = std::thread(&TegraGovernor::ThreadFn, this);
   return true;
@@ -85,6 +87,21 @@ void TegraGovernor::MergeSubmitted(uint64_t seq, int merge_fence_fd) {
   mailbox_.Submit(seq, merge_fence_fd);
 }
 
+void TegraGovernor::GpuPlanned(uint64_t seq, uint32_t pixels) {
+  if (dead_.load())
+    return;
+  mailbox_.PlanGpu(seq, pixels);
+}
+
+void TegraGovernor::GpuSubmitted(uint64_t seq, int gpu_fence_fd) {
+  if (dead_.load()) {
+    if (gpu_fence_fd >= 0)
+      close(gpu_fence_fd);
+    return;
+  }
+  mailbox_.SubmitGpu(seq, gpu_fence_fd);
+}
+
 void TegraGovernor::FramePresented(uint64_t /*seq*/) {
   /* Nothing to do with it in this version: the merge's own fence says
    * when the engine is done, and the submit says when the processor may
@@ -105,6 +122,7 @@ int TegraGovernor::TimeoutMs(int64_t now) const {
   };
   consider(cpu_until_ns_);
   consider(vic_.NextDueNs());
+  consider(gpu_.NextDueNs());
 
   if (due == 0)
     return -1;
@@ -133,10 +151,12 @@ void TegraGovernor::ThreadFn() {
 
   std::vector<struct pollfd> fds;
   for (;;) {
-    /* The poll set: the mailbox first, then the fences in their order. */
+    /* The poll set: the mailbox first, then each engine's fences in their
+     * order. */
     fds.clear();
     fds.push_back(pollfd{mailbox_.fd(), POLLIN, 0});
     vic_.AppendPollSet(&fds);
+    gpu_.AppendPollSet(&fds);
 
     if (poll(fds.data(), fds.size(), TimeoutMs(NowNs())) < 0 &&
         errno != EINTR) {
@@ -155,9 +175,11 @@ void TegraGovernor::ThreadFn() {
        * coming, and a floor left standing would hold the memory clock up
        * through the doze. The fences just taken are ours to close, and
        * are closed unwatched. */
-      for (const Watched &w : mail.submitted)
-        if (w.fd >= 0)
-          close(w.fd);
+      for (const std::vector<Watched> *list :
+           {&mail.submitted, &mail.gpu_submitted})
+        for (const Watched &w : *list)
+          if (w.fd >= 0)
+            close(w.fd);
       DropEverything();
       if (mail.stop)
         break;
@@ -176,6 +198,10 @@ void TegraGovernor::ThreadFn() {
 
     vic_.Follow(fds, mail.submitted, now);
 
+    if (!mail.gpu_submitted.empty())
+      gpu_.Reported();
+    gpu_.Follow(fds, mail.gpu_submitted, now);
+
     if (mail.planned) {
       /* Reported this round or earlier: either way the merge is gone. */
       const uint64_t seq = mail.planned->frame.seq;
@@ -185,8 +211,12 @@ void TegraGovernor::ThreadFn() {
       for (const Watched &w : mail.submitted)
         NoteSubmit(w.seq, w.since_ns);
     }
+    /* After the frame's own plan: its latch is what the drawing aims at. */
+    if (mail.gpu_planned)
+      DecideGpu(*mail.gpu_planned, now);
 
     vic_.ReleaseIfDue(now);
+    gpu_.ReleaseIfDue(now);
 
     if (cpu_until_ns_ != 0 && now >= cpu_until_ns_)
       DropCpu();
@@ -219,6 +249,7 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
   const int64_t gap_ns =
       last_plan_ns_ != 0 ? f.now_ns - last_plan_ns_ : INT64_MAX;
   last_plan_ns_ = f.now_ns;
+  last_frame_ = f;
 
   if (!f.merge_planned || f.merge_reuse_predicted) {
     host_.TraceInt("hwc_gov_need_mhz", 0);
@@ -344,6 +375,28 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
     cpu_until_ns_ = now + int64_t(tuning_.cpu_cap_ms) * nsPerMs;
 }
 
+void TegraGovernor::DecideGpu(const GpuPlan &plan, int64_t now) {
+  if (tuning_.gpu_boost == 0 || !gpu_.usable())
+    return;
+  /* The frame's plan comes first in the same validate; a drawing whose
+   * frame never reached the governor has no latch to aim at. */
+  if (last_frame_.seq != plan.seq)
+    return;
+  /* No floor in power save: there the drawing runs at what podgov gives. */
+  if (profile_.Read(now, int64_t(tuning_.profile_poll_ms) * nsPerMs) ==
+      PerfProfile::powerSave)
+    return;
+
+  const WorkEstimate e = EstimateGpu(last_frame_, plan.pixels, now, tuning_);
+  host_.TraceInt("hwc_gov_gpu_kpx", int32_t(plan.pixels / 1000));
+  host_.TraceInt("hwc_gov_gpu_budget_us", int32_t(e.budget_ns / nsPerUs));
+  host_.TraceInt("hwc_gov_gpu_need_mhz", int32_t(e.need_mhz));
+  host_.TraceInt("hwc_gov_gpu_step_mhz", int32_t(e.step_mhz));
+  host_.TraceInt("hwc_gov_gpu_slip", e.slipped ? 1 : 0);
+
+  gpu_.Ask(e.step_mhz, 0, gpu_.HasReported(plan.seq), now);
+}
+
 void TegraGovernor::NoteSubmit(uint64_t seq, int64_t reported_ns) {
   if (seq != planned_seq_ || planned_validate_ns_ == 0)
     return;
@@ -454,6 +507,7 @@ void TegraGovernor::WarmAhead(const Frame &f, int64_t now, int64_t gap_ns) {
 
 void TegraGovernor::DropEverything() {
   vic_.DropAll();
+  gpu_.DropAll();
   DropCpu();
 }
 

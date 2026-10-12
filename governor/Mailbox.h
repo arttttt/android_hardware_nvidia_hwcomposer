@@ -32,6 +32,14 @@ struct Planned {
   std::vector<Member> members;
 };
 
+/* The composer's GPU drawing planned: for which frame, when the composer
+ * said so, and how many pixels. */
+struct GpuPlan {
+  uint64_t seq;
+  int64_t now_ns;
+  uint32_t pixels;
+};
+
 /* What the composer's threads leave for the governor's thread.
  *
  * Snapshots replace each other -- the last plan is the one that will be
@@ -45,6 +53,8 @@ class Mailbox {
     /* since_ns carries when the composer reported the merge, stamped on
      * its thread, right after the submit; the watch sets its own. */
     std::vector<Watched> submitted;
+    std::optional<GpuPlan> gpu_planned;
+    std::vector<Watched> gpu_submitted;
     Power power;
     bool stop;
   };
@@ -63,6 +73,8 @@ class Mailbox {
 
   void Plan(const Frame &frame);
   void Submit(uint64_t seq, int fence_fd);
+  void PlanGpu(uint64_t seq, uint32_t pixels);
+  void SubmitGpu(uint64_t seq, int fence_fd);
   void SetPower(Power mode);
   void Stop();
 
@@ -73,7 +85,7 @@ class Mailbox {
   /* Whether a merge has been reported since the last take. */
   bool HasSubmitted();
 
-  /* Closes what was submitted and never taken. */
+  /* Closes what was submitted and never taken, merges and GPU alike. */
   void Discard();
 
  private:
@@ -83,6 +95,8 @@ class Mailbox {
   std::mutex mutex_;
   std::optional<Planned> pending_;
   std::vector<Watched> submitted_;
+  std::optional<GpuPlan> gpu_pending_;
+  std::vector<Watched> gpu_submitted_;
   Power power_ = Power::on;
   bool stop_ = false;
 };
