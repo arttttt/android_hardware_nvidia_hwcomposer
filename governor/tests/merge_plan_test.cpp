@@ -81,6 +81,24 @@ void ClockStepsAreOrdered() {
   CHECK(StepAtLeast(757) == 0);
 }
 
+void ACappedLadderStopsAtTheCap() {
+  static constexpr uint32_t steps[] = {72, 108, 180, 252, 324, 396, 852};
+  const ClockLadder capped = {steps, 7, 324};
+  CHECK(capped.Top() == 324);
+  CHECK(capped.AtLeast(200) == 252);
+  CHECK(capped.AtLeast(324) == 324);
+  CHECK(capped.AtLeast(325) == 0);
+
+  /* A cap between steps keeps the step below it. */
+  const ClockLadder between = {steps, 7, 350};
+  CHECK(between.Top() == 324);
+  CHECK(between.AtLeast(330) == 0);
+
+  const ClockLadder open = {steps, 7, 0};
+  CHECK(open.Top() == 852);
+  CHECK(open.AtLeast(400) == 852);
+}
+
 void ColdIsIdleBeyondThePowergate() {
   Tuning t;
   Frame f = Planned(t0, 0, true);
@@ -323,6 +341,7 @@ void AMeasuredSubmitPathShortensTheBudget() {
 
 int main() {
   ClockStepsAreOrdered();
+  ACappedLadderStopsAtTheCap();
   ColdIsIdleBeyondThePowergate();
   DeadlineFollowsThePhase();
   CyclesAreTheJobPlusHalfAClockPerPixelWithMargin();

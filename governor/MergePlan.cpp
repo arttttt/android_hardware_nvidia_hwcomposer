@@ -71,37 +71,59 @@ double MergeCycles(const Member *members, size_t count,
 
 namespace {
 
-/* The work without its margin, for judging a latch hopeless. */
-double area_cycles(const MergeEstimate &e, const Tuning &tuning) {
-  return e.cycles * 100.0 / tuning.factor_pct;
-}
-
 /* The estimate against one deadline. */
-void Estimate(MergeEstimate *e, int64_t deadline_ns, int64_t submit_end_ns) {
+void Estimate(WorkEstimate *e, int64_t deadline_ns, int64_t submit_end_ns,
+              const ClockLadder &ladder) {
   e->deadline_ns = deadline_ns;
   e->budget_ns = deadline_ns - submit_end_ns;
   e->late = e->budget_ns < nsPerMs;
   if (e->late)
     e->budget_ns = nsPerMs;
 
+  const uint32_t top = ladder.Top();
   const double need_hz = e->cycles * double(nsPerSec) / double(e->budget_ns);
-  e->need_mhz =
-      uint32_t(std::ceil(std::min<double>(need_hz / 1e6, 4.0 * topStepMhz)));
+  e->need_mhz = uint32_t(std::ceil(std::min<double>(need_hz / 1e6, 4.0 * top)));
 
-  e->step_mhz = StepAtLeast(e->need_mhz);
+  e->step_mhz = ladder.AtLeast(e->need_mhz);
   e->beyond = e->step_mhz == 0;
   if (e->beyond)
-    e->step_mhz = topStepMhz;
+    e->step_mhz = top;
 }
 
 }  // namespace
+
+WorkEstimate EstimateWork(const Frame &frame, double cycles, double raw_cycles,
+                          int64_t now_ns, int64_t submit_end_ns,
+                          const Tuning &tuning, const ClockLadder &ladder) {
+  WorkEstimate e = {};
+  e.cycles = cycles;
+
+  const int64_t deadline = LatchDeadline(frame, now_ns, tuning);
+  Estimate(&e, deadline, submit_end_ns, ladder);
+
+  /* Hopeless: the raw work at the top step does not fit between the
+   * shortest path and the latch. */
+  const double top_ns = raw_cycles / ladder.Top() * 1e3;
+  const int64_t soonest = now_ns + int64_t(tuning.lead_min_us) * nsPerUs;
+  const bool hopeless = double(deadline - soonest) < top_ns;
+  if (hopeless && PhaseKnown(frame, now_ns, tuning)) {
+    /* The nearest latch itself, then the earlier of the latch after it
+     * and the next frame's expected arrival at the engine. */
+    const int64_t latch = deadline + int64_t(tuning.latch_margin_us) * nsPerUs;
+    const int64_t slipped =
+        std::min(deadline + frame.vsync_period_ns,
+                 latch + int64_t(tuning.next_submit_us) * nsPerUs);
+    Estimate(&e, slipped, submit_end_ns, ladder);
+    e.slipped = true;
+  }
+  return e;
+}
 
 MergeEstimate EstimateMerge(const Frame &frame, const Member *members,
                             size_t count, int64_t now_ns,
                             const Tuning &tuning, bool cold,
                             bool cpu_lifted, int64_t submit_after_ns) {
-  MergeEstimate e = {};
-  e.cycles = MergeCycles(members, count, tuning);
+  const double cycles = MergeCycles(members, count, tuning);
 
   /* When the submit will have happened: measured from the frame's
    * validate when there is a measure, else the assumed lead and submit
@@ -114,25 +136,9 @@ MergeEstimate EstimateMerge(const Frame &frame, const Member *members,
           ? frame.now_ns + submit_after_ns
           : now_ns + int64_t(tuning.lead_us + submit_us) * nsPerUs;
 
-  const int64_t deadline = LatchDeadline(frame, now_ns, tuning);
-  Estimate(&e, deadline, submit_end);
-
-  /* Hopeless: the raw work at the top step does not fit between the
-   * shortest path and the latch. */
-  const double top_ns = double(area_cycles(e, tuning)) / topStepMhz * 1e3;
-  const int64_t soonest = now_ns + int64_t(tuning.lead_min_us) * nsPerUs;
-  const bool hopeless = double(deadline - soonest) < top_ns;
-  if (hopeless && PhaseKnown(frame, now_ns, tuning)) {
-    /* The nearest latch itself, then the earlier of the latch after it
-     * and the next frame's expected arrival at the engine. */
-    const int64_t latch = deadline + int64_t(tuning.latch_margin_us) * nsPerUs;
-    const int64_t slipped =
-        std::min(deadline + frame.vsync_period_ns,
-                 latch + int64_t(tuning.next_submit_us) * nsPerUs);
-    Estimate(&e, slipped, submit_end);
-    e.slipped = true;
-  }
-
+  MergeEstimate e =
+      EstimateWork(frame, cycles, cycles * 100.0 / tuning.factor_pct, now_ns,
+                   submit_end, tuning, vicLadder);
   if (cold && e.step_mhz < tuning.min_cold_mhz)
     e.step_mhz = tuning.min_cold_mhz;
   return e;
