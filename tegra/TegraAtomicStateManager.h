@@ -314,7 +314,7 @@ class TegraAtomicStateManager : public AtomicStateManager {
     throttle_to_one_frame_ = ThrottleFromProperty();
     report_engine_reads_ = EngineReadsFromProperty();
     merge_cache_ = MergeCacheFromProperty();
-    partial_ = PartialFromProperty();
+    partial_ = Properties::PartialRedraw();
     cmu_ctm_ = CmuFromProperty();
     calibrated_home_ = Properties::CalibratedColorMode();
   }
@@ -611,7 +611,6 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * once. */
   partial::SlotPictures slot_pictures_{partial::Engine{}};
   bool partial_ = true;
-  static bool PartialFromProperty();
 
   /* Puts the frame's colour transform into the head's colour pipeline, or
    * puts the pipeline back when the transform is the identity. Called once

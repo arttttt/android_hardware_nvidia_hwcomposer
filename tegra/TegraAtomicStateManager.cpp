@@ -1953,12 +1953,6 @@ bool TegraAtomicStateManager::MergeCacheFromProperty() {
   return property_get_bool("vendor.hwc.mergecache", 1) != 0;
 }
 
-bool TegraAtomicStateManager::PartialFromProperty() {
-  /* On unless told otherwise. Off draws every merge whole, which is what
-   * this did before -- kept so the two can be compared on the panel. */
-  return property_get_bool("vendor.hwc.partial", 1) != 0;
-}
-
 bool TegraAtomicStateManager::CmuFromProperty() {
   /* On unless told otherwise. Off leaves the head's colour pipeline at its
    * boot state and the framework's matrices unapplied, which is what this

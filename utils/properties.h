@@ -43,6 +43,11 @@ class Properties {
    * compositor/Occlusion.h. A switch for comparing. */
   static auto Occlusion() -> bool;
 
+  /* Whether a buffer an engine drew before is drawn again only where its
+   * picture changed; see compositor/PartialRedraw.h. A switch for
+   * comparing. */
+  static auto PartialRedraw() -> bool;
+
   /* Whether the pipeline's resting state corrects the panel's gamut toward
    * sRGB rather than showing the panel as it is. */
   static auto CalibratedColorMode() -> bool;
