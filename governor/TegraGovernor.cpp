@@ -104,9 +104,7 @@ int TegraGovernor::TimeoutMs(int64_t now) const {
       due = when;
   };
   consider(cpu_until_ns_);
-  consider(release_due_ns_);
-  consider(orphan_due_ns_);
-  consider(fences_.NextGiveUpNs(int64_t(tuning_.fence_patience_ms) * nsPerMs));
+  consider(vic_.NextDueNs());
 
   if (due == 0)
     return -1;
@@ -138,7 +136,7 @@ void TegraGovernor::ThreadFn() {
     /* The poll set: the mailbox first, then the fences in their order. */
     fds.clear();
     fds.push_back(pollfd{mailbox_.fd(), POLLIN, 0});
-    fences_.AppendPollSet(&fds);
+    vic_.AppendPollSet(&fds);
 
     if (poll(fds.data(), fds.size(), TimeoutMs(NowNs())) < 0 &&
         errno != EINTR) {
@@ -170,82 +168,34 @@ void TegraGovernor::ThreadFn() {
      * engine is done with them -- and the composer is past the submit, so
      * a step withheld from a cold engine can be asked now. */
     if (!mail.submitted.empty()) {
-      orphan_due_ns_ = 0;
       DropCpu();
-      RaiseDeferred();
+      vic_.Reported();
     }
     for (const Watched &w : mail.submitted)
       NoteSubmit(w.seq, w.since_ns);
 
-    /* Judged against the slots built before the sleep; only then are the
-     * merges reported this round added, after those slots. */
-    const bool any_done =
-        fences_.Judge(fds, 1, now, int64_t(tuning_.fence_patience_ms) * nsPerMs);
-    for (const Watched &w : mail.submitted)
-      fences_.Add(w.fd, w.seq, now);
-
-    /* The floor outlives the last fence by the hold -- unless a frame has
-     * been planned whose merge has not reported yet: that merge is what
-     * the floor stands for now, and the orphan timer covers it instead. */
-    if (any_done && fences_.empty() && engine_.floor_mhz() != 0 &&
-        orphan_due_ns_ == 0)
-      release_due_ns_ = now + int64_t(tuning_.hold_ms) * nsPerMs;
+    vic_.Follow(fds, mail.submitted, now);
 
     if (mail.planned) {
       /* Reported this round or earlier: either way the merge is gone. */
       const uint64_t seq = mail.planned->frame.seq;
-      Decide(*mail.planned, now, fences_.latest_seq() >= seq);
+      Decide(*mail.planned, now, vic_.HasReported(seq));
       /* A merge reported in the same round as its plan is timed against
        * that plan; the pass before the plan did not know it yet. */
       for (const Watched &w : mail.submitted)
         NoteSubmit(w.seq, w.since_ns);
     }
 
-    JudgeRelease(now);
+    vic_.ReleaseIfDue(now);
 
     if (cpu_until_ns_ != 0 && now >= cpu_until_ns_)
       DropCpu();
   }
 }
 
-void TegraGovernor::JudgeRelease(int64_t now) {
-  if (engine_.floor_mhz() == 0 || !fences_.empty())
-    return;
-  const bool held_long_enough = release_due_ns_ != 0 && now >= release_due_ns_;
-  const bool orphaned = orphan_due_ns_ != 0 && now >= orphan_due_ns_;
-  if (held_long_enough || orphaned) {
-    release_due_ns_ = 0;
-    orphan_due_ns_ = 0;
-    deferred_mhz_ = 0;
-    engine_.Release();
-  }
-}
-
 void TegraGovernor::DropCpu() {
   cpu_until_ns_ = 0;
   cpu_.Drop();
-}
-
-void TegraGovernor::RaiseDeferred() {
-  const uint32_t step = deferred_mhz_;
-  deferred_mhz_ = 0;
-  if (step == 0 || !engine_.usable() || step <= engine_.floor_mhz())
-    return;
-  /* The merge is running at the capped step; the ramp this starts lands
-   * partway through it, or before the next one of the transition. */
-  engine_.SetFloor(step);
-  host_.TraceInt("hwc_gov_deferred_mhz", 0);
-}
-
-void TegraGovernor::KeepFloorFor(int64_t now) {
-  release_due_ns_ = 0;
-  orphan_due_ns_ = now + int64_t(tuning_.orphan_ms) * nsPerMs;
-}
-
-void TegraGovernor::FollowFences(int64_t now) {
-  orphan_due_ns_ = 0;
-  release_due_ns_ =
-      fences_.empty() ? now + int64_t(tuning_.hold_ms) * nsPerMs : 0;
 }
 
 void TegraGovernor::Trace(const MergeEstimate &e, bool cold, int profile,
@@ -307,7 +257,7 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
   const bool lift_cpu = (cold || (paused && tuning_.cpu_pause_lift != 0)) &&
                         !merge_reported && f.previous_flip_landed &&
                         !power_save && cpu_.available() &&
-                        tuning_.cpu_khz != 0 && engine_.usable();
+                        tuning_.cpu_khz != 0 && vic_.usable();
 
   /* An idling processor first: the engine's floor ramps the rail by I2C
    * writes served by interrupts, and at its lowest clock the processor
@@ -368,7 +318,7 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
   if (cold && !merge_reported)
     Warm(now);
 
-  if (!engine_.usable())
+  if (!vic_.usable())
     return;
 
   /* A cold engine with the submit still ahead is asked no more than the
@@ -377,29 +327,12 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
    * milliseconds. The rest is owed, and asked once the merge is reported.
    * A merge already sent, or a warm engine, is asked the step outright. */
   uint32_t ask = estimate.step_mhz;
-  deferred_mhz_ = 0;
+  uint32_t owed = 0;
   if (cold && !merge_reported && ask > tuning_.cold_cap_mhz) {
-    deferred_mhz_ = ask;
+    owed = ask;
     ask = tuning_.cold_cap_mhz;
   }
-  host_.TraceInt("hwc_gov_deferred_mhz", int32_t(deferred_mhz_));
-
-  /* Only upward from what the engine is already doing, by a floor still
-   * standing from the previous merge or by devfreq's doing -- devfreq
-   * asked only when the floor alone would not answer. A standing floor is
-   * kept standing: this merge's fence will extend it. */
-  const bool raised = ask > engine_.floor_mhz() &&
-                      ask > engine_.CurrentMhz().value_or(0) &&
-                      engine_.SetFloor(ask);
-  if (raised || engine_.floor_mhz() != 0) {
-    /* A floor for a merge still to come waits for its report; one for a
-     * merge already in flight follows that merge's fence -- and if the
-     * fence is already gone, the hold starts now. */
-    if (!merge_reported)
-      KeepFloorFor(now);
-    else
-      FollowFences(now);
-  }
+  vic_.Ask(ask, owed, merge_reported, now);
 
   /* Otherwise last, and only if the submit is still ahead: the request
    * runs the processor's whole scaling step on this thread -- three
@@ -520,11 +453,7 @@ void TegraGovernor::WarmAhead(const Frame &f, int64_t now, int64_t gap_ns) {
 }
 
 void TegraGovernor::DropEverything() {
-  fences_.DropAll();
-  release_due_ns_ = 0;
-  orphan_due_ns_ = 0;
-  deferred_mhz_ = 0;
-  engine_.Release();
+  vic_.DropAll();
   DropCpu();
 }
 

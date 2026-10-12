@@ -25,6 +25,7 @@
 #include "governor/CpuFloor.h"
 #include "governor/EngineClock.h"
 #include "governor/FenceWatch.h"
+#include "governor/FloorLane.h"
 #include "governor/HwcGovernor.h"
 #include "governor/Mailbox.h"
 #include "governor/MergePlan.h"
@@ -46,8 +47,8 @@
  * into the kernel; the profile (PerfProfile) says whether the device is
  * saving power; the tuning (Tuning) holds the numbers; the mailbox
  * (Mailbox) is where the composer's threads leave their news, and the
- * fence watch (FenceWatch) is how merges in flight are followed. This class
- * is the thread that joins them and the timers that let the floor go.
+ * engine's lane (FloorLane) holds its floor while merges are in flight and
+ * lets it go after. This class is the thread that joins them.
  *
  * Everything that may sleep -- the clock request, the warm-up pass, the
  * processor floor -- runs on this thread. The thread waits in one place,
@@ -95,10 +96,6 @@ class TegraGovernor final : public Governor {
              int64_t lag_ns, int64_t now_ns);
   void Warm(int64_t now);
   void WarmAhead(const Frame &frame, int64_t now, int64_t gap_ns);
-  void KeepFloorFor(int64_t now);
-  void FollowFences(int64_t now);
-  void JudgeRelease(int64_t now);
-  void RaiseDeferred();
   void DropCpu();
   void DropEverything();
   /* A merge reported: if it is the last plan's, the path from its
@@ -121,19 +118,13 @@ class TegraGovernor final : public Governor {
 
   Mailbox mailbox_;
   EngineClock engine_;
+  FloorLane vic_{engine_, tuning_, host_, "hwc_gov_deferred_mhz"};
   CpuFloor cpu_;
   PerfProfile profile_;
 
   std::thread thread_;
 
   /* Thread-only state from here down. */
-  FenceWatch fences_;
-  int64_t release_due_ns_ = 0;  /* when the floor may go, nought if not yet */
-  int64_t orphan_due_ns_ = 0;   /* floor raised, no merge reported by then */
-
-  /* The step a cold engine was not asked before the submit, to be asked
-   * once the merge is reported; nought if none is owed. */
-  uint32_t deferred_mhz_ = 0;
   int64_t cpu_until_ns_ = 0;    /* processor lifted until, nought if not */
   int64_t last_warm_ns_ = 0;
   bool warm_refused_logged_ = false;
