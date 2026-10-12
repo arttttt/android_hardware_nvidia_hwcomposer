@@ -2109,6 +2109,7 @@ std::unique_ptr<LayerToPlaneJoiningPlan>
 HwcDisplay::CreateLayerToPlaneJoiningPlan(
     const CompositionPlanner::CompositionTypeMap &composition_types) const {
   std::optional<uint32_t> client_z_order;
+  bool client_range_live = false;
   std::map<uint32_t, const HwcLayer *> z_map;
   std::optional<LayerData> cursor_layer = std::nullopt;
   for (const auto &[_, layer] : layers_) {
@@ -2132,6 +2133,7 @@ HwcDisplay::CreateLayerToPlaneJoiningPlan(
         // Place it at the z_order of the lowest client layer
         client_z_order = std::min(client_z_order.value_or(UINT32_MAX),
                                   layer.GetZOrder());
+        client_range_live = client_range_live || layer.IsLive();
         break;
       case CompositionType::kDeviceOccluded:
         // Occluded layers are neither client nor device composited. Since they
@@ -2180,11 +2182,13 @@ HwcDisplay::CreateLayerToPlaneJoiningPlan(
       client_plan_index = static_cast<int>(composition_layers.size());
     composition_layers.emplace_back(layer->GetLayerData());
     /* The class the layer was last judged into, for the joining plan's
-     * steering. The client target is a layer here like any other, and
-     * judges itself honestly: it takes a new buffer whenever the GPU
-     * composes, so a busy client chunk reads live and stays out of the
-     * merge. */
-    composition_layers.back().live = layer->IsLive();
+     * steering. The client target is drawn again whenever anything of the
+     * client range moves, and that is known here, at validate -- its own
+     * buffer arrives only after, so judged by its own activity it reads
+     * quiet on the first frame of every busy spell and is put in the
+     * merge, which then waits on the GPU drawing it. */
+    composition_layers.back().live =
+        layer->IsLive() || (layer == &client_layer_ && client_range_live);
   }
   /* The seating preference is decided here, once, with everything it
    * needs in view: the scene, and the flattening controller's own
