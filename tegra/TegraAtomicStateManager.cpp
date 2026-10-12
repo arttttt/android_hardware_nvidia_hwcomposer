@@ -663,6 +663,8 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
   std::vector<hwc::PanelMirror::Window> panel;
   const bool mirrored =
       hwc::PictureCapture::Wanted(hwc::PictureCapture::Source::kPanel);
+  const bool worded =
+      hwc::PictureCapture::Wanted(hwc::PictureCapture::Source::kFrame);
 
   const int32_t panel_w =
       modes_.empty() ? 0
@@ -798,6 +800,8 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
                                        ? joining.layer.bi->unique_id
                                        : 0);
         merge.generations.push_back(joining.layer.generation);
+        if (worded)
+          merge.damages.push_back(joining.layer.pi.damage);
         merge.transforms.push_back(TransformBits(joining.layer.pi.transform));
         merge.formats.push_back(joining.layer.bi ? joining.layer.bi->format
                                                  : 0);
@@ -1120,6 +1124,19 @@ std::string DescribeMerge(const TegraAtomicRequest::Merge &merge) {
              l.alpha, l.premultiplied ? "premult" : "coverage",
              l.acquire_fence);
     out += line;
+    if (i < merge.generations.size())
+      out += "      gen " + std::to_string(merge.generations[i]);
+    if (i < merge.damages.size()) {
+      std::string dmg;
+      for (const IRect &r : merge.damages[i].dmg_rects) {
+        char one[48];
+        snprintf(one, sizeof(one), " %d,%d-%d,%d", r.left, r.top, r.right,
+                 r.bottom);
+        dmg += one;
+      }
+      out += " damage" + (dmg.empty() ? std::string(" whole") : dmg);
+    }
+    out += "\n";
   }
   return out;
 }

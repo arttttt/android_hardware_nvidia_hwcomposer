@@ -265,6 +265,20 @@ PictureMemory::Member GpuMember(const LayerData &ld, const hwc::vk::Layer &l) {
  * what the plan made of it, what the client asked for, and the geometry,
  * blending and corners that went to the GPU. Which of them the GPU drew is
  * the "client" in the first column. */
+/* A layer's damage in words: whole, nothing, or its rectangles. */
+std::string DamageWords(const DamageInfo &damage) {
+  if (damage.dmg_rects.empty())
+    return "whole";
+  std::string out;
+  for (const IRect &r : damage.dmg_rects) {
+    char one[48];
+    snprintf(one, sizeof(one), "%s%d,%d-%d,%d", out.empty() ? "" : " ",
+             r.left, r.top, r.right, r.bottom);
+    out += one;
+  }
+  return out == "0,0-0,0" ? "nothing" : out;
+}
+
 std::string DescribeLayers(
     const CompositionPlanner::ValidatedComposition &composition,
     std::pair<uint32_t, uint32_t> size) {
@@ -299,6 +313,8 @@ std::string DescribeLayers(
              l.corner_right, l.corner_bottom, l.corner_radius,
              l.acquire_fence);
     out += line;
+    out += "    gen " + std::to_string(ld.generation) + " damage " +
+           DamageWords(ld.pi.damage) + "\n";
   }
   return out;
 }

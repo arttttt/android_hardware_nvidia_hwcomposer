@@ -26,6 +26,7 @@
 
 #include "display/AtomicStateManager.h"
 #include "display/DrmMode.h"
+#include "compositor/LayerData.h"
 #include "compositor/PictureMemory.h"
 #include "tegra/PanelMirror.h"
 #include "tegra/CompositionGovernor.h"
@@ -123,6 +124,10 @@ class TegraAtomicRequest : public AtomicRequest {
      * is recognised by -- a client drawing into the buffer it showed last
      * keeps the identity and moves the count. */
     std::vector<uint64_t> generations;
+
+    /* Each member's damage, in step with `layers` -- filled only while a
+     * capture asks for the frame's words. */
+    std::vector<DamageInfo> damages;
 
     /* How each member is turned, in step with `layers`: the framework's
      * bits, hflip | vflip << 1 | rotate90 << 2, nought for most. The merge
