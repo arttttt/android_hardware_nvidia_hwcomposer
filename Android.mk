@@ -138,6 +138,7 @@ LOCAL_SRC_FILES := \
     utils/Logging.cpp \
     utils/SysfsBacklightController.cpp \
     utils/fd.cpp \
+    utils/fence.cpp \
     utils/properties.cpp \
     hwc/Hwc.cpp \
     hwc/HwcDisplay.cpp \

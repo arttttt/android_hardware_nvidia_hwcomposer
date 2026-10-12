@@ -23,9 +23,9 @@
 #include <stdio.h>
 
 #include <cutils/trace.h>
-#include <sync/sync.h>
 
 #include "utils/Tracing.h"
+#include "utils/fence.h"
 
 namespace android {
 namespace hwc {
@@ -33,6 +33,8 @@ namespace hwc {
 namespace {
 
 using Merge = drm_hwcomposer::TegraAtomicRequest::Merge;
+using drm_hwcomposer::FenceState;
+using drm_hwcomposer::QueryFence;
 
 uint32_t SpanOf(float from, float to) {
   const float span = to - from;
@@ -41,19 +43,6 @@ uint32_t SpanOf(float from, float to) {
 
 uint32_t SpanOf(int32_t from, int32_t to) {
   return to > from ? static_cast<uint32_t>(to - from) : 0;
-}
-
-/* Has this borrowed descriptor's fence come due? Asked, not waited for;
- * a fence that cannot be asked about reads as not yet. */
-bool FenceSignaled(int fd) {
-  if (fd < 0)
-    return true;
-  struct sync_file_info *info = sync_file_info(fd);
-  if (info == nullptr)
-    return false;
-  const bool signaled = info->status == 1;
-  sync_file_info_free(info);
-  return signaled;
 }
 
 }  // namespace
@@ -71,7 +60,10 @@ std::vector<governor::Member> DescribeMembers(const Merge &merge) {
     m.format = i < merge.formats.size() ? merge.formats[i] : 0;
     m.transform = i < merge.transforms.size() ? merge.transforms[i] : 0;
     m.premultiplied = l.premultiplied;
-    m.acquire_signaled = FenceSignaled(l.acquire_fence);
+    /* No fence is a buffer handed over ready; one that cannot be asked
+     * about reads as not yet. */
+    const FenceState fence = QueryFence(l.acquire_fence);
+    m.acquire_signaled = fence == FenceState::kNone || fence == FenceState::kSignaled;
     members.push_back(m);
   }
   return members;

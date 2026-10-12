@@ -509,6 +509,12 @@ class TegraAtomicStateManager : public AtomicStateManager {
      * showing, because the group had not changed. The engine never woke. */
     uint64_t reused = 0;
 
+    /* Frames on which the group was shown as last drawn because a member's
+     * newer frame was still being drawn by its client: the engine would
+     * have waited for it, and the flip for the engine. At most one in a
+     * row, so a client always behind cannot hold the group still. */
+    uint64_t lagged = 0;
+
     /* Why a frame was drawn rather than shown again, one count per drawn
      * frame. The breakdown is what decides the next step: an identity miss
      * is a content update no cleverness avoids, while a geometry miss is an
@@ -600,6 +606,9 @@ class TegraAtomicStateManager : public AtomicStateManager {
   std::unique_ptr<hwc::PanelMirror> mirror_;
 
   bool merge_cache_ = true;
+  /* The last frame showed the group as last drawn for a member not ready:
+   * the next one draws it, ready or not. */
+  bool lagged_last_ = false;
   static bool MergeCacheFromProperty();
 
   /* Redrawing a slot only where its picture changed since it was last

@@ -54,6 +54,7 @@
 #include "tegra/TegraConnector.h"
 #include "tegra/FbDevice.h"
 #include "tegra/TegraFormat.h"
+#include "utils/fence.h"
 #include "utils/Logging.h"
 #include "utils/log.h"
 
@@ -247,16 +248,14 @@ int ForcedWindowTransform() {
 enum class Due { kYes, kNotYet, kCouldNotAsk };
 
 Due FenceDue(const SharedFd &fence) {
-  if (!fence)
-    return Due::kCouldNotAsk;
-
-  struct sync_file_info *info = sync_file_info(*fence);
-  if (info == nullptr)
-    return Due::kCouldNotAsk;
-
-  const Due answer = info->status == 1 ? Due::kYes : Due::kNotYet;
-  sync_file_info_free(info);
-  return answer;
+  switch (QueryFence(fence)) {
+    case FenceState::kSignaled:
+      return Due::kYes;
+    case FenceState::kPending:
+      return Due::kNotYet;
+    default:
+      return Due::kCouldNotAsk;
+  }
 }
 
 std::optional<int64_t> SignalTimeNs(const SharedFd &fence) {
@@ -1227,19 +1226,41 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       return -EINVAL;
     }
 
-    if (merge_cache_ && RecognisesMerge(merge)) {
+    const bool same = merge_cache_ && RecognisesMerge(merge);
+    /* The group as last drawn but for a newer frame of some member whose
+     * client is still drawing it: the engine would wait for that drawing
+     * in the stream and the flip for the engine, so the panel would miss
+     * its refresh for the sake of one member. The group is shown as it was
+     * instead, a frame behind, and drawn on the next frame whether the
+     * member is ready by then or not. Only the same members in the same
+     * places: anything else and the remembered pixels are not this group. */
+    const bool lag =
+        !same && merge_cache_ && !lagged_last_ && last_merge_fence_ &&
+        merge_memory_.SameButFrames(merge.window, merge.width, merge.height,
+                                    MergeMembers(merge)) &&
+        std::any_of(merge.layers.begin(), merge.layers.end(),
+                    [](const hwc::VicSession::Layer &l) {
+                      return QueryFence(l.acquire_fence) == FenceState::kPending;
+                    });
+    lagged_last_ = lag;
+
+    if (same || lag) {
       /* The group is the one already drawn, so the window is shown the
        * buffer it is already showing. No buffer changes hands: the pool is
        * not advanced, nothing is described again, and the layers' own fences
        * need no heeding -- a buffer that kept its identity was not drawn
        * into, or the client would have had to queue a different one for at
-       * least the frame in between. The fence below came due when the
-       * original drawing finished, so the flip's wait on it is a no-op.
+       * least the frame in between; one shown a frame behind is not read.
+       * The fence below came due when the original drawing finished, so the
+       * flip's wait on it is a no-op.
        *
        * A flip that failed goes unnoticed here on purpose: the next frame's
        * reuse submits this same description again, so a dropped frame
        * retries itself out of what is remembered. */
-      merges_.reused++;
+      if (same)
+        merges_.reused++;
+      else
+        merges_.lagged++;
       merge_reused = true;
       windows[merge.slot] = last_merge_described_;
       windows[merge.slot].preFence = last_merge_fence_ ? *last_merge_fence_
@@ -1799,6 +1820,7 @@ std::string TegraAtomicStateManager::DumpState() {
     ss << "Merges since last dumpsys request:\n"
        << "  frames merged           : " << m.frames << "\n"
        << "  shown from memory       : " << m.reused << "\n"
+       << "  shown a frame behind    : " << m.lagged << "\n"
        << "  members 1/2/3/4/5+      : " << m.members[0] << "/"
        << m.members[1] << "/" << m.members[2] << "/" << m.members[3] << "/"
        << m.members[4] << "\n";

@@ -133,11 +133,56 @@ void TestNamelessAndSolid() {
 
 }  // namespace
 
+/* A newer frame of the same layers, whichever of their buffers it came in,
+ * is the remembered picture but for frames; anything else is not. */
+void TestSameButFrames() {
+  std::vector<Member> was = Card();
+  was[0].serial = 11;
+  was[1].serial = 12;
+  PictureMemory m;
+  CHECK(!m.SameButFrames(3, 1536, 2048, was));
+  m.Remember(3, 1536, 2048, was);
+
+  std::vector<Member> now = was;
+  now[1].source = 202;
+  now[1].generation = 8;
+  CHECK(m.Judge(3, 1536, 2048, now) == Verdict::kChangedIdentity);
+  CHECK(m.SameButFrames(3, 1536, 2048, now));
+
+  now = was;
+  now[0].generation = 9;
+  CHECK(m.SameButFrames(3, 1536, 2048, now));
+
+  now = was;
+  now[0].dst.top += 1;
+  CHECK(!m.SameButFrames(3, 1536, 2048, now));
+
+  now = was;
+  now[1].serial = 13;
+  CHECK(!m.SameButFrames(3, 1536, 2048, now));
+
+  now = was;
+  now[0].alpha = 0.5F;
+  CHECK(!m.SameButFrames(3, 1536, 2048, now));
+
+  CHECK(!m.SameButFrames(4, 1536, 2048, was));
+  CHECK(!m.SameButFrames(3, 1536, 1024, was));
+  CHECK(!m.SameButFrames(3, 1536, 2048, {was[0]}));
+
+  /* A layer with no serial cannot be followed across its buffers. */
+  std::vector<Member> unnamed = was;
+  unnamed[0].serial = 0;
+  PictureMemory n;
+  n.Remember(3, 1536, 2048, unnamed);
+  CHECK(!n.SameButFrames(3, 1536, 2048, unnamed));
+}
+
 int main() {
   TestFirstSightAndForget();
   TestSame();
   TestEachChange();
   TestNamelessAndSolid();
+  TestSameButFrames();
   if (failures == 0)
     std::printf("picture_memory_test: all passed\n");
   return failures == 0 ? 0 : 1;

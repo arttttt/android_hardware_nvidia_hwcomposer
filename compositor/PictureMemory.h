@@ -89,6 +89,15 @@ class PictureMemory {
   Verdict Judge(int32_t seat, uint32_t width, uint32_t height,
                 const std::vector<Member> &members) const;
 
+  /* Is it the remembered picture but for newer frames of its members:
+   * the same layers -- by serial, whichever of their buffers a frame came
+   * in -- in the same places, blended and turned the same, only some of
+   * them drawn again since? */
+  bool SameButFrames(int32_t seat, uint32_t width, uint32_t height,
+                     const std::vector<Member> &members) const {
+    return Compare(seat, width, height, members, true) == Verdict::kSame;
+  }
+
   void Remember(int32_t seat, uint32_t width, uint32_t height,
                 std::vector<Member> members);
 
@@ -102,6 +111,9 @@ class PictureMemory {
   }
 
  private:
+  Verdict Compare(int32_t seat, uint32_t width, uint32_t height,
+                  const std::vector<Member> &members, bool frames_aside) const;
+
   bool remembered_ = false;
   int32_t seat_ = -1;
   uint32_t width_ = 0;
