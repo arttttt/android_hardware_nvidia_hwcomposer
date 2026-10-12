@@ -206,6 +206,7 @@ LOCAL_SRC_FILES := \
     governor/Mailbox.cpp \
     governor/MergePlan.cpp \
     governor/PerfProfile.cpp \
+    governor/SysNode.cpp \
     governor/TegraGovernor.cpp \
     governor/Tuning.cpp
 

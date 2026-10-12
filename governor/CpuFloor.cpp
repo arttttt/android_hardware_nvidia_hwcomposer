@@ -19,13 +19,13 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <unistd.h>
 
 #include <android/log.h>
 
 #include "governor/HwcGovernor.h"
 #include "governor/Log.h"
+#include "governor/SysNode.h"
 
 namespace android::hwc::governor::tegra {
 
@@ -60,25 +60,14 @@ bool CpuFloor::Open() {
 }
 
 uint32_t CpuFloor::CurrentKhz() {
-  if (cur_fd_ < 0)
-    return 0;
-  char text[32];
-  const ssize_t n = pread(cur_fd_, text, sizeof(text) - 1, 0);
-  if (n <= 0)
-    return 0;
-  text[n] = '\0';
-  return static_cast<uint32_t>(strtoul(text, nullptr, 10));
+  return static_cast<uint32_t>(ReadNumber(cur_fd_).value_or(0));
 }
 
 bool CpuFloor::Write(uint32_t khz) {
   if (fd_ < 0)
     return false;
 
-  /* Exactly four bytes: the node takes those as a binary word, and
-   * anything else as hexadecimal text -- which is not what a rate written
-   * in decimal means. The word is what is meant, with nothing to parse. */
-  const int32_t word = static_cast<int32_t>(khz);
-  if (write(fd_, &word, sizeof(word)) == static_cast<ssize_t>(sizeof(word)))
+  if (WriteQosWord(fd_, khz))
     return true;
 
   LogErrno(host_, ANDROID_LOG_WARN, nodePath, errno);
