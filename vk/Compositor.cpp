@@ -427,6 +427,15 @@ bool VkCompositor::InitPipeline() {
   if (vk.CreateRenderPass(dev, &rpi, nullptr, &render_pass_) != VK_SUCCESS)
     return false;
 
+  /* For drawing part of a target: cleared and drawn only inside the render
+   * area, which is all the load and store touch, and begun from the layout
+   * the pass above ends in rather than from nothing, which would let the
+   * driver drop the rest. Compatible with the first, so the framebuffers
+   * and the pipeline made for one serve both. */
+  att.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  if (vk.CreateRenderPass(dev, &rpi, nullptr, &keep_pass_) != VK_SUCCESS)
+    keep_pass_ = VK_NULL_HANDLE;
+
   VkSamplerCreateInfo si = {};
   si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
   si.magFilter = VK_FILTER_LINEAR;
@@ -729,6 +738,8 @@ void VkCompositor::Teardown() {
     vk.DestroyDescriptorSetLayout(dev, set_layout_, nullptr);
   if (sampler_)
     vk.DestroySampler(dev, sampler_, nullptr);
+  if (keep_pass_)
+    vk.DestroyRenderPass(dev, keep_pass_, nullptr);
   if (render_pass_)
     vk.DestroyRenderPass(dev, render_pass_, nullptr);
   state_.destroy();
@@ -848,11 +859,26 @@ int VkCompositor::ComposeNow(const Target &target, const Layer *layers, size_t c
                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
                           static_cast<uint32_t>(n_images - 1), barriers.data());
 
+  /* All of the target, or only the part asked for -- when the target holds
+   * a picture of ours to keep the rest of. The layers are drawn whole and
+   * cut by the scissor, so a member crossing the edge of the part is drawn
+   * exactly as it would be in the whole. */
   VkClearValue clear = {};
-  const VkRect2D area = {{0, 0}, {target.width, target.height}};
+  VkRect2D area = {{0, 0}, {target.width, target.height}};
+  VkRenderPass pass = render_pass_;
+  if (target.partial && keep_pass_ != VK_NULL_HANDLE && dst->drawn) {
+    const int32_t l = std::max(target.dirty_left, 0);
+    const int32_t t = std::max(target.dirty_top, 0);
+    const int32_t r = std::min(target.dirty_right, static_cast<int32_t>(target.width));
+    const int32_t b = std::min(target.dirty_bottom, static_cast<int32_t>(target.height));
+    if (r > l && b > t) {
+      area = {{l, t}, {static_cast<uint32_t>(r - l), static_cast<uint32_t>(b - t)}};
+      pass = keep_pass_;
+    }
+  }
   VkRenderPassBeginInfo rbi = {};
   rbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-  rbi.renderPass = render_pass_;
+  rbi.renderPass = pass;
   rbi.framebuffer = dst->framebuffer;
   rbi.renderArea = area;
   rbi.clearValueCount = 1;
@@ -932,6 +958,8 @@ int VkCompositor::ComposeNow(const Target &target, const Layer *layers, size_t c
   slot.busy = true;
   slot.frame = frame;
   frame_ = frame;
+  if (whole)
+    dst->drawn = true;
   next_slot_ = (next_slot_ + 1) % kSlots;
 
   /* Each image released on its own drawn semaphore; the target's fence is

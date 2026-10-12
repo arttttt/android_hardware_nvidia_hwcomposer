@@ -40,7 +40,7 @@ namespace android::hwc::vk {
 
 /* Bumped whenever anything below changes shape. The composer refuses a
  * library that answers another number. */
-constexpr uint32_t apiVersion = 5;
+constexpr uint32_t apiVersion = 6;
 
 /* One layer to draw. Rectangles are in pixels; `dst` is in the target's
  * own space, whose origin is wherever the composer puts the target. */
@@ -86,7 +86,12 @@ struct Layer {
   float corner_radius = 0;
 };
 
-/* Where the layers are drawn. Cleared to transparent first. */
+/* Where the layers are drawn. Cleared to transparent first -- all of it,
+ * or with `partial` set only the rectangle given, which is all that is
+ * drawn: the rest of the target keeps what it holds. The layers are still
+ * every layer of the picture, placed as for the whole; the GPU cuts them
+ * to the rectangle itself. A target the library has not drawn into before
+ * is drawn whole whatever is asked, since what it holds is not known. */
 struct Target {
   const native_handle_t *buffer = nullptr;
   uint32_t width = 0;
@@ -98,6 +103,9 @@ struct Target {
   /* Borrowed: comes due when the target may be written -- when the display
    * stopped scanning it. -1 for a target that is free now. */
   int ready_fence = -1;
+
+  bool partial = false;
+  int32_t dirty_left = 0, dirty_top = 0, dirty_right = 0, dirty_bottom = 0;
 };
 
 class Host {

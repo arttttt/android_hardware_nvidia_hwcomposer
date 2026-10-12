@@ -103,6 +103,10 @@ class VkCompositor : public Compositor {
   std::unique_ptr<ImageCache> cache_;
 
   VkRenderPass render_pass_ = VK_NULL_HANDLE;
+  /* The same pass over a target already drawn: it begins from the layout
+   * the last drawing left, so what lies outside the render area is kept.
+   * Null if the driver would not make it, and every drawing is then whole. */
+  VkRenderPass keep_pass_ = VK_NULL_HANDLE;
   VkSampler sampler_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;
   VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
