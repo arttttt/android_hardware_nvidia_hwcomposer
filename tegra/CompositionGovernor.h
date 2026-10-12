@@ -55,6 +55,8 @@ class CompositionGovernor final : public governor::GovernorHost {
    * library, which closes it, or closed here if the library is gone. */
   void FramePlanned(const governor::Frame &frame);
   void MergeSubmitted(uint64_t seq, int fence_fd);
+  void GpuPlanned(uint64_t seq, uint32_t pixels);
+  void GpuSubmitted(uint64_t seq, int fence_fd);
   void FramePresented(uint64_t seq);
   void PowerMode(governor::Power mode);
 

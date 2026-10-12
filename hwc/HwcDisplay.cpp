@@ -453,10 +453,19 @@ void HwcDisplay::BeginClientOnGpu(
    * and one it has not drawn whole, as before. */
   const bool bounded = gpu_next_bounds_.right > gpu_next_bounds_.left &&
                        gpu_next_bounds_.bottom > gpu_next_bounds_.top;
-  gpu_begun_ = gpu->Begin(
-      layers, gpu_plan_.kind == partial::Plan::Kind::kPartial ? &gpu_plan_.dirty
-              : bounded                                       ? &gpu_next_bounds_
-                                                              : nullptr);
+  const IRect *area = gpu_plan_.kind == partial::Plan::Kind::kPartial
+                          ? &gpu_plan_.dirty
+                      : bounded ? &gpu_next_bounds_
+                                : nullptr;
+  /* The GPU's clock is asked for before the drawing reaches its thread,
+   * which starts on it at once. */
+  const uint32_t pixels =
+      area != nullptr
+          ? static_cast<uint32_t>(area->right - area->left) *
+                static_cast<uint32_t>(area->bottom - area->top)
+          : static_cast<uint32_t>(size.first * size.second);
+  GetPipe().atomic_state_manager->GpuPlanned(pixels);
+  gpu_begun_ = gpu->Begin(layers, area);
 }
 
 bool HwcDisplay::DrawClientOnGpu(
@@ -532,6 +541,10 @@ bool HwcDisplay::DrawClientOnGpu(
     return false;
   }
   last_gpu_use_ns_ = GetTimeMonotonicNs();
+  /* A kept picture was drawn frames ago; only a drawing has a fence the
+   * GPU's clock is held for. */
+  if (!keep)
+    GetPipe().atomic_state_manager->GpuSubmitted(drawn->fence);
   const auto size = GetSize();
   gpu_slots_.Drawn(slot, size.first, size.second, gpu_pending_, gpu_plan_,
                    drawn->fence);
