@@ -1159,6 +1159,27 @@ std::string DescribeMerge(const TegraAtomicRequest::Merge &merge) {
   return out;
 }
 
+/* How the frame's group came to be on the window, for its words. */
+std::string HowDrawn(bool reused, bool drawn, const partial::Plan &plan) {
+  if (reused)
+    return ", group shown from memory";
+  if (!drawn)
+    return "";
+  switch (plan.kind) {
+    case partial::Plan::Kind::kFull:
+      return ", slot drawn whole";
+    case partial::Plan::Kind::kUnchanged:
+      return ", slot already held it";
+    case partial::Plan::Kind::kPartial:
+      break;
+  }
+  char how[64];
+  snprintf(how, sizeof(how), ", slot drawn in part %d,%d-%d,%d",
+           plan.dirty.left, plan.dirty.top, plan.dirty.right,
+           plan.dirty.bottom);
+  return how;
+}
+
 }  // namespace
 
 int TegraAtomicStateManager::Execute(const AtomicRequest &request,
@@ -1217,6 +1238,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   /* The slot this frame's group went into, while its drawing has yet to
    * reach the panel: a flip that fails leaves it holding nothing known. */
   const hwc::ScratchPool::Slot *drawn_slot = nullptr;
+  partial::Plan drawn_plan;
   const auto &merge = tegra.GetMerge();
   if (!merge.layers.empty()) {
     if (vic_ == nullptr || scratch_ == nullptr) {
@@ -1351,6 +1373,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       merged_turned = any_turn;
       last_merge_vendor_ = target->vendor;
       drawn_slot = target;
+      drawn_plan = plan;
 
       const uint32_t partial_run = slot.held.partial_run;
       slot.held = {true, merge.width, merge.height, members,
@@ -1498,10 +1521,10 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   if (PictureCapture::Wanted(PictureCapture::Source::kFrame) ||
       PictureCapture::Wanted(PictureCapture::Source::kMerge) ||
       PictureCapture::Wanted(PictureCapture::Source::kMergeTurned)) {
-    char head[96];
+    char head[128];
     snprintf(head, sizeof(head), "frame %" PRIu64 " plan %" PRIu64 "%s\n",
              frames_executed_, planned_seq_,
-             merge_reused ? ", group shown from memory" : "");
+             HowDrawn(merge_reused, drawn_slot != nullptr, drawn_plan).c_str());
     std::string words = head;
     if (!merge.layers.empty())
       words += DescribeMerge(merge);
@@ -1559,10 +1582,11 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         w.layer.acquire_fence = windows[merge.slot].preFence;
         shown.push_back(w);
       }
-      char head[96];
+      char head[128];
       snprintf(head, sizeof(head), "frame %" PRIu64 " plan %" PRIu64 "%s\n",
                frames_executed_, planned_seq_,
-               merge_reused ? ", group shown from memory" : "");
+               HowDrawn(merge_reused, drawn_slot != nullptr, drawn_plan)
+                   .c_str());
       mirror_->Frame(std::move(shown), head + DescribeWindows(windows));
     }
   }
