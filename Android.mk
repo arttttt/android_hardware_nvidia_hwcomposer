@@ -201,6 +201,7 @@ LOCAL_SRC_FILES := \
     governor/CpuFloor.cpp \
     governor/EngineClock.cpp \
     governor/FenceWatch.cpp \
+    governor/FloorLane.cpp \
     governor/Log.cpp \
     governor/Mailbox.cpp \
     governor/MergePlan.cpp \
