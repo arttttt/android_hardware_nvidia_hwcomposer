@@ -2338,6 +2338,28 @@ void HwcDisplay::ResolveOcclusion() {
       shown[i].bounds = input[i].frame;
   for (size_t i = 0; i < order.size(); ++i)
     order[i]->ApplyOcclusion(shown[i]);
+
+  /* Asked for only: each layer, bottom first, as it came and as shown. */
+  using hwc::PictureCapture;
+  if (PictureCapture::Wanted(PictureCapture::Source::kOcclusion)) {
+    std::string words;
+    for (size_t i = 0; i < order.size(); ++i) {
+      const occlusion::Layer &in = input[i];
+      const auto &df = order[i]->GetLayerData().pi.display_frame.i_rect;
+      char line[192];
+      snprintf(line, sizeof(line),
+               "z %u %s%s%s frame %d,%d-%d,%d -> %s %d,%d-%d,%d sf-rects %zu "
+               "r %.1f\n",
+               order[i]->GetZOrder(), in.opaque ? "opaque" : "translucent",
+               in.keep ? " kept" : "", order[i]->IsHidden() ? " HIDDEN" : "",
+               in.frame.left, in.frame.top, in.frame.right, in.frame.bottom,
+               df && *df != in.frame ? "CROPPED" : "shown",
+               df ? df->left : 0, df ? df->top : 0, df ? df->right : 0,
+               df ? df->bottom : 0, in.visible.size(), in.radius);
+      words += line;
+    }
+    PictureCapture::WriteText(PictureCapture::Source::kOcclusion, words);
+  }
 }
 
 std::vector<const HwcLayer *> HwcDisplay::GetOrderLayersByZPos() const {

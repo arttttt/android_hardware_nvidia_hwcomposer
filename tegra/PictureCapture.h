@@ -46,7 +46,8 @@ namespace hwc {
  *   vendor.hwc.test.capture         how many frames each source gives; 0
  *                                   stops
  *   vendor.hwc.test.capture.from    which sources, comma separated, of
- *                                   merge, merge-turned, gpu, frame, panel;
+ *                                   merge, merge-turned, gpu, frame, panel,
+ *                                   occlusion;
  *                                   merge, gpu and frame when unset
  *   vendor.hwc.test.capture.words   1: words only, nothing that waits
  *   vendor.hwc.test.capture.window  the one window a panel picture shows,
@@ -75,6 +76,8 @@ class PictureCapture {
     kFrame,
     /* The panel itself, as the windows stacked up; see PanelMirror. */
     kPanel,
+    /* No picture: what of each layer the occlusion left to be seen. */
+    kOcclusion,
     kCount,
   };
 
