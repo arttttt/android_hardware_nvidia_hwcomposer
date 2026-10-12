@@ -107,6 +107,12 @@ class VkCompositor : public Compositor {
    * the last drawing left, so what lies outside the render area is kept.
    * Null if the driver would not make it, and every drawing is then whole. */
   VkRenderPass keep_pass_ = VK_NULL_HANDLE;
+  /* The two above with nothing loaded: for a drawing whose bottom layer
+   * covers the whole area and hides what is beneath, which overwrites
+   * every pixel the clear would have written. Null if the driver would
+   * not make them, and the area is then cleared as always. */
+  VkRenderPass cover_pass_ = VK_NULL_HANDLE;
+  VkRenderPass cover_keep_pass_ = VK_NULL_HANDLE;
   VkSampler sampler_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;
   VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
