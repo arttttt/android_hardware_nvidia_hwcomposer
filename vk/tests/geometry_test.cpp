@@ -127,11 +127,32 @@ void TestEdges() {
 
 }  // namespace
 
+/* Coverage of an area by boxes: the two panes of closing Settings side by
+ * side cover their bounds; a gap, a missing corner or an empty set do not. */
+void TestCovers() {
+  const Box area = {138, 936, 761, 1743};
+  const Box panes[] = {{138, 936, 449, 1743}, {449, 936, 761, 1743}};
+  CHECK(Covers(area, panes, 2));
+  CHECK(!Covers(area, panes, 1));
+  const Box gap[] = {{138, 936, 449, 1743}, {450, 936, 761, 1743}};
+  CHECK(!Covers(area, gap, 2));
+  const Box short_one[] = {{138, 936, 449, 1743}, {449, 936, 761, 1742}};
+  CHECK(!Covers(area, short_one, 2));
+  const Box stacked[] = {{100, 900, 800, 1300}, {100, 1300, 800, 1800}};
+  CHECK(Covers(area, stacked, 2));
+  const Box crossing[] = {{100, 900, 500, 1800}, {400, 900, 800, 1200}, {400, 1200, 800, 1800}};
+  CHECK(Covers(area, crossing, 3));
+  CHECK(!Covers(area, nullptr, 0));
+  const Box empty_area = {10, 10, 10, 20};
+  CHECK(Covers(empty_area, nullptr, 0));
+}
+
 int main() {
   TestTransforms();
   TestRotationComposes();
   TestCropAndPlacement();
   TestEdges();
+  TestCovers();
   if (failures == 0)
     std::printf("vk_geometry_test: all passed\n");
   return failures == 0 ? 0 : 1;
