@@ -541,8 +541,15 @@ bool VkCompositor::InitPipeline() {
   gpi.pDynamicState = &ds;
   gpi.layout = pipeline_layout_;
   gpi.renderPass = render_pass_;
-  return vk.CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpi, nullptr, &pipeline_) ==
-         VK_SUCCESS;
+  if (vk.CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpi, nullptr, &pipeline_) !=
+      VK_SUCCESS)
+    return false;
+
+  cba.blendEnable = VK_FALSE;
+  if (vk.CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpi, nullptr,
+                                 &replace_pipeline_) != VK_SUCCESS)
+    replace_pipeline_ = VK_NULL_HANDLE;
+  return true;
 }
 
 bool VkCompositor::InitSlots() {
@@ -728,6 +735,8 @@ void VkCompositor::Teardown() {
     vk.FreeMemory(dev, dummy_memory_, nullptr);
   if (pipeline_)
     vk.DestroyPipeline(dev, pipeline_, nullptr);
+  if (replace_pipeline_)
+    vk.DestroyPipeline(dev, replace_pipeline_, nullptr);
   if (vert_)
     vk.DestroyShaderModule(dev, vert_, nullptr);
   if (frag_)
@@ -884,14 +893,46 @@ int VkCompositor::ComposeNow(const Target &target, const Layer *layers, size_t c
   rbi.clearValueCount = 1;
   rbi.pClearValues = &clear;
   vk.CmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
-  vk.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+  VkPipeline bound = pipeline_;
+  vk.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound);
   const VkViewport vp = {0, 0, static_cast<float>(target.width),
                          static_cast<float>(target.height), 0, 1};
   vk.CmdSetViewport(cmd, 0, 1, &vp);
   vk.CmdSetScissor(cmd, 0, 1, &area);
 
+  /* Where this drawing has put something so far. The area starts cleared,
+   * so a layer that lands on none of it blends onto nothing and may as
+   * well be written; so may one that hides whatever it lands on. */
+  std::array<VkRect2D, kMaxLayers> drawn_rects{};
+  size_t drawn = 0;
+
   for (size_t i = 0; i < count; ++i) {
     const Layer &l = layers[i];
+    const int32_t rl = std::max(l.dst_left, area.offset.x);
+    const int32_t rt = std::max(l.dst_top, area.offset.y);
+    const int32_t rr = std::min(l.dst_right, area.offset.x + static_cast<int32_t>(area.extent.width));
+    const int32_t rb = std::min(l.dst_bottom, area.offset.y + static_cast<int32_t>(area.extent.height));
+    bool lands_on_drawn = false;
+    for (size_t k = 0; k < drawn && !lands_on_drawn; ++k) {
+      const VkRect2D &d = drawn_rects[k];
+      lands_on_drawn = rl < d.offset.x + static_cast<int32_t>(d.extent.width) &&
+                       d.offset.x < rr &&
+                       rt < d.offset.y + static_cast<int32_t>(d.extent.height) &&
+                       d.offset.y < rb;
+    }
+    const bool hides = l.alpha >= 1.f && l.corner_radius <= 0.f &&
+                       (l.buffer != nullptr ? (l.opaque || opaque[i]) : l.color[3] >= 1.f);
+    const VkPipeline want =
+        replace_pipeline_ != VK_NULL_HANDLE && (!lands_on_drawn || hides) ? replace_pipeline_
+                                                                          : pipeline_;
+    if (want != bound) {
+      bound = want;
+      vk.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound);
+    }
+    if (rr > rl && rb > rt && drawn < drawn_rects.size())
+      drawn_rects[drawn++] = {{rl, rt},
+                              {static_cast<uint32_t>(rr - rl), static_cast<uint32_t>(rb - rt)}};
+
     const Quad q = PlaceLayer(l.src_left, l.src_top, l.src_right, l.src_bottom,
                               l.buffer ? l.width : 1, l.buffer ? l.height : 1, l.dst_left,
                               l.dst_top, l.dst_right, l.dst_bottom, l.transform, target.width,

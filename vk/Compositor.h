@@ -111,6 +111,12 @@ class VkCompositor : public Compositor {
   VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;
   VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
   VkPipeline pipeline_ = VK_NULL_HANDLE;
+  /* The same drawing written over what lies beneath instead of blended
+   * onto it, for a layer that lands on nothing drawn yet or hides what it
+   * lands on: blending reads every pixel back, and on this memory that
+   * read is most of what a drawing costs. Null if the driver would not
+   * make it, and every layer is then blended. */
+  VkPipeline replace_pipeline_ = VK_NULL_HANDLE;
   VkShaderModule vert_ = VK_NULL_HANDLE;
   VkShaderModule frag_ = VK_NULL_HANDLE;
   VkCommandPool command_pool_ = VK_NULL_HANDLE;
