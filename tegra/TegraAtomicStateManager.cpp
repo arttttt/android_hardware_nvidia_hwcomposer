@@ -54,6 +54,7 @@
 #include "tegra/TegraConnector.h"
 #include "tegra/FbDevice.h"
 #include "tegra/TegraFormat.h"
+#include "utils/fence.h"
 #include "utils/Logging.h"
 #include "utils/log.h"
 
@@ -247,16 +248,14 @@ int ForcedWindowTransform() {
 enum class Due { kYes, kNotYet, kCouldNotAsk };
 
 Due FenceDue(const SharedFd &fence) {
-  if (!fence)
-    return Due::kCouldNotAsk;
-
-  struct sync_file_info *info = sync_file_info(*fence);
-  if (info == nullptr)
-    return Due::kCouldNotAsk;
-
-  const Due answer = info->status == 1 ? Due::kYes : Due::kNotYet;
-  sync_file_info_free(info);
-  return answer;
+  switch (QueryFence(fence)) {
+    case FenceState::kSignaled:
+      return Due::kYes;
+    case FenceState::kPending:
+      return Due::kNotYet;
+    default:
+      return Due::kCouldNotAsk;
+  }
 }
 
 std::optional<int64_t> SignalTimeNs(const SharedFd &fence) {
