@@ -121,6 +121,7 @@ LOCAL_SRC_FILES := \
     compositor/LayerToPlaneJoiningPlan.cpp \
     compositor/MergeGroup.cpp \
     compositor/Occlusion.cpp \
+    compositor/PartialRedraw.cpp \
     compositor/PictureMemory.cpp \
     display/DrmMode.cpp \
     display/DrmProperty.cpp \
