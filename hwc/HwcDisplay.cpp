@@ -248,6 +248,7 @@ PictureMemory::Member GpuMember(const LayerData &ld, const hwc::vk::Layer &l) {
   PictureMemory::Member m;
   m.source = ld.bi ? ld.bi->unique_id : 0;
   m.generation = ld.generation;
+  m.serial = ld.serial;
   m.solid = !ld.bi;
   std::copy(std::begin(l.color), std::end(l.color), m.color.begin());
   m.src = {l.src_left, l.src_top, l.src_right, l.src_bottom};
@@ -387,9 +388,12 @@ void HwcDisplay::BeginClientOnGpu(
   layers.reserve(range.size());
   members.reserve(range.size());
   for (const HwcLayer *layer : range) {
-    layers.push_back(ToVkLayer(layer->GetLayerData(), size));
-    members.push_back(GpuMember(layer->GetLayerData(), layers.back()));
+    const LayerData &ld = layer->GetLayerData();
+    layers.push_back(ToVkLayer(ld, size));
+    members.push_back(GpuMember(ld, layers.back()));
+    gpu_slots_.Record(members.back(), ld.pi.damage.dmg_rects);
   }
+  gpu_keep_ = false;
 
   /* The picture the executor last drew, wanted again: nothing is drawn,
    * and its buffer goes up once more. */
@@ -398,7 +402,20 @@ void HwcDisplay::BeginClientOnGpu(
     gpu_reuse_ = true;
     return;
   }
+  /* What of the next buffer to draw: it holds what it was last drawn
+   * with -- unless a drawing into it was begun and never finished, which
+   * the Begin below drops having written who knows how much. */
+  if (gpu->Pending())
+    gpu_slots_.Lost(gpu->NextSlot());
+  gpu_plan_ = partial::Plan{};
+  if (Properties::PartialRedraw())
+    gpu_plan_ = gpu_slots_.Decide(gpu->NextSlot(), size.first, size.second,
+                                  members);
   gpu_pending_ = std::move(members);
+  if (gpu_plan_.kind == partial::Plan::Kind::kUnchanged) {
+    gpu_keep_ = true;
+    return;
+  }
 
   /* What the drawing was begun with, kept only while a capture asks:
    * the words written at present describe the layers as they are then. */
@@ -413,7 +430,9 @@ void HwcDisplay::BeginClientOnGpu(
       begun_words_ += line;
     }
   }
-  gpu_begun_ = gpu->Begin(layers);
+  gpu_begun_ = gpu->Begin(
+      layers, gpu_plan_.kind == partial::Plan::Kind::kPartial ? &gpu_plan_.dirty
+                                                              : nullptr);
 }
 
 bool HwcDisplay::DrawClientOnGpu(
@@ -424,8 +443,8 @@ bool HwcDisplay::DrawClientOnGpu(
 
   /* Begun at validate, so the drawing ran while the client went from
    * validate to present; begun here only for a frame that skipped it. */
-  const bool begun_at_validate = gpu_begun_ || gpu_reuse_;
-  if (!gpu_begun_ && !gpu_reuse_)
+  const bool begun_at_validate = gpu_begun_ || gpu_reuse_ || gpu_keep_;
+  if (!gpu_begun_ && !gpu_reuse_ && !gpu_keep_)
     BeginClientOnGpu(composition);
   gpu_begun_ = false;
 
@@ -445,11 +464,25 @@ bool HwcDisplay::DrawClientOnGpu(
     return true;
   }
 
-  auto drawn = gpu->Finish();
+  /* The buffer this frame goes into, named before the executor moves on
+   * to it. */
+  const void *slot = gpu->NextSlot();
+  const bool keep = gpu_keep_;
+  gpu_keep_ = false;
+  auto drawn = keep ? std::optional<hwc::GpuExecutor::Drawn>(
+                          gpu->Keep(gpu_slots_.Fence(slot)))
+                    : gpu->Finish();
   if (PictureCapture::Wanted(PictureCapture::Source::kGpu)) {
-    char head[96];
-    snprintf(head, sizeof(head), "%s (begun at %s); panel buffer %p\n",
-             drawn ? "drawn" : "REFUSED, last picture stays",
+    char how[64] = "";
+    if (keep)
+      snprintf(how, sizeof(how), ", buffer already held it");
+    else if (gpu_plan_.kind == partial::Plan::Kind::kPartial)
+      snprintf(how, sizeof(how), ", in part %d,%d-%d,%d", gpu_plan_.dirty.left,
+               gpu_plan_.dirty.top, gpu_plan_.dirty.right,
+               gpu_plan_.dirty.bottom);
+    char head[160];
+    snprintf(head, sizeof(head), "%s%s (begun at %s); panel buffer %p\n",
+             drawn ? "drawn" : "REFUSED, last picture stays", how,
              begun_at_validate ? "validate" : "present",
              static_cast<const void *>(drawn ? drawn->buffer
                                              : gpu->Current()));
@@ -470,10 +503,13 @@ bool HwcDisplay::DrawClientOnGpu(
       said = true;
     }
     gpu_memory_.Forget();
+    gpu_slots_.Lost(slot);
     return false;
   }
   last_gpu_use_ns_ = GetTimeMonotonicNs();
   const auto size = GetSize();
+  gpu_slots_.Drawn(slot, size.first, size.second, gpu_pending_, gpu_plan_,
+                   drawn->fence);
   gpu_memory_.Remember(0, size.first, size.second, std::move(gpu_pending_));
   gpu_pending_.clear();
   gpu_drawn_fence_ = drawn->fence;

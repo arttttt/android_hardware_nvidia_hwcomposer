@@ -28,6 +28,7 @@
 #include <ui/ColorSpace.h>
 #include <ui/GraphicTypes.h>
 
+#include "compositor/PartialRedraw.h"
 #include "compositor/PictureMemory.h"
 #include "compositor/CompositionPlanner.h"
 #include "compositor/DisplayInfo.h"
@@ -563,6 +564,13 @@ class HwcDisplay : public ICompositorDisplay {
   PictureMemory gpu_memory_;
   std::vector<PictureMemory::Member> gpu_pending_;
   SharedFd gpu_drawn_fence_;
+  /* What each of the executor's buffers holds, so the next one is drawn
+   * only where its picture differs -- or not at all, and kept, when it
+   * already holds it; see compositor/PartialRedraw.h. The plan for the
+   * drawing under way, and whether it is a keep. */
+  partial::SlotPictures gpu_slots_{partial::Engine{true}};
+  partial::Plan gpu_plan_;
+  bool gpu_keep_ = false;
   bool DrawClientOnGpu(
       const CompositionPlanner::ValidatedComposition &composition);
   void SeatGpuBuffer(buffer_handle_t buffer, SharedFd fence);
