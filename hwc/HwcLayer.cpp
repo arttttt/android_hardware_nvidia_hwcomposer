@@ -93,6 +93,7 @@ void HwcLayer::SetLayerProperties(const LayerProperties& layer_properties) {
     layer_data_.bi = layer_properties.buffer->bi;
     layer_data_.fb = layer_properties.buffer->fb;
     layer_data_.acquire_fence = layer_properties.buffer->fence;
+    layer_data_.generation++;
   }
   if (layer_properties.blend_mode) {
     if (blend_mode_ != layer_properties.blend_mode.value()) {
