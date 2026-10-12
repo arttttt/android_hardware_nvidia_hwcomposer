@@ -26,6 +26,7 @@
 #include "bufferinfo/BufferInfo.h"
 #include "compositor/DisplayInfo.h"
 #include "compositor/LayerEffects.h"
+#include "compositor/Rect.h"
 #include "utils/fd.h"
 
 namespace android::drm_hwcomposer {
@@ -59,32 +60,6 @@ struct LayerTransform {
   bool rotate90;
 };
 
-template <typename T>
-struct Rect {
-  T left;
-  T top;
-  T right;
-  T bottom;
-
-  T Width() const {
-    return right - left;
-  }
-
-  T Height() const {
-    return bottom - top;
-  }
-
-  bool operator==(const Rect<T>& rhs) const {
-    return left == rhs.left && top == rhs.top && right == rhs.right &&
-           bottom == rhs.bottom;
-  }
-  bool operator!=(const Rect<T>& rhs) const {
-    return !(*this == rhs);
-  }
-};
-
-using IRect = Rect<int32_t>;
-using FRect = Rect<float>;
 
 struct SrcRectInfo {
   /* nullopt means the whole buffer */
