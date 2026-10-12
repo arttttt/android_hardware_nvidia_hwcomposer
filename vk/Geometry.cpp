@@ -16,7 +16,9 @@
 
 #include "vk/Geometry.h"
 
+#include <algorithm>
 #include <utility>
+#include <vector>
 
 namespace android::hwc::vk {
 
@@ -71,6 +73,40 @@ Quad PlaceLayer(float src_left, float src_top, float src_right, float src_bottom
   q.uv_bl[0] = c[3].u;
   q.uv_bl[1] = c[3].v;
   return q;
+}
+
+/* Cut into slabs at every vertical edge; in each slab the boxes spanning
+ * it must cover its height without a gap. A handful of boxes, so nothing
+ * cleverer. */
+bool Covers(const Box &area, const Box *boxes, size_t count) {
+  if (area.right <= area.left || area.bottom <= area.top)
+    return true;
+  std::vector<int32_t> xs = {area.left, area.right};
+  for (size_t i = 0; i < count; ++i) {
+    xs.push_back(std::clamp(boxes[i].left, area.left, area.right));
+    xs.push_back(std::clamp(boxes[i].right, area.left, area.right));
+  }
+  std::sort(xs.begin(), xs.end());
+  xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
+  std::vector<std::pair<int32_t, int32_t>> spans;
+  for (size_t k = 0; k + 1 < xs.size(); ++k) {
+    spans.clear();
+    for (size_t i = 0; i < count; ++i) {
+      const Box &b = boxes[i];
+      if (b.left <= xs[k] && b.right >= xs[k + 1] && b.bottom > b.top)
+        spans.emplace_back(b.top, b.bottom);
+    }
+    std::sort(spans.begin(), spans.end());
+    int32_t reach = area.top;
+    for (const auto &sp : spans) {
+      if (sp.first > reach)
+        break;
+      reach = std::max(reach, sp.second);
+    }
+    if (reach < area.bottom)
+      return false;
+  }
+  return true;
 }
 
 }  // namespace android::hwc::vk

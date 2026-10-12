@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace android::hwc::vk {
@@ -40,5 +41,13 @@ Quad PlaceLayer(float src_left, float src_top, float src_right, float src_bottom
                 uint32_t buffer_width, uint32_t buffer_height, int32_t dst_left,
                 int32_t dst_top, int32_t dst_right, int32_t dst_bottom, uint8_t transform,
                 uint32_t target_width, uint32_t target_height);
+
+/* A rectangle of the target's pixels, right and bottom exclusive. */
+struct Box {
+  int32_t left, top, right, bottom;
+};
+
+/* Does the union of `boxes` cover all of `area`? */
+bool Covers(const Box &area, const Box *boxes, size_t count);
 
 }  // namespace android::hwc::vk
