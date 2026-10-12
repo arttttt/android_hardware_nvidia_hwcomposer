@@ -119,6 +119,21 @@ WorkEstimate EstimateWork(const Frame &frame, double cycles, double raw_cycles,
   return e;
 }
 
+double GpuCycles(uint32_t pixels, const Tuning &tuning) {
+  return double(pixels) * 1000.0 / tuning.gpu_pixels_per_kclock *
+         tuning.factor_pct / 100.0;
+}
+
+WorkEstimate EstimateGpu(const Frame &frame, uint32_t pixels, int64_t now_ns,
+                         const Tuning &tuning) {
+  const double cycles = GpuCycles(pixels, tuning);
+  const int64_t submit_end =
+      now_ns + int64_t(tuning.submit_warm_us) * nsPerUs;
+  return EstimateWork(frame, cycles, cycles * 100.0 / tuning.factor_pct,
+                      now_ns, submit_end, tuning,
+                      GpuLadder(tuning.gpu_cap_mhz));
+}
+
 MergeEstimate EstimateMerge(const Frame &frame, const Member *members,
                             size_t count, int64_t now_ns,
                             const Tuning &tuning, bool cold,

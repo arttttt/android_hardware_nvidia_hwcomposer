@@ -59,6 +59,16 @@ struct ClockLadder {
 inline constexpr ClockLadder vicLadder = {
     clockStepsMhz, sizeof(clockStepsMhz) / sizeof(clockStepsMhz[0]), 0};
 
+/* The GPU's steps, megahertz: the gbus table devfreq offers on the mocha
+ * (/sys/class/devfreq/gk20a.0/available_frequencies). A floor between two
+ * is rounded up by the kernel to the step above. */
+constexpr uint32_t gpuStepsMhz[] = {72,  108, 180, 252, 324, 396, 468, 540,
+                                    612, 648, 684, 708, 756, 804, 852};
+
+inline constexpr ClockLadder GpuLadder(uint32_t cap_mhz) {
+  return {gpuStepsMhz, sizeof(gpuStepsMhz) / sizeof(gpuStepsMhz[0]), cap_mhz};
+}
+
 /* The smallest step that covers `need_mhz`, or nought if none does. */
 inline uint32_t StepAtLeast(uint32_t need_mhz) {
   return vicLadder.AtLeast(need_mhz);

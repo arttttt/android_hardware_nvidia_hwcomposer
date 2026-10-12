@@ -79,6 +79,16 @@ WorkEstimate EstimateWork(const Frame &frame, double cycles, double raw_cycles,
                           int64_t now_ns, int64_t submit_end_ns,
                           const Tuning &tuning, const ClockLadder &ladder);
 
+/* The composer's GPU drawing `pixels` of the client range, in its clocks,
+ * with the margin. */
+double GpuCycles(uint32_t pixels, const Tuning &tuning);
+
+/* The GPU's step for that drawing, begun at `now_ns` -- the drawing goes
+ * to the GPU right after it is planned -- against the frame's latch, on
+ * the GPU's ladder at its cap. */
+WorkEstimate EstimateGpu(const Frame &frame, uint32_t pixels, int64_t now_ns,
+                         const Tuning &tuning);
+
 /* `cold` says the engine will pay for coming up; `cpu_lifted` that the
  * processor will be lifted for the submit, which shortens it.
  *

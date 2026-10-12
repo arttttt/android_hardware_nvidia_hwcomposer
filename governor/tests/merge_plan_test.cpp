@@ -97,6 +97,12 @@ void ACappedLadderStopsAtTheCap() {
   const ClockLadder open = {steps, 7, 0};
   CHECK(open.Top() == 852);
   CHECK(open.AtLeast(400) == 852);
+
+  /* The GPU's own, at the owner's cap. */
+  const ClockLadder gpu = GpuLadder(324);
+  CHECK(gpu.Top() == 324);
+  CHECK(gpu.AtLeast(0) == 72);
+  CHECK(gpu.AtLeast(253) == 324);
 }
 
 void ColdIsIdleBeyondThePowergate() {
@@ -339,6 +345,45 @@ void AMeasuredSubmitPathShortensTheBudget() {
   CHECK(none.budget_ns == assumed.budget_ns);
 }
 
+void TheCloseFrameEarlyNeedsALowGpuStep() {
+  Tuning t;
+  /* Planned right after the latch: nearly the whole period to draw. */
+  const WorkEstimate e =
+      EstimateGpu(Planned(t0, t0 - nsPerMs, true), 1350 * 1795, t0, t);
+  CHECK(!e.late);
+  CHECK(!e.beyond);
+  CHECK(e.step_mhz == 72);
+}
+
+void TheCloseFrameLateAsksTheCapNotAbove() {
+  Tuning t;
+  /* About 977 kcycles with the margin. Planned 9 ms after the latch:
+   * 6.7 ms of budget, 180 MHz is enough. */
+  const WorkEstimate mid = EstimateGpu(
+      Planned(t0, t0 - 9 * nsPerMs, true), 1350 * 1795, t0, t);
+  CHECK(mid.step_mhz == 180);
+
+  /* Planned 12 ms after: 3.7 ms of budget, more than 252 needed. */
+  const WorkEstimate late = EstimateGpu(
+      Planned(t0, t0 - 12 * nsPerMs, true), 1350 * 1795, t0, t);
+  CHECK(!late.slipped);
+  CHECK(late.step_mhz == 324);
+
+  /* Planned 13 ms after: not even the cap makes the latch, so the drawing
+   * aims at the next one at a lower step -- as a merge does. */
+  const WorkEstimate tight = EstimateGpu(
+      Planned(t0, t0 - 13 * nsPerMs, true), 1350 * 1795, t0, t);
+  CHECK(tight.slipped);
+  CHECK(tight.step_mhz < 324);
+}
+
+void NothingToDrawNeedsTheLowestStep() {
+  Tuning t;
+  const WorkEstimate e = EstimateGpu(Planned(t0, t0 - nsPerMs, true), 0, t0, t);
+  CHECK(e.need_mhz == 0);
+  CHECK(e.step_mhz == 72);
+}
+
 int main() {
   ClockStepsAreOrdered();
   ACappedLadderStopsAtTheCap();
@@ -357,6 +402,9 @@ int main() {
   ColdSubmitEatsMoreBudgetUnlessTheProcessorIsLifted();
   NoBudgetLeftSlipsRatherThanAskingTheTop();
   AMeasuredSubmitPathShortensTheBudget();
+  TheCloseFrameEarlyNeedsALowGpuStep();
+  TheCloseFrameLateAsksTheCapNotAbove();
+  NothingToDrawNeedsTheLowestStep();
 
   if (failures != 0) {
     fprintf(stderr, "%d check(s) failed\n", failures);

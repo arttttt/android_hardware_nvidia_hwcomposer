@@ -187,6 +187,16 @@ struct Tuning {
 
   /* How often the performance profile is asked for. */
   uint32_t profile_poll_ms = 250;
+
+  /* The GPU's floor for the composer's own drawing of the client range:
+   * whether to ask one at all, the highest step it may be (the owner's
+   * cap -- above it the energy is not worth the frame), and what the
+   * drawing costs. Settings' close frame, 1350x1795 written, took about
+   * 2.4 ms at 324 MHz: some 3.1 pixels a clock. The margin is factor_pct,
+   * as for the merge. */
+  uint32_t gpu_boost = 1;
+  uint32_t gpu_cap_mhz = 324;
+  uint32_t gpu_pixels_per_kclock = 3100;
 };
 
 constexpr const char *tuningPath = "/vendor/etc/hwc_governor.conf";
