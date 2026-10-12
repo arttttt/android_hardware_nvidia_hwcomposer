@@ -26,6 +26,7 @@
 
 #include "display/AtomicStateManager.h"
 #include "display/DrmMode.h"
+#include "compositor/PictureMemory.h"
 #include "tegra/PanelMirror.h"
 #include "tegra/CompositionGovernor.h"
 #include "tegra/DcHead.h"
@@ -116,6 +117,12 @@ class TegraAtomicRequest : public AtomicRequest {
      * could not name the buffer, and a group with a nameless member is drawn
      * fresh every time. */
     std::vector<uint64_t> source_ids;
+
+    /* Which frame of each member's buffer, in step with `layers`: the
+     * layer's count of buffers handed over. Part of what the drawn result
+     * is recognised by -- a client drawing into the buffer it showed last
+     * keeps the identity and moves the count. */
+    std::vector<uint64_t> generations;
 
     /* How each member is turned, in step with `layers`: the framework's
      * bits, hflip | vflip << 1 | rotate90 << 2, nought for most. The merge
@@ -498,6 +505,7 @@ class TegraAtomicStateManager : public AtomicStateManager {
     uint64_t first_sight = 0;
     uint64_t changed_shape = 0; /* member count, window or stacking depth */
     uint64_t changed_identity = 0;
+    uint64_t changed_frame = 0; /* a member drawn again into the same buffer */
     uint64_t changed_geometry = 0; /* layout inside the group */
     uint64_t changed_size = 0;     /* the group resized -- honest redraw */
     uint64_t changed_blend = 0;
@@ -532,18 +540,8 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * Presented() -- so it goes on believing, truly, that the same slot is on
    * screen.
    */
-  struct MergedSource {
-    uint64_t id;
-    float source_left, source_top, source_right, source_bottom;
-    int32_t display_left, display_top, display_right, display_bottom;
-    bool premultiplied;
-    float alpha;
-    uint8_t transform;
-  };
-  std::vector<MergedSource> last_merge_sources_;
-  int32_t last_merge_window_ = -1; /* -1: nothing remembered yet */
-  uint32_t last_merge_width_ = 0;
-  uint32_t last_merge_height_ = 0;
+  /* Who the last group was: its members, its window and size. */
+  PictureMemory merge_memory_;
   hwc::DcHead::Window last_merge_described_{};
   SharedFd last_merge_fence_;
 
@@ -551,17 +549,7 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * is separate from the counting: it is asked at validate as well, where
    * the governor wants to know whether the engine will be woken, and a
    * frame judged twice must not be counted twice. */
-  enum class MergeVerdict {
-    kSame,
-    kFirstSight,
-    kChangedShape,
-    kChangedSize,
-    kNameless,
-    kChangedIdentity,
-    kChangedGeometry,
-    kChangedBlend,
-    kChangedTransform,
-  };
+  using MergeVerdict = PictureMemory::Verdict;
   MergeVerdict JudgeMerge(const TegraAtomicRequest::Merge &merge) const;
 
   /* The same question, asked once per frame at execute: counts the reason
@@ -582,7 +570,7 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * only being powered -- is a frame nobody watched, so whatever was
    * remembered before it cannot be trusted after it. */
   void ForgetMerge() {
-    last_merge_window_ = -1;
+    merge_memory_.Forget();
   }
 
   /* The buffer the last group was drawn into, which a reused group shows

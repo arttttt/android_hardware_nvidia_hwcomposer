@@ -797,6 +797,7 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
         merge.source_ids.push_back(joining.layer.bi
                                        ? joining.layer.bi->unique_id
                                        : 0);
+        merge.generations.push_back(joining.layer.generation);
         merge.transforms.push_back(TransformBits(joining.layer.pi.transform));
         merge.formats.push_back(joining.layer.bi ? joining.layer.bi->format
                                                  : 0);
@@ -993,69 +994,38 @@ void TegraAtomicStateManager::TellGovernor(const TegraAtomicRequest &tegra) {
   composition_governor_->FramePlanned(frame);
 }
 
-TegraAtomicStateManager::MergeVerdict TegraAtomicStateManager::JudgeMerge(
-    const TegraAtomicRequest::Merge &merge) const {
-  if (last_merge_window_ < 0) {
-    return MergeVerdict::kFirstSight;
-  }
+namespace {
 
-  /* The group's depth in the stack is not judged either: it is where the
-   * window sits among the others, not anything in the picture, and the
-   * window is simply put at the new depth. Judged, every layer arriving
-   * or leaving above the group -- a shade, an application window, a
-   * popup -- had the engine redraw the very same pixels; on Android 11
-   * that was a third of the merges drawn, the commonest cause after the
-   * first sight. */
-  if (merge.window != last_merge_window_ ||
-      merge.layers.size() != last_merge_sources_.size() ||
-      merge.source_ids.size() != merge.layers.size() ||
-      merge.transforms.size() != merge.layers.size()) {
-    return MergeVerdict::kChangedShape;
-  }
-
-  /* The group's size -- a resize really is a different picture. Its PLACE
-   * is deliberately not judged: the pixels are drawn relative to the
-   * group's own corner, so a group that merely moved is the same picture
-   * shown somewhere else, and the window is simply moved under it. That is
-   * the whole dividend of the group's frame of reference -- a sliding
-   * volume panel, a settling notification, anything that travels without
-   * redrawing, stops waking the engine. */
-  if (merge.width != last_merge_width_ ||
-      merge.height != last_merge_height_) {
-    return MergeVerdict::kChangedSize;
-  }
-
+/* The group as the memory of drawn pictures takes it: each member's buffer
+ * and which frame of it, and where it went inside the group. The group's
+ * place on the panel and its depth in the stack are left out on purpose --
+ * the pixels are drawn relative to the group's own corner, so a group that
+ * moved, or had layers arrive or leave above it, is the same picture shown
+ * somewhere else, and the window is simply moved under it. */
+std::vector<PictureMemory::Member> MergeMembers(
+    const TegraAtomicRequest::Merge &merge) {
+  std::vector<PictureMemory::Member> members(merge.layers.size());
   for (size_t i = 0; i < merge.layers.size(); ++i) {
     const hwc::VicSession::Layer &l = merge.layers[i];
-    const MergedSource &s = last_merge_sources_[i];
-
-    if (merge.source_ids[i] == 0) {
-      return MergeVerdict::kNameless;
-    }
-    if (merge.source_ids[i] != s.id) {
-      return MergeVerdict::kChangedIdentity;
-    }
-
-    /* Exact comparison on purpose, floats included: both sides came out of
-     * the same description untouched, so anything unequal really is a
-     * different frame. */
-    if (l.source_left != s.source_left || l.source_top != s.source_top ||
-        l.source_right != s.source_right ||
-        l.source_bottom != s.source_bottom ||
-        l.display_left != s.display_left || l.display_top != s.display_top ||
-        l.display_right != s.display_right ||
-        l.display_bottom != s.display_bottom) {
-      return MergeVerdict::kChangedGeometry;
-    }
-    if (l.premultiplied != s.premultiplied || l.alpha != s.alpha) {
-      return MergeVerdict::kChangedBlend;
-    }
-    if (merge.transforms[i] != s.transform) {
-      return MergeVerdict::kChangedTransform;
-    }
+    PictureMemory::Member &m = members[i];
+    m.source = i < merge.source_ids.size() ? merge.source_ids[i] : 0;
+    m.generation = i < merge.generations.size() ? merge.generations[i] : 0;
+    m.src = {l.source_left, l.source_top, l.source_right, l.source_bottom};
+    m.dst = {l.display_left, l.display_top, l.display_right,
+             l.display_bottom};
+    m.alpha = l.alpha;
+    m.premultiplied = l.premultiplied;
+    m.transform = i < merge.transforms.size() ? merge.transforms[i] : 0;
   }
+  return members;
+}
 
-  return MergeVerdict::kSame;
+}  // namespace
+
+TegraAtomicStateManager::MergeVerdict TegraAtomicStateManager::JudgeMerge(
+    const TegraAtomicRequest::Merge &merge) const {
+  return merge_memory_.Judge(merge.window, merge.width, merge.height,
+                             MergeMembers(merge));
 }
 
 bool TegraAtomicStateManager::RecognisesMerge(
@@ -1078,6 +1048,9 @@ bool TegraAtomicStateManager::RecognisesMerge(
     case MergeVerdict::kChangedIdentity:
       merges_.changed_identity++;
       return false;
+    case MergeVerdict::kChangedFrame:
+      merges_.changed_frame++;
+      return false;
     case MergeVerdict::kChangedGeometry:
       merges_.changed_geometry++;
       return false;
@@ -1087,6 +1060,10 @@ bool TegraAtomicStateManager::RecognisesMerge(
     case MergeVerdict::kChangedTransform:
       merges_.changed_transform++;
       return false;
+    case MergeVerdict::kChangedEffects:
+      /* The engine draws no effects; nothing sets them on a member. */
+      merges_.changed_geometry++;
+      return false;
   }
   return false;
 }
@@ -1094,23 +1071,8 @@ bool TegraAtomicStateManager::RecognisesMerge(
 void TegraAtomicStateManager::RememberMerge(
     const TegraAtomicRequest::Merge &merge,
     const hwc::DcHead::Window &described, const SharedFd &drawn) {
-  last_merge_sources_.clear();
-  last_merge_sources_.reserve(merge.layers.size());
-
-  const bool named = merge.source_ids.size() == merge.layers.size();
-  for (size_t i = 0; i < merge.layers.size(); ++i) {
-    const hwc::VicSession::Layer &l = merge.layers[i];
-    last_merge_sources_.push_back(
-        MergedSource{named ? merge.source_ids[i] : 0, l.source_left,
-                     l.source_top, l.source_right, l.source_bottom,
-                     l.display_left, l.display_top, l.display_right,
-                     l.display_bottom, l.premultiplied, l.alpha,
-                     merge.transforms[i]});
-  }
-
-  last_merge_window_ = merge.window;
-  last_merge_width_ = merge.width;
-  last_merge_height_ = merge.height;
+  merge_memory_.Remember(merge.window, merge.width, merge.height,
+                         MergeMembers(merge));
   last_merge_described_ = described;
   last_merge_fence_ = drawn;
 }
@@ -1764,13 +1726,15 @@ std::string TegraAtomicStateManager::DumpState() {
      * but engine refusals draws no frame and reuses none, and the causes
      * are then the only line explaining what kept being attempted. */
     const uint64_t causes = m.first_sight + m.changed_shape +
-                            m.changed_identity + m.changed_geometry +
+                            m.changed_identity + m.changed_frame +
+                            m.changed_geometry +
                             m.changed_size + m.changed_blend +
                             m.changed_transform + m.nameless;
     if (m.frames != 0 || m.reused != 0 || causes != 0)
       ss << "  drawn because           : first " << m.first_sight
          << ", shape " << m.changed_shape << ", buffer "
-         << m.changed_identity << ", geometry " << m.changed_geometry
+         << m.changed_identity << ", redrawn " << m.changed_frame
+         << ", geometry " << m.changed_geometry
          << ", size " << m.changed_size << ", blend " << m.changed_blend
          << ", transform " << m.changed_transform << ", nameless "
          << m.nameless << "\n";
