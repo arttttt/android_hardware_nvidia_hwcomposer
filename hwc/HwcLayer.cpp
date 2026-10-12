@@ -17,6 +17,7 @@
 #include "HwcLayer.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -33,6 +34,8 @@ namespace android::drm_hwcomposer {
 
 HwcLayer::HwcLayer(ICompositorDisplay* parent_display)
     : parent_(parent_display) {
+  static std::atomic<uint64_t> next_serial{1};
+  layer_data_.serial = next_serial.fetch_add(1, std::memory_order_relaxed);
 }
 
 void HwcLayer::SetLayerProperties(const LayerProperties& layer_properties) {
