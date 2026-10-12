@@ -896,17 +896,48 @@ int VkCompositor::ComposeNow(const Target &target, const Layer *layers, size_t c
       pass = keep_pass_;
     }
   }
-  /* Nothing to clear when the bottom layer writes every pixel of the area
-   * itself: opaque, whole plane alpha, no corners, and over all of it. */
-  {
-    const Layer &l = layers[0];
+  /* Which layers are written rather than blended, decided before the pass
+   * begins. The area starts cleared, so a layer that lands on none of what
+   * is drawn before it blends onto nothing and may as well be written; so
+   * may one that hides whatever it lands on. A written layer sets every
+   * pixel of its place -- nought outside its corners -- so where the
+   * written layers together cover the whole area, every pixel is written
+   * before any blending reads it or over whatever was blended, and the
+   * clear is spent for nothing. */
+  std::array<VkRect2D, kMaxLayers> places{};
+  std::array<bool, kMaxLayers> written{};
+  std::array<Box, kMaxLayers> written_places{};
+  size_t n_written = 0;
+  for (size_t i = 0; i < count; ++i) {
+    const Layer &l = layers[i];
+    const int32_t rl = std::max(l.dst_left, area.offset.x);
+    const int32_t rt = std::max(l.dst_top, area.offset.y);
+    const int32_t rr = std::min(l.dst_right, area.offset.x + static_cast<int32_t>(area.extent.width));
+    const int32_t rb = std::min(l.dst_bottom, area.offset.y + static_cast<int32_t>(area.extent.height));
+    places[i] = {{rl, rt},
+                 {static_cast<uint32_t>(std::max(rr - rl, 0)),
+                  static_cast<uint32_t>(std::max(rb - rt, 0))}};
+    bool lands_on_drawn = false;
+    for (size_t k = 0; k < i && !lands_on_drawn; ++k) {
+      const VkRect2D &d = places[k];
+      lands_on_drawn = d.extent.width > 0 && d.extent.height > 0 &&
+                       rl < d.offset.x + static_cast<int32_t>(d.extent.width) &&
+                       d.offset.x < rr &&
+                       rt < d.offset.y + static_cast<int32_t>(d.extent.height) &&
+                       d.offset.y < rb;
+    }
     const bool hides = l.alpha >= 1.f && l.corner_radius <= 0.f &&
-                       (l.buffer != nullptr ? (l.opaque || opaque[0]) : l.color[3] >= 1.f);
-    const bool covers = l.dst_left <= area.offset.x && l.dst_top <= area.offset.y &&
-                        l.dst_right >= area.offset.x + static_cast<int32_t>(area.extent.width) &&
-                        l.dst_bottom >= area.offset.y + static_cast<int32_t>(area.extent.height);
+                       (l.buffer != nullptr ? (l.opaque || opaque[i]) : l.color[3] >= 1.f);
+    written[i] = replace_pipeline_ != VK_NULL_HANDLE && (!lands_on_drawn || hides);
+    if (written[i] && rr > rl && rb > rt)
+      written_places[n_written++] = {rl, rt, rr, rb};
+  }
+  {
     const VkRenderPass cover = pass == keep_pass_ ? cover_keep_pass_ : cover_pass_;
-    if (hides && covers && cover != VK_NULL_HANDLE)
+    const Box whole = {area.offset.x, area.offset.y,
+                       area.offset.x + static_cast<int32_t>(area.extent.width),
+                       area.offset.y + static_cast<int32_t>(area.extent.height)};
+    if (cover != VK_NULL_HANDLE && Covers(whole, written_places.data(), n_written))
       pass = cover;
   }
   VkRenderPassBeginInfo rbi = {};
@@ -924,38 +955,13 @@ int VkCompositor::ComposeNow(const Target &target, const Layer *layers, size_t c
   vk.CmdSetViewport(cmd, 0, 1, &vp);
   vk.CmdSetScissor(cmd, 0, 1, &area);
 
-  /* Where this drawing has put something so far. The area starts cleared,
-   * so a layer that lands on none of it blends onto nothing and may as
-   * well be written; so may one that hides whatever it lands on. */
-  std::array<VkRect2D, kMaxLayers> drawn_rects{};
-  size_t drawn = 0;
-
   for (size_t i = 0; i < count; ++i) {
     const Layer &l = layers[i];
-    const int32_t rl = std::max(l.dst_left, area.offset.x);
-    const int32_t rt = std::max(l.dst_top, area.offset.y);
-    const int32_t rr = std::min(l.dst_right, area.offset.x + static_cast<int32_t>(area.extent.width));
-    const int32_t rb = std::min(l.dst_bottom, area.offset.y + static_cast<int32_t>(area.extent.height));
-    bool lands_on_drawn = false;
-    for (size_t k = 0; k < drawn && !lands_on_drawn; ++k) {
-      const VkRect2D &d = drawn_rects[k];
-      lands_on_drawn = rl < d.offset.x + static_cast<int32_t>(d.extent.width) &&
-                       d.offset.x < rr &&
-                       rt < d.offset.y + static_cast<int32_t>(d.extent.height) &&
-                       d.offset.y < rb;
-    }
-    const bool hides = l.alpha >= 1.f && l.corner_radius <= 0.f &&
-                       (l.buffer != nullptr ? (l.opaque || opaque[i]) : l.color[3] >= 1.f);
-    const VkPipeline want =
-        replace_pipeline_ != VK_NULL_HANDLE && (!lands_on_drawn || hides) ? replace_pipeline_
-                                                                          : pipeline_;
+    const VkPipeline want = written[i] ? replace_pipeline_ : pipeline_;
     if (want != bound) {
       bound = want;
       vk.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound);
     }
-    if (rr > rl && rb > rt && drawn < drawn_rects.size())
-      drawn_rects[drawn++] = {{rl, rt},
-                              {static_cast<uint32_t>(rr - rl), static_cast<uint32_t>(rb - rt)}};
 
     const Quad q = PlaceLayer(l.src_left, l.src_top, l.src_right, l.src_bottom,
                               l.buffer ? l.width : 1, l.buffer ? l.height : 1, l.dst_left,
