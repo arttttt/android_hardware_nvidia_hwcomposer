@@ -22,12 +22,14 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
 
 
 #include "bufferinfo/NvGralloc.h"
+#include "compositor/PartialRedraw.h"
 #include "utils/Time.h"
 #include "tegra/nvmap.h"
 #include "utils/log.h"
@@ -253,7 +255,8 @@ VicSession::~VicSession() {
 
 drm_hwcomposer::SharedFd VicSession::Compose(
     const VendorBuffer &target, const std::vector<Layer> &layers,
-    uint32_t width, uint32_t height, int target_ready, uint32_t transform) {
+    uint32_t width, uint32_t height, int target_ready, uint32_t transform,
+    const drm_hwcomposer::IRect *dirty) {
   const std::lock_guard<std::mutex> lock(library_mutex_);
 
   /* The layers are the framework's buffers, and the allocator is
@@ -267,14 +270,15 @@ drm_hwcomposer::SharedFd VicSession::Compose(
 
   return ComposeInto(gralloc, target.surface.data(), target.width,
                      target.height, layers, width, height, target_ready,
-                     target.surface.data(), transform);
+                     target.surface.data(), transform, dirty);
 }
 
 drm_hwcomposer::SharedFd VicSession::ComposeInto(
     drm_hwcomposer::NvGralloc *gralloc, const void *target_surfaces,
     uint32_t buffer_width, uint32_t buffer_height,
     const std::vector<Layer> &layers, uint32_t width, uint32_t height,
-    int target_ready, const uint32_t *probe_words, uint32_t transform) {
+    int target_ready, const uint32_t *probe_words, uint32_t transform,
+    const drm_hwcomposer::IRect *dirty) {
   if (layers.empty() || layers.size() > kMaxLayers) {
     refused_++;
     return {};
@@ -310,11 +314,28 @@ drm_hwcomposer::SharedFd VicSession::ComposeInto(
   if (height == 0 || height > buffer_height)
     height = buffer_height;
 
+  /* A redraw of part of the group writes that part and nothing else. In
+   * the same coordinates as the members' places, which the library's own
+   * clipping helper takes for granted: members are cut to the rectangle
+   * here, so the engine is never asked to place one outside it. */
+  drm_hwcomposer::IRect bound{0, 0, static_cast<int32_t>(width),
+                              static_cast<int32_t>(height)};
+  const bool bounded = dirty != nullptr && transform == 0;
+  if (bounded) {
+    bound = {std::max(dirty->left, bound.left), std::max(dirty->top, bound.top),
+             std::min(dirty->right, bound.right),
+             std::min(dirty->bottom, bound.bottom)};
+    if (bound.right <= bound.left || bound.bottom <= bound.top) {
+      refused_++;
+      return {};
+    }
+  }
+
   const NvRect target_rect = {
-      .left = 0,
-      .top = 0,
-      .right = static_cast<int32_t>(width),
-      .bottom = static_cast<int32_t>(height),
+      .left = bound.left,
+      .top = bound.top,
+      .right = bound.right,
+      .bottom = bound.bottom,
   };
 
   if (configure_target_(session_, config, target_surfaces, 1,
@@ -357,6 +378,9 @@ drm_hwcomposer::SharedFd VicSession::ComposeInto(
     return {};
   }
 
+  /* The engine's slots are filled in order, one per member drawn: a member
+   * cut away by the bound takes none. */
+  uint32_t seat = 0;
   for (size_t i = 0; i < layers.size(); i++) {
     const Layer &layer = layers[i];
 
@@ -376,12 +400,8 @@ drm_hwcomposer::SharedFd VicSession::ComposeInto(
       return {};
     }
 
-    const NvRectF32 source = {
-        .left = layer.source_left,
-        .top = layer.source_top,
-        .right = layer.source_right,
-        .bottom = layer.source_bottom,
-    };
+    drm_hwcomposer::FRect read{layer.source_left, layer.source_top,
+                               layer.source_right, layer.source_bottom};
     /* Where the member lands. The engine mirrors PLACEMENT by the mirror
      * bits of the configuration's transform -- each bit reflecting every
      * destination rectangle across the middle of its own target axis --
@@ -406,26 +426,39 @@ drm_hwcomposer::SharedFd VicSession::ComposeInto(
         layer.display_left, layer.display_top, layer.display_right,
         layer.display_bottom, (transform & 2U) != 0, (transform & 1U) != 0,
         static_cast<int32_t>(width), static_cast<int32_t>(height));
+    drm_hwcomposer::IRect lands{placed.left, placed.top, placed.right,
+                                placed.bottom};
+    if (bounded &&
+        !drm_hwcomposer::partial::ClipTo(bound, &read, &lands))
+      continue;
+
+    const NvRectF32 source = {
+        .left = read.left,
+        .top = read.top,
+        .right = read.right,
+        .bottom = read.bottom,
+    };
     const NvRect display = {
-        .left = placed.left,
-        .top = placed.top,
-        .right = placed.right,
-        .bottom = placed.bottom,
+        .left = lands.left,
+        .top = lands.top,
+        .right = lands.right,
+        .bottom = lands.bottom,
     };
 
-    if (configure_source_(session_, config, static_cast<uint32_t>(i), surfaces,
+    if (configure_source_(session_, config, seat, surfaces,
                           static_cast<uint32_t>(count), &source,
                           &display) != kNvSuccess) {
       refused_++;
       return {};
     }
 
-    configure_blending_(session_, config, static_cast<uint32_t>(i),
+    configure_blending_(session_, config, seat,
                         layer.premultiplied ? kAlphaPremultiplied
                                             : kAlphaNonPremultiplied,
                         layer.alpha);
 
-    exec.inputs[i][0] = surfaces;
+    exec.inputs[seat][0] = surfaces;
+    seat++;
 
     /* The engine waits on these itself, so nothing here blocks. The
      * descriptor stays the caller's -- it is read, not taken. */
@@ -434,6 +467,11 @@ drm_hwcomposer::SharedFd VicSession::ComposeInto(
       refused_++;
       return {};
     }
+  }
+
+  if (seat == 0) {
+    refused_++;
+    return {};
   }
 
   /* One transform for the whole configuration. It governs how every

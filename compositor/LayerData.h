@@ -229,6 +229,10 @@ struct LayerData {
    * count is how that is told from showing it unchanged. */
   uint64_t generation = 0;
 
+  /* Which layer this is, for as long as the process lives: never reused,
+   * unlike the layer's address. What a frame count is counted against. */
+  uint64_t serial = 0;
+
   /* Given values of their own, and it matters.
    *
    * Every other member here builds itself. These two are plain enumerations,

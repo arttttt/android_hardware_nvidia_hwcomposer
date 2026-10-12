@@ -798,6 +798,8 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
                                        ? joining.layer.bi->unique_id
                                        : 0);
         merge.generations.push_back(joining.layer.generation);
+        merge.damages.push_back(joining.layer.pi.damage);
+        merge.serials.push_back(joining.layer.serial);
         merge.transforms.push_back(TransformBits(joining.layer.pi.transform));
         merge.formats.push_back(joining.layer.bi ? joining.layer.bi->format
                                                  : 0);
@@ -1020,6 +1022,26 @@ std::vector<PictureMemory::Member> MergeMembers(
   return members;
 }
 
+/* The group as a slot's memory of what it holds takes it: each member by
+ * its layer and frame, and where it went inside the group. */
+std::vector<partial::Member> PartialMembers(
+    const TegraAtomicRequest::Merge &merge) {
+  std::vector<partial::Member> members(merge.layers.size());
+  for (size_t i = 0; i < merge.layers.size(); ++i) {
+    const hwc::VicSession::Layer &l = merge.layers[i];
+    partial::Member &m = members[i];
+    m.serial = i < merge.serials.size() ? merge.serials[i] : 0;
+    m.generation = i < merge.generations.size() ? merge.generations[i] : 0;
+    m.src = {l.source_left, l.source_top, l.source_right, l.source_bottom};
+    m.dst = {l.display_left, l.display_top, l.display_right,
+             l.display_bottom};
+    m.alpha = l.alpha;
+    m.premultiplied = l.premultiplied;
+    m.transform = i < merge.transforms.size() ? merge.transforms[i] : 0;
+  }
+  return members;
+}
+
 }  // namespace
 
 TegraAtomicStateManager::MergeVerdict TegraAtomicStateManager::JudgeMerge(
@@ -1120,8 +1142,42 @@ std::string DescribeMerge(const TegraAtomicRequest::Merge &merge) {
              l.alpha, l.premultiplied ? "premult" : "coverage",
              l.acquire_fence);
     out += line;
+    if (i < merge.generations.size())
+      out += "      gen " + std::to_string(merge.generations[i]);
+    if (i < merge.damages.size()) {
+      std::string dmg;
+      for (const IRect &r : merge.damages[i].dmg_rects) {
+        char one[48];
+        snprintf(one, sizeof(one), " %d,%d-%d,%d", r.left, r.top, r.right,
+                 r.bottom);
+        dmg += one;
+      }
+      out += " damage" + (dmg.empty() ? std::string(" whole") : dmg);
+    }
+    out += "\n";
   }
   return out;
+}
+
+/* How the frame's group came to be on the window, for its words. */
+std::string HowDrawn(bool reused, bool drawn, const partial::Plan &plan) {
+  if (reused)
+    return ", group shown from memory";
+  if (!drawn)
+    return "";
+  switch (plan.kind) {
+    case partial::Plan::Kind::kFull:
+      return ", slot drawn whole";
+    case partial::Plan::Kind::kUnchanged:
+      return ", slot already held it";
+    case partial::Plan::Kind::kPartial:
+      break;
+  }
+  char how[64];
+  snprintf(how, sizeof(how), ", slot drawn in part %d,%d-%d,%d",
+           plan.dirty.left, plan.dirty.top, plan.dirty.right,
+           plan.dirty.bottom);
+  return how;
 }
 
 }  // namespace
@@ -1179,6 +1235,10 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
    * up; see PictureCapture. */
   const hwc::VendorBuffer *merged_target = nullptr;
   bool merged_turned = false;
+  /* The slot this frame's group went into, while its drawing has yet to
+   * reach the panel: a flip that fails leaves it holding nothing known. */
+  const hwc::ScratchPool::Slot *drawn_slot = nullptr;
+  partial::Plan drawn_plan;
   const auto &merge = tegra.GetMerge();
   if (!merge.layers.empty()) {
     if (vic_ == nullptr || scratch_ == nullptr) {
@@ -1230,10 +1290,6 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         return -EINVAL;
       }
 
-      if (composition_governor_ != nullptr)
-        hwc::MarkMergeForCalibration(merge, planned_seq_);
-
-      const int64_t before_merge = GetTimeMonotonicNs();
       /* The same door the turning pass used to answer to, so a code can
        * still be walked on this route. */
       const int forced_group = ForcedVicTransform();
@@ -1241,9 +1297,39 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
           *group_turn != 0 && forced_group >= 0 && forced_group <= 7
               ? static_cast<uint32_t>(forced_group)
               : VicTransformFor(*group_turn);
-      merged = vic_->Compose(*target->vendor, merge.layers, merge.width,
-                             merge.height,
-                             target_ready ? *target_ready : -1, group_code);
+
+      /* What of the slot to draw again: the slot still holds the picture it
+       * was last drawn with, and the members' damage since says where this
+       * one differs from it. Their damage is kept whether or not it is
+       * asked of, so that a slot coming round finds the frames it missed. */
+      SlotPicture &slot = slot_pictures_[target];
+      const std::vector<partial::Member> members = PartialMembers(merge);
+      for (size_t i = 0; i < members.size() && i < merge.damages.size(); ++i)
+        merge_damage_.Record(members[i].serial, members[i].generation,
+                             merge.damages[i].dmg_rects);
+      partial::Plan plan;
+      if (partial_ && group_code == 0)
+        plan = partial::Decide(slot.held, merge.width, merge.height, members,
+                               merge_damage_);
+      if (plan.kind == partial::Plan::Kind::kUnchanged && !slot.drawn)
+        plan.kind = partial::Plan::Kind::kFull;
+      const bool untouched = plan.kind == partial::Plan::Kind::kUnchanged;
+      const bool in_part = plan.kind == partial::Plan::Kind::kPartial;
+      slot.held.valid = false;
+
+      if (composition_governor_ != nullptr && !untouched)
+        hwc::MarkMergeForCalibration(merge, planned_seq_);
+
+      const int64_t before_merge = GetTimeMonotonicNs();
+      /* A slot that already holds the picture is shown as it stands, against
+       * the fence its drawing came due on: nothing is written, so the
+       * display reading it at the same time is no hazard. */
+      merged = untouched
+                   ? slot.drawn
+                   : vic_->Compose(*target->vendor, merge.layers, merge.width,
+                                   merge.height,
+                                   target_ready ? *target_ready : -1,
+                                   group_code, in_part ? &plan.dirty : nullptr);
       if (!merged) {
         /* The engine would not take it. Nothing has been written, so the
          * honest thing is to drop the frame rather than show a window
@@ -1286,19 +1372,40 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       merged_target = target->vendor;
       merged_turned = any_turn;
       last_merge_vendor_ = target->vendor;
+      drawn_slot = target;
+      drawn_plan = plan;
+
+      const uint32_t partial_run = slot.held.partial_run;
+      slot.held = {true, merge.width, merge.height, members,
+                   in_part ? partial_run + 1 : untouched ? partial_run : 0};
+      slot.drawn = merged;
 
       const int64_t took = GetTimeMonotonicNs() - before_merge;
-      merges_.frames++;
-      if (group_turn != 0)
-        merges_.turn_folded++;
-      merges_.layers += merge.layers.size();
-      const size_t bucket = merge.layers.empty()
-                                ? 0
-                                : std::min<size_t>(merge.layers.size() - 1, 4);
-      merges_.members[bucket]++;
-      merges_.engine_ns += took;
-      if (took > merges_.engine_ns_max)
-        merges_.engine_ns_max = took;
+      if (in_part) {
+        merges_.partial++;
+        merges_.partial_pixels += static_cast<uint64_t>(plan.dirty.Width()) *
+                                  static_cast<uint64_t>(plan.dirty.Height());
+        merges_.partial_group_pixels +=
+            static_cast<uint64_t>(merge.width) * merge.height;
+      }
+      /* A slot that already held the picture woke no engine: counted on its
+       * own, and kept out of the engine's averages. */
+      if (untouched) {
+        merges_.untouched++;
+      } else {
+        merges_.frames++;
+        if (group_turn != 0)
+          merges_.turn_folded++;
+        merges_.layers += merge.layers.size();
+        const size_t bucket =
+            merge.layers.empty()
+                ? 0
+                : std::min<size_t>(merge.layers.size() - 1, 4);
+        merges_.members[bucket]++;
+        merges_.engine_ns += took;
+        if (took > merges_.engine_ns_max)
+          merges_.engine_ns_max = took;
+      }
 
       /* Cut from the zone by this composer: there is no allocator to ask,
        * and nothing to ask it -- the buffer is described by what the
@@ -1352,7 +1459,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
        * copy is the governor's to close. Now rather than after the flip:
        * the processor's lift ends with the submit, and the flip is still
        * a millisecond or two away. */
-      if (composition_governor_ != nullptr)
+      if (composition_governor_ != nullptr && !untouched)
         composition_governor_->MergeSubmitted(planned_seq_, DupFd(merged));
     }
   } else {
@@ -1400,6 +1507,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
     if (merged) {
       scratch_->Rewind();
       ForgetMerge();
+      if (drawn_slot != nullptr)
+        slot_pictures_[drawn_slot].held.valid = false;
     }
     return err;
   }
@@ -1412,10 +1521,10 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   if (PictureCapture::Wanted(PictureCapture::Source::kFrame) ||
       PictureCapture::Wanted(PictureCapture::Source::kMerge) ||
       PictureCapture::Wanted(PictureCapture::Source::kMergeTurned)) {
-    char head[96];
+    char head[128];
     snprintf(head, sizeof(head), "frame %" PRIu64 " plan %" PRIu64 "%s\n",
              frames_executed_, planned_seq_,
-             merge_reused ? ", group shown from memory" : "");
+             HowDrawn(merge_reused, drawn_slot != nullptr, drawn_plan).c_str());
     std::string words = head;
     if (!merge.layers.empty())
       words += DescribeMerge(merge);
@@ -1473,10 +1582,11 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         w.layer.acquire_fence = windows[merge.slot].preFence;
         shown.push_back(w);
       }
-      char head[96];
+      char head[128];
       snprintf(head, sizeof(head), "frame %" PRIu64 " plan %" PRIu64 "%s\n",
                frames_executed_, planned_seq_,
-               merge_reused ? ", group shown from memory" : "");
+               HowDrawn(merge_reused, drawn_slot != nullptr, drawn_plan)
+                   .c_str());
       mirror_->Frame(std::move(shown), head + DescribeWindows(windows));
     }
   }
@@ -1740,6 +1850,12 @@ std::string TegraAtomicStateManager::DumpState() {
          << m.nameless << "\n";
     if (m.turn_folded != 0)
       ss << "  turns folded into pass  : " << m.turn_folded << "\n";
+    if (m.partial != 0 || m.untouched != 0)
+      ss << "  drawn in part           : " << m.partial << " (avg "
+         << (m.partial_group_pixels != 0
+                 ? m.partial_pixels * 100 / m.partial_group_pixels
+                 : 0)
+         << "% of group), slot already held it " << m.untouched << "\n";
     if (scratch_ != nullptr)
       ss << "  scratch pool            : " << scratch_->source_name()
          << " (" << scratch_->width() << "x" << scratch_->height() << ")\n"
@@ -1858,6 +1974,12 @@ bool TegraAtomicStateManager::MergeCacheFromProperty() {
    * which is what this did before -- kept switchable only so the two can be
    * measured against each other on the panel without building twice. */
   return property_get_bool("vendor.hwc.mergecache", 1) != 0;
+}
+
+bool TegraAtomicStateManager::PartialFromProperty() {
+  /* On unless told otherwise. Off draws every merge whole, which is what
+   * this did before -- kept so the two can be compared on the panel. */
+  return property_get_bool("vendor.hwc.partial", 1) != 0;
 }
 
 bool TegraAtomicStateManager::CmuFromProperty() {
