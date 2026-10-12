@@ -342,6 +342,17 @@ class TegraAtomicStateManager : public AtomicStateManager {
     ForgetMerge();
   }
 
+  /* Told to the governor under the number of the frame last accepted at
+   * validate, which the drawing belongs to. */
+  void GpuPlanned(uint32_t pixels) override {
+    if (composition_governor_ != nullptr)
+      composition_governor_->GpuPlanned(planned_seq_, pixels);
+  }
+  void GpuSubmitted(SharedFd const &fence) override {
+    if (composition_governor_ != nullptr)
+      composition_governor_->GpuSubmitted(planned_seq_, DupFd(fence));
+  }
+
   /* Moves the hardware cursor, if this head has one and it is showing.
    * Arrives from the framework between frames, at the pointer's own rate;
    * touches nothing a frame owns, which is the whole point of the unit. */

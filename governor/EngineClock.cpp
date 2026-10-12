@@ -19,7 +19,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
-#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -27,6 +26,7 @@
 
 #include "governor/HwcGovernor.h"
 #include "governor/Log.h"
+#include "governor/SysNode.h"
 
 namespace android::hwc::governor::tegra {
 
@@ -70,18 +70,10 @@ bool EngineClock::Open() {
 }
 
 std::optional<uint32_t> EngineClock::CurrentMhz() {
-  if (devfreq_fd_ < 0)
+  const std::optional<uint64_t> hz = ReadNumber(devfreq_fd_);
+  if (!hz)
     return std::nullopt;
-  char buf[24];
-  const ssize_t n = pread(devfreq_fd_, buf, sizeof(buf) - 1, 0);
-  if (n <= 0)
-    return std::nullopt;
-  buf[n] = '\0';
-  char *end = nullptr;
-  const unsigned long hz = strtoul(buf, &end, 10);
-  if (end == buf)
-    return std::nullopt;
-  return static_cast<uint32_t>(hz / 1000000UL);
+  return static_cast<uint32_t>(*hz / 1000000U);
 }
 
 bool EngineClock::Request(uint32_t rate_hz, const char *what) {

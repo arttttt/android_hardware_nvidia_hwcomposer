@@ -152,6 +152,14 @@ class AtomicStateManager {
   virtual void NoteFrameUnjudged() {
   }
 
+  /* The composer's own GPU is about to draw `pixels` of the frame last
+   * validated, and then did, its drawing coming due with `fence`. For a
+   * manager that tells a clock policy; no-op by default. */
+  virtual void GpuPlanned(uint32_t /*pixels*/) {
+  }
+  virtual void GpuSubmitted(SharedFd const & /*fence*/) {
+  }
+
   /* The framework moving the hardware cursor between frames, at the
    * pointer's own rate. No-op by default: most hardware has no cursor of
    * its own, and a manager without one has nothing to move. */

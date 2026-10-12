@@ -25,6 +25,8 @@
 #include "governor/CpuFloor.h"
 #include "governor/EngineClock.h"
 #include "governor/FenceWatch.h"
+#include "governor/FloorLane.h"
+#include "governor/GpuClock.h"
 #include "governor/HwcGovernor.h"
 #include "governor/Mailbox.h"
 #include "governor/MergePlan.h"
@@ -41,13 +43,18 @@
  * clock follows the engine's floor, and the display's isochronous share
  * follows the engine being on.
  *
+ * The same, once per drawing of the composer's own GPU: what floor to ask
+ * of the GPU for it, against the latch of the frame it belongs to, no
+ * higher than the owner's cap. How a floor is held is the same for both
+ * engines (FloorLane); what is asked is each one's own.
+ *
  * The parts: the model (MergePlan) turns a snapshot into a step; the engine
  * clock (EngineClock) and the processor floor (CpuFloor) are the two doors
  * into the kernel; the profile (PerfProfile) says whether the device is
  * saving power; the tuning (Tuning) holds the numbers; the mailbox
  * (Mailbox) is where the composer's threads leave their news, and the
- * fence watch (FenceWatch) is how merges in flight are followed. This class
- * is the thread that joins them and the timers that let the floor go.
+ * engine's lane (FloorLane) holds its floor while merges are in flight and
+ * lets it go after. This class is the thread that joins them.
  *
  * Everything that may sleep -- the clock request, the warm-up pass, the
  * processor floor -- runs on this thread. The thread waits in one place,
@@ -80,6 +87,8 @@ class TegraGovernor final : public Governor {
    * and returns. */
   void FramePlanned(const Frame &frame) override;
   void MergeSubmitted(uint64_t seq, int merge_fence_fd) override;
+  void GpuPlanned(uint64_t seq, uint32_t pixels) override;
+  void GpuSubmitted(uint64_t seq, int gpu_fence_fd) override;
   void FramePresented(uint64_t seq) override;
   void PowerMode(Power mode) override;
 
@@ -91,14 +100,13 @@ class TegraGovernor final : public Governor {
    * late to wake the engine, not too late for the floor -- and nobody is
    * waiting behind its ramp any more. */
   void Decide(const Planned &planned, int64_t now, bool merge_reported);
+  /* The GPU's floor for the composer's drawing, against the latch of the
+   * frame it belongs to. */
+  void DecideGpu(const GpuPlan &plan, int64_t now);
   void Trace(const MergeEstimate &estimate, bool cold, int profile,
              int64_t lag_ns, int64_t now_ns);
   void Warm(int64_t now);
   void WarmAhead(const Frame &frame, int64_t now, int64_t gap_ns);
-  void KeepFloorFor(int64_t now);
-  void FollowFences(int64_t now);
-  void JudgeRelease(int64_t now);
-  void RaiseDeferred();
   void DropCpu();
   void DropEverything();
   /* A merge reported: if it is the last plan's, the path from its
@@ -121,24 +129,23 @@ class TegraGovernor final : public Governor {
 
   Mailbox mailbox_;
   EngineClock engine_;
+  FloorLane vic_{engine_, tuning_, host_, "hwc_gov_deferred_mhz"};
+  GpuClock gpu_clock_;
+  FloorLane gpu_{gpu_clock_, tuning_, host_, "hwc_gov_gpu_owed_mhz"};
   CpuFloor cpu_;
   PerfProfile profile_;
 
   std::thread thread_;
 
   /* Thread-only state from here down. */
-  FenceWatch fences_;
-  int64_t release_due_ns_ = 0;  /* when the floor may go, nought if not yet */
-  int64_t orphan_due_ns_ = 0;   /* floor raised, no merge reported by then */
-
-  /* The step a cold engine was not asked before the submit, to be asked
-   * once the merge is reported; nought if none is owed. */
-  uint32_t deferred_mhz_ = 0;
   int64_t cpu_until_ns_ = 0;    /* processor lifted until, nought if not */
   int64_t last_warm_ns_ = 0;
   bool warm_refused_logged_ = false;
   /* The previous frame's validate, merge or not; nought before the first. */
   int64_t last_plan_ns_ = 0;
+  /* The last frame planned, members aside: the latch its GPU drawing is
+   * aimed at. */
+  Frame last_frame_ = {};
 
   /* The last plan with a merge: which frame, when it was validated, the
    * processor's clock then, and whether the engine was cold -- so that the

@@ -64,6 +64,9 @@ constexpr TuningKey tuningKeys[] = {
     {"fence_patience_ms", &Tuning::fence_patience_ms},
     {"orphan_ms", &Tuning::orphan_ms},
     {"profile_poll_ms", &Tuning::profile_poll_ms},
+    {"gpu_boost", &Tuning::gpu_boost},
+    {"gpu_cap_mhz", &Tuning::gpu_cap_mhz},
+    {"gpu_pixels_per_kclock", &Tuning::gpu_pixels_per_kclock},
 };
 
 /* Strips blanks and a trailing comment; returns the first byte of what is

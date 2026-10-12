@@ -20,6 +20,8 @@
 
 #include <optional>
 
+#include "governor/FloorLane.h"
+
 namespace android::hwc::governor {
 
 class GovernorHost;
@@ -36,10 +38,10 @@ namespace tegra {
  * request once is not asked again -- the clock then reads as unusable and
  * the policy runs as a witness.
  */
-class EngineClock {
+class EngineClock final : public FloorActuator {
  public:
   explicit EngineClock(GovernorHost &host) : host_(host) {}
-  ~EngineClock();
+  ~EngineClock() override;
 
   EngineClock(const EngineClock &) = delete;
   EngineClock &operator=(const EngineClock &) = delete;
@@ -47,24 +49,24 @@ class EngineClock {
   /* False, having said why, if the device would not open. */
   bool Open();
 
-  bool usable() const { return fd_ >= 0 && !refused_; }
+  bool usable() const override { return fd_ >= 0 && !refused_; }
 
   /* The clock devfreq has the engine at, megahertz, read from its sysfs
    * node. Not the engine's own clock request: the kernel switches the
    * engine on to answer that one, so on a powered-down engine asking was
    * the whole power-up, on this thread, ahead of the floor and the
    * processor lift. Empty if it could not be read. */
-  std::optional<uint32_t> CurrentMhz();
+  std::optional<uint32_t> CurrentMhz() override;
 
   /* Files a floor of `mhz` on this descriptor; the kernel takes the larger
    * of it and what devfreq asks, and the memory clock follows. */
-  bool SetFloor(uint32_t mhz);
+  bool SetFloor(uint32_t mhz) override;
 
   /* Lifts the floor. One request per series is enough: the descriptor
    * falls back to devfreq. */
-  void Release();
+  void Release() override;
 
-  uint32_t floor_mhz() const { return floor_mhz_; }
+  uint32_t floor_mhz() const override { return floor_mhz_; }
 
  private:
   bool Request(uint32_t rate_hz, const char *what);

@@ -19,6 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "governor/ClockSteps.h"
 #include "governor/HwcGovernor.h"
 #include "governor/Tuning.h"
 
@@ -57,7 +58,10 @@ int64_t LatchDeadline(const Frame &frame, int64_t now_ns,
  * writes, with the margin. */
 double MergeCycles(const Member *members, size_t count, const Tuning &tuning);
 
-struct MergeEstimate {
+/* A piece of work for an engine against the display's latch: what it costs,
+ * when it has to be done, and the step it needs. The same for every
+ * engine; only the cost and the ladder are the engine's own. */
+struct WorkEstimate {
   double cycles;
   int64_t deadline_ns; /* when the merge has to be done */
   int64_t budget_ns;   /* from the end of the submit to the deadline */
@@ -67,6 +71,23 @@ struct MergeEstimate {
   bool beyond;         /* the need is above the top step */
   bool slipped;        /* aimed at the latch after the nearest one */
 };
+using MergeEstimate = WorkEstimate;
+
+/* `cycles` with the margin, `raw_cycles` without it -- the latter judges a
+ * latch hopeless; `submit_end_ns` when the work reaches the engine. */
+WorkEstimate EstimateWork(const Frame &frame, double cycles, double raw_cycles,
+                          int64_t now_ns, int64_t submit_end_ns,
+                          const Tuning &tuning, const ClockLadder &ladder);
+
+/* The composer's GPU drawing `pixels` of the client range, in its clocks,
+ * with the margin. */
+double GpuCycles(uint32_t pixels, const Tuning &tuning);
+
+/* The GPU's step for that drawing, begun at `now_ns` -- the drawing goes
+ * to the GPU right after it is planned -- against the frame's latch, on
+ * the GPU's ladder at its cap. */
+WorkEstimate EstimateGpu(const Frame &frame, uint32_t pixels, int64_t now_ns,
+                         const Tuning &tuning);
 
 /* `cold` says the engine will pay for coming up; `cpu_lifted` that the
  * processor will be lifted for the submit, which shortens it.

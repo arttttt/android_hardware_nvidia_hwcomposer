@@ -201,10 +201,13 @@ LOCAL_SRC_FILES := \
     governor/CpuFloor.cpp \
     governor/EngineClock.cpp \
     governor/FenceWatch.cpp \
+    governor/FloorLane.cpp \
+    governor/GpuClock.cpp \
     governor/Log.cpp \
     governor/Mailbox.cpp \
     governor/MergePlan.cpp \
     governor/PerfProfile.cpp \
+    governor/SysNode.cpp \
     governor/TegraGovernor.cpp \
     governor/Tuning.cpp
 

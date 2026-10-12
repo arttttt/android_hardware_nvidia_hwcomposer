@@ -66,13 +66,31 @@ void Mailbox::Submit(uint64_t seq, int fence_fd) {
   Ring();
 }
 
+void Mailbox::PlanGpu(uint64_t seq, uint32_t pixels) {
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    gpu_pending_ = GpuPlan{seq, NowNs(), pixels};
+  }
+  Ring();
+}
+
+void Mailbox::SubmitGpu(uint64_t seq, int fence_fd) {
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    gpu_submitted_.push_back(Watched{fence_fd, seq, NowNs()});
+  }
+  Ring();
+}
+
 void Mailbox::SetPower(Power mode) {
   {
     const std::lock_guard<std::mutex> lock(mutex_);
     power_ = mode;
     /* A plan for a display going dark is a plan for nothing. */
-    if (mode != Power::on)
+    if (mode != Power::on) {
       pending_.reset();
+      gpu_pending_.reset();
+    }
   }
   Ring();
 }
@@ -97,6 +115,9 @@ Mailbox::Contents Mailbox::Take(bool rung) {
   contents.planned = std::move(pending_);
   pending_.reset();
   contents.submitted.swap(submitted_);
+  contents.gpu_planned = std::move(gpu_pending_);
+  gpu_pending_.reset();
+  contents.gpu_submitted.swap(gpu_submitted_);
   contents.power = power_;
   contents.stop = stop_;
   return contents;
@@ -109,11 +130,14 @@ bool Mailbox::HasSubmitted() {
 
 void Mailbox::Discard() {
   const std::lock_guard<std::mutex> lock(mutex_);
-  for (const Watched &w : submitted_)
-    if (w.fd >= 0)
-      close(w.fd);
+  for (const std::vector<Watched> *list : {&submitted_, &gpu_submitted_})
+    for (const Watched &w : *list)
+      if (w.fd >= 0)
+        close(w.fd);
   submitted_.clear();
+  gpu_submitted_.clear();
   pending_.reset();
+  gpu_pending_.reset();
 }
 
 }  // namespace android::hwc::governor::tegra

@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace android::hwc::governor::tegra {
@@ -28,12 +29,49 @@ inline constexpr uint32_t clockStepsMhz[] = {180, 258, 336, 378, 420, 462,
                                              504, 552, 600, 684, 720, 756};
 constexpr uint32_t topStepMhz = 756;
 
+/* An engine's clock steps, lowest first, and the highest one this governor
+ * may ask for: the same decision is made against any engine's ladder. */
+struct ClockLadder {
+  const uint32_t *steps;
+  size_t count;
+  uint32_t cap_mhz; /* nought: the top step */
+
+  /* The highest step that may be asked for. */
+  uint32_t Top() const {
+    uint32_t top = 0;
+    for (size_t i = 0; i < count; ++i)
+      if (cap_mhz == 0 || steps[i] <= cap_mhz)
+        top = steps[i];
+    return top;
+  }
+
+  /* The smallest step up to the top that covers `need_mhz`, or nought if
+   * none does. */
+  uint32_t AtLeast(uint32_t need_mhz) const {
+    const uint32_t top = Top();
+    for (size_t i = 0; i < count && steps[i] <= top; ++i)
+      if (steps[i] >= need_mhz)
+        return steps[i];
+    return 0;
+  }
+};
+
+inline constexpr ClockLadder vicLadder = {
+    clockStepsMhz, sizeof(clockStepsMhz) / sizeof(clockStepsMhz[0]), 0};
+
+/* The GPU's steps, megahertz: the gbus table devfreq offers on the mocha
+ * (/sys/class/devfreq/gk20a.0/available_frequencies). A floor between two
+ * is rounded up by the kernel to the step above. */
+constexpr uint32_t gpuStepsMhz[] = {72,  108, 180, 252, 324, 396, 468, 540,
+                                    612, 648, 684, 708, 756, 804, 852};
+
+inline constexpr ClockLadder GpuLadder(uint32_t cap_mhz) {
+  return {gpuStepsMhz, sizeof(gpuStepsMhz) / sizeof(gpuStepsMhz[0]), cap_mhz};
+}
+
 /* The smallest step that covers `need_mhz`, or nought if none does. */
 inline uint32_t StepAtLeast(uint32_t need_mhz) {
-  for (uint32_t step : clockStepsMhz)
-    if (step >= need_mhz)
-      return step;
-  return 0;
+  return vicLadder.AtLeast(need_mhz);
 }
 
 }  // namespace android::hwc::governor::tegra

@@ -100,6 +100,22 @@ void CompositionGovernor::MergeSubmitted(uint64_t seq, int fence_fd) {
     close(fence_fd);
 }
 
+void CompositionGovernor::GpuPlanned(uint64_t seq, uint32_t pixels) {
+  const std::lock_guard<std::mutex> lock(callback_mutex_);
+  if (governor_ != nullptr)
+    governor_->GpuPlanned(seq, pixels);
+}
+
+void CompositionGovernor::GpuSubmitted(uint64_t seq, int fence_fd) {
+  const std::lock_guard<std::mutex> lock(callback_mutex_);
+  if (governor_ != nullptr) {
+    governor_->GpuSubmitted(seq, fence_fd);
+    return;
+  }
+  if (fence_fd >= 0)
+    close(fence_fd);
+}
+
 void CompositionGovernor::FramePresented(uint64_t seq) {
   const std::lock_guard<std::mutex> lock(callback_mutex_);
   if (governor_ != nullptr)
