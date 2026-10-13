@@ -40,7 +40,7 @@ namespace android::hwc::vk {
 
 /* Bumped whenever anything below changes shape. The composer refuses a
  * library that answers another number. */
-constexpr uint32_t apiVersion = 6;
+constexpr uint32_t apiVersion = 7;
 
 /* One layer to draw. Rectangles are in pixels; `dst` is in the target's
  * own space, whose origin is wherever the composer puts the target. */
@@ -87,11 +87,11 @@ struct Layer {
 };
 
 /* Where the layers are drawn. Cleared to transparent first -- all of it,
- * or with `partial` set only the rectangle given, which is all that is
- * drawn: the rest of the target keeps what it holds. The layers are still
- * every layer of the picture, placed as for the whole; the GPU cuts them
- * to the rectangle itself. A target the library has not drawn into before
- * is drawn whole whatever is asked, since what it holds is not known. */
+ * or with parts given only those, which is all that is drawn: the rest of
+ * the target keeps what it holds. The layers are still every layer of the
+ * picture, placed as for the whole; the GPU cuts them to each part itself.
+ * A target the library has not drawn into before is drawn whole whatever
+ * is asked, since what it holds is not known. */
 struct Target {
   const native_handle_t *buffer = nullptr;
   uint32_t width = 0;
@@ -104,8 +104,13 @@ struct Target {
    * stopped scanning it. -1 for a target that is free now. */
   int ready_fence = -1;
 
-  bool partial = false;
-  int32_t dirty_left = 0, dirty_top = 0, dirty_right = 0, dirty_bottom = 0;
+  /* The parts to draw, right and bottom exclusive; none for all of it. */
+  static constexpr size_t kMaxParts = 4;
+  struct Part {
+    int32_t left = 0, top = 0, right = 0, bottom = 0;
+  };
+  uint32_t part_count = 0;
+  Part parts[kMaxParts];
 };
 
 class Host {

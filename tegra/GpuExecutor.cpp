@@ -131,7 +131,7 @@ void GpuExecutor::DropBegun() {
 }
 
 bool GpuExecutor::Begin(std::vector<vk::Layer> &layers,
-                        const drm_hwcomposer::IRect *dirty) {
+                        const drm_hwcomposer::IRect *parts, size_t count) {
   DropBegun();
 
   const size_t at = (at_ + 1) % slots_.size();
@@ -145,12 +145,13 @@ bool GpuExecutor::Begin(std::vector<vk::Layer> &layers,
   target.format = kTargetFormat;
   target.usage = kTargetUsage;
   target.ready_fence = slot.freed_when ? *slot.freed_when : -1;
-  if (dirty != nullptr) {
-    target.partial = true;
-    target.dirty_left = dirty->left;
-    target.dirty_top = dirty->top;
-    target.dirty_right = dirty->right;
-    target.dirty_bottom = dirty->bottom;
+  for (size_t k = 0; parts != nullptr && k < count && k < vk::Target::kMaxParts;
+       ++k) {
+    vk::Target::Part &p = target.parts[target.part_count++];
+    p.left = parts[k].left;
+    p.top = parts[k].top;
+    p.right = parts[k].right;
+    p.bottom = parts[k].bottom;
   }
 
   if (!compositor_->Begin(target, layers.data(), layers.size()))

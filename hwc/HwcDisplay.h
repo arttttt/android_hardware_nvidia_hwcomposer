@@ -568,7 +568,7 @@ class HwcDisplay : public ICompositorDisplay {
    * only where its picture differs -- or not at all, and kept, when it
    * already holds it; see compositor/PartialRedraw.h. The plan for the
    * drawing under way, and whether it is a keep. */
-  partial::SlotPictures gpu_slots_{partial::Engine{true}};
+  partial::SlotPictures gpu_slots_{partial::Engine{true, true, true}};
   partial::Plan gpu_plan_;
   bool gpu_keep_ = false;
   /* Where the client range lies on the panel: the drawing under way, and

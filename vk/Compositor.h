@@ -114,6 +114,11 @@ class VkCompositor : public Compositor {
    * not make them, and the area is then cleared as always. */
   VkRenderPass cover_pass_ = VK_NULL_HANDLE;
   VkRenderPass cover_keep_pass_ = VK_NULL_HANDLE;
+  /* Over a target already drawn, keeping all of it: for a drawing in
+   * several parts, whose render area is the box around them and whose
+   * parts are cleared one by one inside it. Null if the driver would not
+   * make it, and the parts are then drawn as the box around them. */
+  VkRenderPass load_pass_ = VK_NULL_HANDLE;
   VkSampler sampler_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;
   VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;

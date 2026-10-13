@@ -247,6 +247,7 @@ struct VulkanPfn {
     PFN_vkCmdDraw                                   CmdDraw;
     PFN_vkCmdSetViewport                            CmdSetViewport;
     PFN_vkCmdSetScissor                             CmdSetScissor;
+    PFN_vkCmdClearAttachments                       CmdClearAttachments;
 
     /* VK_ANDROID_native_buffer (HAL-only extension, gralloc zero-copy) */
     PFN_vkAcquireImageANDROID                       AcquireImageANDROID;

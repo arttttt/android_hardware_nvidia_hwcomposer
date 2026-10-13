@@ -37,7 +37,11 @@ namespace android::drm_hwcomposer::partial {
  * Only that is drawn again; the engine leaves the rest of the buffer as it
  * was. Anything it cannot account for -- a member moved, resized, turned,
  * recoloured, a frame of a buffer whose damage was never seen -- and the
- * buffer is drawn whole.
+ * buffer is drawn in full: every member, and every place a member held in
+ * it before. What lies outside those was never drawn into, or was cleared
+ * when its member left, so it is left alone -- a group of strips at the
+ * edges of the screen is not a screenful of empty pixels written again.
+ * Only a buffer that holds nothing known is written whole.
  *
  * A member is the one the memory of drawn pictures keeps, its layer's
  * serial included: a layer's frames go through several buffers, and the
@@ -87,29 +91,48 @@ struct Snapshot {
 
 struct Plan {
   enum class Kind {
-    /* Draw the buffer whole. */
+    /* Draw everything the buffer holds: the members where they are now and
+     * wherever members stood before, so a place left empty is cleared. */
     kFull,
-    /* Draw `dirty` only; the rest of the buffer stays. */
+    /* Draw where the members changed; the rest of the buffer stays. */
     kPartial,
     /* The buffer already holds this picture: nothing to draw. */
     kUnchanged,
   };
   Kind kind = Kind::kFull;
-  IRect dirty{};
+  /* The parts of the buffer to draw. Each is written whole, covered or
+   * not, and nothing outside them is touched. None, for a full drawing,
+   * means the whole buffer: nothing is known of what it holds. */
+  std::vector<IRect> parts;
 };
 
-/* After this many partial redraws in a row a buffer is drawn whole, which
- * bounds the life of anything a wrong damage left behind; and a region past
- * this share of the buffer is drawn whole, as not worth the bookkeeping. */
+/* The box around some parts, and the pixels they come to. */
+IRect Bounds(const std::vector<IRect> &parts);
+uint64_t Area(const std::vector<IRect> &parts);
+
+/* After this many partial redraws in a row a buffer is drawn in full,
+ * which bounds the life of anything a wrong damage left behind. */
 constexpr uint32_t kMostPartialInARow = 30;
-constexpr float kMostPartialShare = 0.5F;
+
+/* What one more part costs an engine that draws a part at a time, as the
+ * pixels it would draw in that time: two parts are drawn as one when the box
+ * around both draws no more than the two of them and that. Parts that
+ * overlap are always one; and parts are joined, least growth first, down to
+ * the most one picture is drawn in. */
+constexpr uint64_t kPartPixels = 65536;
+constexpr size_t kMostParts = 4;
 
 /* What an engine can be trusted to draw in part. One that clips by itself
  * draws a scaled member exactly, cut or not -- the GPU, by its scissor; one
  * whose members have to be cut before it sees them would read a scaled one
- * from a shifted phase, and seams would show. */
+ * from a shifted phase, and seams would show. One that draws a picture in
+ * one go takes its parts as the box around them; one that draws a part at
+ * a time takes them as they are, and if it needs a member to draw a part
+ * at all, a part that only clears is joined to one that draws. */
 struct Engine {
   bool draws_scaled_in_part = false;
+  bool draws_many_parts = false;
+  bool draws_empty_part = false;
 };
 
 /* What to draw into a buffer whose snapshot is `held`, for a picture of

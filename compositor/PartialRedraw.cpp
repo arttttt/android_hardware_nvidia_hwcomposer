@@ -82,6 +82,99 @@ IRect Onto(const IRect &r, const Member &m, bool scaled) {
           std::min(y(r.bottom, true) + pad, m.dst.bottom)};
 }
 
+IRect Join(const IRect &a, const IRect &b) {
+  return {std::min(a.left, b.left), std::min(a.top, b.top),
+          std::max(a.right, b.right), std::max(a.bottom, b.bottom)};
+}
+
+uint64_t AreaOf(const IRect &r) {
+  return Empty(r) ? 0
+                  : static_cast<uint64_t>(r.Width()) *
+                        static_cast<uint64_t>(r.Height());
+}
+
+bool Meet(const IRect &a, const IRect &b) {
+  return a.left < b.right && b.left < a.right && a.top < b.bottom &&
+         b.top < a.bottom;
+}
+
+/* How much more a box around both draws than the two on their own. */
+int64_t Growth(const IRect &a, const IRect &b) {
+  return static_cast<int64_t>(AreaOf(Join(a, b))) -
+         static_cast<int64_t>(AreaOf(a)) - static_cast<int64_t>(AreaOf(b));
+}
+
+/* The places to draw, as parts an engine can take: on its edges, inside
+ * the buffer, near ones joined, few enough -- and, for an engine that
+ * cannot draw a part no member lands in, none that only clears. */
+std::vector<IRect> Gather(std::vector<IRect> places, const IRect &bounds,
+                          const std::vector<Member> &members, Engine engine) {
+  std::vector<IRect> parts;
+  for (const IRect &r : places) {
+    const IRect p{std::max(Down(r.left, kColumnGrain), bounds.left),
+                  std::max(Down(r.top, kRowGrain), bounds.top),
+                  std::min(Up(r.right, kColumnGrain), bounds.right),
+                  std::min(Up(r.bottom, kRowGrain), bounds.bottom)};
+    if (!Empty(p))
+      parts.push_back(p);
+  }
+  if (parts.empty())
+    return parts;
+  if (!engine.draws_many_parts)
+    return {Bounds(parts)};
+
+  const auto join = [&parts](size_t i, size_t j) {
+    parts[i] = Join(parts[i], parts[j]);
+    parts.erase(parts.begin() + static_cast<std::ptrdiff_t>(j));
+  };
+  const auto draws_something = [&members](const IRect &part) {
+    return std::any_of(members.begin(), members.end(),
+                       [&part](const Member &m) { return Meet(m.dst, part); });
+  };
+
+  for (bool joined = true; joined;) {
+    joined = false;
+    for (size_t i = 0; i < parts.size() && !joined; ++i)
+      for (size_t j = i + 1; j < parts.size() && !joined; ++j) {
+        if (Meet(parts[i], parts[j]) ||
+            Growth(parts[i], parts[j]) <=
+                static_cast<int64_t>(kPartPixels)) {
+          join(i, j);
+          joined = true;
+        }
+      }
+  }
+
+  if (!engine.draws_empty_part) {
+    for (size_t i = 0; i < parts.size();) {
+      if (draws_something(parts[i]) || parts.size() == 1) {
+        ++i;
+        continue;
+      }
+      size_t best = i == 0 ? 1 : 0;
+      for (size_t j = 0; j < parts.size(); ++j)
+        if (j != i && draws_something(parts[j]) &&
+            Growth(parts[i], parts[j]) < Growth(parts[i], parts[best]))
+          best = j;
+      join(std::min(i, best), std::max(i, best));
+      i = 0;
+    }
+  }
+
+  while (parts.size() > kMostParts) {
+    size_t bi = 0;
+    size_t bj = 1;
+    for (size_t i = 0; i < parts.size(); ++i)
+      for (size_t j = i + 1; j < parts.size(); ++j)
+        if (Growth(parts[i], parts[j]) < Growth(parts[bi], parts[bj])) {
+          bi = i;
+          bj = j;
+        }
+    join(bi, bj);
+  }
+  return parts;
+}
+
 }  // namespace
 
 void DamageHistory::Record(uint64_t serial, uint64_t generation,
@@ -128,31 +221,59 @@ bool DamageHistory::Between(uint64_t serial, uint64_t from, uint64_t to,
   return true;
 }
 
+IRect Bounds(const std::vector<IRect> &parts) {
+  IRect box{};
+  bool any = false;
+  for (const IRect &r : parts) {
+    box = any ? Join(box, r) : r;
+    any = true;
+  }
+  return box;
+}
+
+uint64_t Area(const std::vector<IRect> &parts) {
+  uint64_t area = 0;
+  for (const IRect &r : parts)
+    area += AreaOf(r);
+  return area;
+}
+
 Plan Decide(const Snapshot &held, uint32_t width, uint32_t height,
             const std::vector<Member> &members, const DamageHistory &history,
             Engine engine) {
-  Plan full;
-  if (!held.valid || held.width != width || held.height != height ||
-      held.members.size() != members.size() ||
-      held.partial_run >= kMostPartialInARow)
-    return full;
+  /* Nothing known of what the buffer holds: all of it is written. */
+  if (!held.valid || held.width != width || held.height != height)
+    return {};
 
   const IRect bounds{0, 0, static_cast<int32_t>(width),
                      static_cast<int32_t>(height)};
-  bool any = false;
-  IRect dirty{};
 
+  /* An engine that has its members cut for it reads a scaled one from a
+   * shifted phase wherever a part's edge falls across it -- and a full
+   * drawing is parts too. */
+  if (!engine.draws_scaled_in_part &&
+      std::any_of(members.begin(), members.end(), Scaled))
+    return {};
+
+  /* In full: every member where it is, and every place one stood. */
+  std::vector<IRect> held_places;
+  for (const Member &m : held.members)
+    held_places.push_back(m.dst);
+  for (const Member &m : members)
+    held_places.push_back(m.dst);
+  const Plan full{Plan::Kind::kFull,
+                  Gather(std::move(held_places), bounds, members, engine)};
+
+  if (held.members.size() != members.size() ||
+      held.partial_run >= kMostPartialInARow)
+    return full;
+
+  std::vector<IRect> damage;
   for (size_t i = 0; i < members.size(); ++i) {
     const Member &now = members[i];
     const Member &then = held.members[i];
     if (now.serial == 0 || !SameButFrame(now, then) ||
         now.generation < then.generation)
-      return full;
-    /* An engine that has its members cut for it reads a scaled one from a
-     * shifted phase wherever the cut falls -- changed or not, any of them
-     * the region crosses. */
-    const bool scaled = Scaled(now);
-    if (scaled && !engine.draws_scaled_in_part)
       return full;
     if (now.generation == then.generation)
       continue;
@@ -168,38 +289,21 @@ Plan Decide(const Snapshot &held, uint32_t width, uint32_t height,
                          &whole))
       return full;
 
-    std::vector<IRect> on;
+    const bool scaled = Scaled(now);
     if (whole)
-      on.push_back(now.dst);
+      damage.push_back(now.dst);
     for (const IRect &r : rects)
-      on.push_back(Onto(r, now, scaled));
-    for (const IRect &r : on) {
-      if (Empty(r))
-        continue;
-      dirty = any ? IRect{std::min(dirty.left, r.left),
-                          std::min(dirty.top, r.top),
-                          std::max(dirty.right, r.right),
-                          std::max(dirty.bottom, r.bottom)}
-                  : r;
-      any = true;
-    }
+      damage.push_back(Onto(r, now, scaled));
   }
 
-  if (!any)
+  std::vector<IRect> parts =
+      Gather(std::move(damage), bounds, members, engine);
+  if (parts.empty())
     return Plan{Plan::Kind::kUnchanged, {}};
-
-  dirty = {std::max(Down(dirty.left, kColumnGrain), bounds.left),
-           std::max(Down(dirty.top, kRowGrain), bounds.top),
-           std::min(Up(dirty.right, kColumnGrain), bounds.right),
-           std::min(Up(dirty.bottom, kRowGrain), bounds.bottom)};
-  if (Empty(dirty))
-    return Plan{Plan::Kind::kUnchanged, {}};
-  const float share =
-      static_cast<float>(dirty.Width()) * static_cast<float>(dirty.Height()) /
-      (static_cast<float>(width) * static_cast<float>(height));
-  if (share > kMostPartialShare)
+  /* Drawing in part is drawing less, or not worth it. */
+  if (Area(parts) >= Area(full.parts))
     return full;
-  return Plan{Plan::Kind::kPartial, dirty};
+  return Plan{Plan::Kind::kPartial, std::move(parts)};
 }
 
 bool ClipTo(const IRect &bound, FRect *src, IRect *dst) {

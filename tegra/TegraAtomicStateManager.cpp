@@ -1145,18 +1145,15 @@ std::string HowDrawn(bool reused, bool drawn, const partial::Plan &plan) {
     return ", group shown from memory";
   if (!drawn)
     return "";
-  switch (plan.kind) {
-    case partial::Plan::Kind::kFull:
-      return ", slot drawn whole";
-    case partial::Plan::Kind::kUnchanged:
-      return ", slot already held it";
-    case partial::Plan::Kind::kPartial:
-      break;
-  }
-  char how[64];
-  snprintf(how, sizeof(how), ", slot drawn in part %d,%d-%d,%d",
-           plan.dirty.left, plan.dirty.top, plan.dirty.right,
-           plan.dirty.bottom);
+  if (plan.kind == partial::Plan::Kind::kUnchanged)
+    return ", slot already held it";
+  if (plan.parts.empty())
+    return ", slot drawn whole";
+  const IRect box = partial::Bounds(plan.parts);
+  char how[96];
+  snprintf(how, sizeof(how), ", slot drawn %s in %zu part(s) within %d,%d-%d,%d",
+           plan.kind == partial::Plan::Kind::kPartial ? "in part" : "in full",
+           plan.parts.size(), box.left, box.top, box.right, box.bottom);
   return how;
 }
 
@@ -1219,6 +1216,9 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
    * reach the panel: a flip that fails leaves it holding nothing known. */
   const hwc::ScratchPool::Slot *drawn_slot = nullptr;
   partial::Plan drawn_plan;
+  /* Where the drawn buffer's group stands on the panel. */
+  int32_t drawn_x = 0;
+  int32_t drawn_y = 0;
   const auto &merge = tegra.GetMerge();
   if (!merge.layers.empty()) {
     if (vic_ == nullptr || scratch_ == nullptr) {
@@ -1324,12 +1324,26 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       /* A slot that already holds the picture is shown as it stands, against
        * the fence its drawing came due on: nothing is written, so the
        * display reading it at the same time is no hazard. */
-      merged = untouched
-                   ? held_fence
-                   : vic_->Compose(*target->vendor, merge.layers, merge.width,
-                                   merge.height,
-                                   target_ready ? *target_ready : -1,
-                                   group_code, in_part ? &plan.dirty : nullptr);
+      if (untouched) {
+        merged = held_fence;
+      } else if (plan.parts.empty()) {
+        merged = vic_->Compose(*target->vendor, merge.layers, merge.width,
+                               merge.height, target_ready ? *target_ready : -1,
+                               group_code);
+      } else {
+        /* A pass for each part, into the same buffer: each writes its own
+         * rectangle and leaves the rest as it is. The channel runs them in
+         * the order given, so the last one's fence is the buffer's. */
+        for (const IRect &part : plan.parts) {
+          merged = vic_->Compose(*target->vendor, merge.layers, merge.width,
+                                 merge.height,
+                                 target_ready ? *target_ready : -1, group_code,
+                                 &part);
+          if (!merged)
+            break;
+          merges_.passes++;
+        }
+      }
       if (!merged) {
         /* The engine would not take it. Nothing has been written, so the
          * honest thing is to drop the frame rather than show a window
@@ -1373,18 +1387,23 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       merged_turned = any_turn;
       last_merge_vendor_ = target->vendor;
       drawn_slot = target;
-      drawn_plan = plan;
+      drawn_x = merge.origin_x;
+      drawn_y = merge.origin_y;
 
       slot_pictures_.Drawn(target, merge.width, merge.height,
                            std::move(members), plan, merged);
 
       const int64_t took = GetTimeMonotonicNs() - before_merge;
+      const uint64_t group_pixels =
+          static_cast<uint64_t>(merge.width) * merge.height;
       if (in_part) {
         merges_.partial++;
-        merges_.partial_pixels += static_cast<uint64_t>(plan.dirty.Width()) *
-                                  static_cast<uint64_t>(plan.dirty.Height());
-        merges_.partial_group_pixels +=
-            static_cast<uint64_t>(merge.width) * merge.height;
+        merges_.partial_pixels += partial::Area(plan.parts);
+        merges_.partial_group_pixels += group_pixels;
+      } else if (!untouched && !plan.parts.empty()) {
+        merges_.held_full++;
+        merges_.held_full_pixels += partial::Area(plan.parts);
+        merges_.held_full_group_pixels += group_pixels;
       }
       /* A slot that already held the picture woke no engine: counted on its
        * own, and kept out of the engine's averages. */
@@ -1404,6 +1423,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         if (took > merges_.engine_ns_max)
           merges_.engine_ns_max = took;
       }
+
+      drawn_plan = std::move(plan);
 
       /* Cut from the zone by this composer: there is no allocator to ask,
        * and nothing to ask it -- the buffer is described by what the
@@ -1591,7 +1612,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
 
   /* The frame as it went up: the ring's line is written only here, past
    * every refusal above, so what the ring says was shown was shown. */
-  NoteFrame(tegra, windows, merge_reused);
+  NoteFrame(tegra, windows, merge_reused,
+            drawn_slot != nullptr ? &drawn_plan : nullptr, drawn_x, drawn_y);
 
   /* Said even when the flip failed would be wrong -- nothing is showing that
    * buffer then, and holding it back would cost a frame for nothing. Said
@@ -1757,7 +1779,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
 
 void TegraAtomicStateManager::NoteFrame(
     const TegraAtomicRequest &tegra,
-    const std::vector<hwc::DcHead::Window> &windows, bool merge_reused) {
+    const std::vector<hwc::DcHead::Window> &windows, bool merge_reused,
+    const partial::Plan *drawn, int32_t drawn_x, int32_t drawn_y) {
   if (!RingWanted())
     return;
 
@@ -1776,6 +1799,25 @@ void TegraAtomicStateManager::NoteFrame(
              static_cast<unsigned long long>(row.id), row.seat, row.plane,
              row.blend, row.alpha, row.scale_w, row.scale_h, row.x, row.y);
     line << b;
+  }
+  /* How the engine drew the group's buffer, when it drew one: k for a
+   * slot that already held it, w for the whole buffer, f for a full
+   * drawing by the members' places, p for a partial one -- then where the
+   * group stands on the panel, and each part it drew, a pass apiece, in
+   * the group's own pixels. Enough to lay the parts over a picture of the
+   * panel afterwards; nothing of it is drawn on the panel itself. */
+  if (drawn != nullptr) {
+    const char kind = drawn->kind == partial::Plan::Kind::kUnchanged ? 'k'
+                      : drawn->parts.empty()                         ? 'w'
+                      : drawn->kind == partial::Plan::Kind::kPartial ? 'p'
+                                                                     : 'f';
+    line << " | M" << kind << " @" << drawn_x << "," << drawn_y;
+    for (const IRect &part : drawn->parts) {
+      char b[48];
+      snprintf(b, sizeof(b), " %d,%d,%d,%d", part.left, part.top,
+               part.right, part.bottom);
+      line << b;
+    }
   }
   line << " | W";
   for (const auto &window : windows) {
@@ -1855,6 +1897,14 @@ std::string TegraAtomicStateManager::DumpState() {
                  ? m.partial_pixels * 100 / m.partial_group_pixels
                  : 0)
          << "% of group), slot already held it " << m.untouched << "\n";
+    if (m.held_full != 0)
+      ss << "  drawn in full by places : " << m.held_full << " (avg "
+         << (m.held_full_group_pixels != 0
+                 ? m.held_full_pixels * 100 / m.held_full_group_pixels
+                 : 0)
+         << "% of group)\n";
+    if (m.passes != 0)
+      ss << "  passes for parts        : " << m.passes << "\n";
     if (scratch_ != nullptr)
       ss << "  scratch pool            : " << scratch_->source_name()
          << " (" << scratch_->width() << "x" << scratch_->height() << ")\n"

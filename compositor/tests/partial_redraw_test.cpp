@@ -44,8 +44,8 @@ int failures = 0;
     }                                                             \
   } while (0)
 
-constexpr Engine kVic{};
-constexpr Engine kGpu{true};
+constexpr Engine kVic{false, true, false};
+constexpr Engine kGpu{true, false, true};
 
 constexpr uint32_t kW = 1536;
 constexpr uint32_t kH = 2048;
@@ -85,7 +85,7 @@ void TestClockTick() {
   h.Record(1, 6, {{20, 8, 110, 36}});
   const Plan p = Decide(Held(5, 3), kW, kH, {StatusBar(6), Taskbar(3)}, h, kVic);
   CHECK(p.kind == Plan::Kind::kPartial);
-  CHECK(p.dirty == (IRect{16, 8, 112, 36}));
+  CHECK(p.parts == (std::vector<IRect>{{16, 8, 112, 36}}));
 }
 
 /* A taskbar damaged in its own pixels lands where the taskbar is. */
@@ -94,10 +94,11 @@ void TestOffsetIntoGroup() {
   h.Record(2, 4, {{100, 10, 200, 60}});
   const Plan p = Decide(Held(5, 3), kW, kH, {StatusBar(5), Taskbar(4)}, h, kVic);
   CHECK(p.kind == Plan::Kind::kPartial);
-  CHECK(p.dirty == (IRect{96, 1912, 208, 1964}));
+  CHECK(p.parts == (std::vector<IRect>{{96, 1912, 208, 1964}}));
 }
 
-/* A buffer three frames old gathers all three frames' damage. */
+/* A buffer three frames old gathers all three frames' damage; two places
+ * close together are drawn as one. */
 void TestChainOfFrames() {
   DamageHistory h;
   h.Record(1, 6, {{20, 8, 40, 36}});
@@ -105,7 +106,7 @@ void TestChainOfFrames() {
   h.Record(1, 8, {{0, 0, 0, 0}});
   const Plan p = Decide(Held(5, 3), kW, kH, {StatusBar(8), Taskbar(3)}, h, kVic);
   CHECK(p.kind == Plan::Kind::kPartial);
-  CHECK(p.dirty == (IRect{16, 8, 352, 36}));
+  CHECK(p.parts == (std::vector<IRect>{{16, 8, 352, 36}}));
 }
 
 /* Nothing changed since the buffer was drawn: nothing to draw. Damage that
@@ -119,53 +120,113 @@ void TestUnchanged() {
         Plan::Kind::kUnchanged);
 }
 
-/* Whatever cannot be accounted for draws the buffer whole. */
+/* The strips as a full drawing writes them: each where it is, not the
+ * screen between them. */
+const std::vector<IRect> kStrips = {{0, 0, 1536, 44}, {0, 1902, 1536, 2048}};
+
+/* Whatever cannot be accounted for is drawn in full -- the members' places,
+ * not the buffer; only a buffer nothing is known of is written whole. */
 void TestFull() {
   DamageHistory h;
   h.Record(1, 6, {{20, 8, 110, 36}});
   const std::vector<Member> now = {StatusBar(6), Taskbar(3)};
 
   Snapshot never;
-  CHECK(Decide(never, kW, kH, now, h, kVic).kind == Plan::Kind::kFull);
+  Plan p = Decide(never, kW, kH, now, h, kVic);
+  CHECK(p.kind == Plan::Kind::kFull);
+  CHECK(p.parts.empty());
 
   /* A frame whose damage was never seen. */
-  CHECK(Decide(Held(4, 3), kW, kH, now, h, kVic).kind == Plan::Kind::kFull);
+  p = Decide(Held(4, 3), kW, kH, now, h, kVic);
+  CHECK(p.kind == Plan::Kind::kFull);
+  CHECK(p.parts == kStrips);
 
-  /* The whole buffer changed: the taskbar is the bottom strip, but the
-   * status bar's whole is under half the group -- partial still. */
+  /* The whole of the taskbar changed: still less than the strips. */
   h.Record(2, 4, {});
-  Plan p = Decide(Held(6, 3), kW, kH, {StatusBar(6), Taskbar(4)}, h, kVic);
+  p = Decide(Held(6, 3), kW, kH, {StatusBar(6), Taskbar(4)}, h, kVic);
   CHECK(p.kind == Plan::Kind::kPartial);
-  CHECK(p.dirty == (IRect{0, 1902, 1536, 2048}));
+  CHECK(p.parts == (std::vector<IRect>{{0, 1902, 1536, 2048}}));
 
-  /* A member moved, or drawn scaled. */
+  /* A member moved: where it was and where it is are one part. */
   auto moved = now;
   moved[1].dst = {0, 1940, 1536, 2085};
-  CHECK(Decide(Held(5, 3), kW, kH, moved, h, kVic).kind == Plan::Kind::kFull);
+  p = Decide(Held(5, 3), kW, kH, moved, h, kVic);
+  CHECK(p.kind == Plan::Kind::kFull);
+  CHECK(p.parts == kStrips);
+
+  /* Drawn scaled, by an engine that cannot cut it: whole. */
   Snapshot scaled = Held(5, 3);
   scaled.members[1].src = {0, 0, 768, 72};
   auto scaled_now = now;
   scaled_now[1].src = {0, 0, 768, 72};
-  CHECK(Decide(scaled, kW, kH, scaled_now, h, kVic).kind == Plan::Kind::kFull);
+  p = Decide(scaled, kW, kH, scaled_now, h, kVic);
+  CHECK(p.kind == Plan::Kind::kFull);
+  CHECK(p.parts.empty());
 
   /* Too many partial redraws in a row. */
   Snapshot tired = Held(5, 3);
   tired.partial_run = kMostPartialInARow;
-  CHECK(Decide(tired, kW, kH, now, h, kVic).kind == Plan::Kind::kFull);
+  p = Decide(tired, kW, kH, now, h, kVic);
+  CHECK(p.kind == Plan::Kind::kFull);
+  CHECK(p.parts == kStrips);
 
-  /* A different group size, or a different set of members. */
-  CHECK(Decide(Held(5, 3), kW, 1024, now, h, kVic).kind == Plan::Kind::kFull);
-  CHECK(Decide(Held(5, 3), kW, kH, {StatusBar(6)}, h, kVic).kind ==
-        Plan::Kind::kFull);
+  /* A different group size: nothing known of the buffer. */
+  p = Decide(Held(5, 3), kW, 1024, now, h, kVic);
+  CHECK(p.kind == Plan::Kind::kFull);
+  CHECK(p.parts.empty());
 }
 
-/* Damage past half the group is drawn whole. */
+/* A member that left has its place cleared. The GPU clears a part with
+ * nothing in it; the image engine needs a member to draw a part at all, so
+ * the cleared place joins the nearest part that has one. */
+void TestLeft() {
+  DamageHistory h;
+  Plan p = Decide(Held(5, 3), kW, kH, {StatusBar(6)}, h, kVic);
+  CHECK(p.kind == Plan::Kind::kFull);
+  CHECK(p.parts == (std::vector<IRect>{{0, 0, 1536, 2048}}));
+
+  const Member pill = [] {
+    Member m;
+    m.serial = 7;
+    m.source = 17;
+    m.generation = 1;
+    m.src = {0, 0, 200, 20};
+    m.dst = {668, 1960, 868, 1980};
+    return m;
+  }();
+  Snapshot s = Held(5, 3);
+  s.members.push_back(pill);
+  p = Decide(s, kW, kH, {StatusBar(5), Taskbar(3)}, h, kVic);
+  CHECK(p.kind == Plan::Kind::kFull);
+  CHECK(p.parts == kStrips);
+}
+
+/* The status bar and the taskbar changed in the same frame: two parts for
+ * the engine that draws a part at a time, not the screen between them; the
+ * box around both for the GPU, which then draws its members in full. */
+void TestBothStrips() {
+  DamageHistory h;
+  h.Record(1, 6, {{20, 8, 110, 36}});
+  h.Record(2, 4, {{100, 10, 200, 60}});
+  const std::vector<Member> now = {StatusBar(6), Taskbar(4)};
+  Plan p = Decide(Held(5, 3), kW, kH, now, h, kVic);
+  CHECK(p.kind == Plan::Kind::kPartial);
+  CHECK(p.parts ==
+        (std::vector<IRect>{{16, 8, 112, 36}, {96, 1912, 208, 1964}}));
+  CHECK(Area(p.parts) < 20000);
+
+  p = Decide(Held(5, 3), kW, kH, now, h, kGpu);
+  CHECK(p.kind == Plan::Kind::kPartial);
+  CHECK(p.parts == (std::vector<IRect>{{16, 8, 208, 1964}}));
+}
+
+/* Drawing in part is drawing less, or the whole of what is held is drawn
+ * instead. */
 void TestShare() {
   DamageHistory h;
   Member big;
   big.serial = 3;
   big.source = 13;
-  big.generation = 2;
   big.src = {0, 0, 1536, 2048};
   big.dst = {0, 0, 1536, 2048};
   Snapshot s;
@@ -176,7 +237,38 @@ void TestShare() {
   s.members = {big};
   big.generation = 2;
   h.Record(3, 2, {{0, 0, 1536, 1500}});
-  CHECK(Decide(s, kW, kH, {big}, h, kVic).kind == Plan::Kind::kFull);
+  CHECK(Decide(s, kW, kH, {big}, h, kVic).kind == Plan::Kind::kPartial);
+  big.generation = 3;
+  h.Record(3, 3, {});
+  const Plan p = Decide(s, kW, kH, {big}, h, kVic);
+  CHECK(p.kind == Plan::Kind::kFull);
+  CHECK(p.parts == (std::vector<IRect>{{0, 0, 1536, 2048}}));
+}
+
+/* Scattered damage is drawn in a bounded number of parts, the nearest
+ * joined first. */
+void TestMostParts() {
+  Member tall;
+  tall.serial = 8;
+  tall.source = 18;
+  tall.src = {0, 0, 1536, 2048};
+  tall.dst = {0, 0, 1536, 2048};
+  tall.generation = 1;
+  Snapshot s;
+  s.valid = true;
+  s.width = kW;
+  s.height = kH;
+  s.members = {tall};
+  DamageHistory h;
+  std::vector<IRect> spots;
+  for (int32_t i = 0; i < 6; ++i)
+    spots.push_back({0, i * 400, 1536, i * 400 + 40});
+  h.Record(8, 2, spots);
+  tall.generation = 2;
+  const Plan p = Decide(s, kW, kH, {tall}, h, kVic);
+  CHECK(p.kind == Plan::Kind::kPartial);
+  CHECK(p.parts.size() == kMostParts);
+  CHECK(Area(p.parts) < static_cast<uint64_t>(kW) * kH / 2);
 }
 
 /* The history keeps a bounded number of frames and layers. */
@@ -234,7 +326,7 @@ void TestScaled() {
   CHECK(Decide(s, kW, kH, {wall}, h, kVic).kind == Plan::Kind::kFull);
   const Plan p = Decide(s, kW, kH, {wall}, h, kGpu);
   CHECK(p.kind == Plan::Kind::kPartial);
-  CHECK(p.dirty == (IRect{16, 18, 48, 42}));
+  CHECK(p.parts == (std::vector<IRect>{{16, 18, 48, 42}}));
 }
 
 /* A solid colour has no frames: a new colour, or new corners, is a
@@ -306,7 +398,10 @@ int main() {
   TestChainOfFrames();
   TestUnchanged();
   TestFull();
+  TestLeft();
+  TestBothStrips();
   TestShare();
+  TestMostParts();
   TestHistoryBounds();
   if (failures == 0)
     std::printf("partial_redraw_test: all passed\n");
