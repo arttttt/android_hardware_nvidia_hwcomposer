@@ -43,8 +43,8 @@ namespace android::hwc::vk {
  * that finds the next slot still busy refuses, and the composer takes
  * another way for that frame. The sources' acquire fences and the target's
  * ready fence are waited on by the GPU through vkAcquireImageANDROID, and
- * each image is released on its own semaphore signalled by the drawing,
- * so the fence handed back comes due when the drawing is done.
+ * the target is released on a semaphore signalled by the drawing, so the
+ * fence handed back comes due when the drawing is done.
  */
 class VkCompositor : public Compositor {
  public:
@@ -90,10 +90,11 @@ class VkCompositor : public Compositor {
     VkDescriptorPool pool = VK_NULL_HANDLE;
     /* One per layer, allocated once and rewritten each call. */
     std::array<VkDescriptorSet, kMaxLayers> sets{};
-    /* One acquired and one drawn semaphore per image of the call: the
-     * target and up to kMaxLayers sources. */
+    /* One acquired semaphore per image of the call -- the target and up
+     * to kMaxLayers sources -- and one drawn semaphore, the target's: only
+     * the target is released. */
     std::array<VkSemaphore, kMaxLayers + 1> acquired{};
-    std::array<VkSemaphore, kMaxLayers + 1> drawn{};
+    VkSemaphore drawn = VK_NULL_HANDLE;
     uint64_t frame = 0;
     bool busy = false;
   };

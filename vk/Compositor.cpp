@@ -606,11 +606,11 @@ bool VkCompositor::InitSlots() {
 
     VkSemaphoreCreateInfo sci = {};
     sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    for (size_t i = 0; i <= kMaxLayers; ++i) {
-      if (vk.CreateSemaphore(dev, &sci, nullptr, &s.acquired[i]) != VK_SUCCESS ||
-          vk.CreateSemaphore(dev, &sci, nullptr, &s.drawn[i]) != VK_SUCCESS)
+    for (size_t i = 0; i <= kMaxLayers; ++i)
+      if (vk.CreateSemaphore(dev, &sci, nullptr, &s.acquired[i]) != VK_SUCCESS)
         return false;
-    }
+    if (vk.CreateSemaphore(dev, &sci, nullptr, &s.drawn) != VK_SUCCESS)
+      return false;
   }
   return true;
 }
@@ -709,12 +709,11 @@ void VkCompositor::Teardown() {
   vk.DeviceWaitIdle(dev);
   cache_.reset();
   for (Slot &s : slots_) {
-    for (size_t i = 0; i <= kMaxLayers; ++i) {
+    for (size_t i = 0; i <= kMaxLayers; ++i)
       if (s.acquired[i])
         vk.DestroySemaphore(dev, s.acquired[i], nullptr);
-      if (s.drawn[i])
-        vk.DestroySemaphore(dev, s.drawn[i], nullptr);
-    }
+    if (s.drawn)
+      vk.DestroySemaphore(dev, s.drawn, nullptr);
     if (s.pool)
       vk.DestroyDescriptorPool(dev, s.pool, nullptr);
     if (s.done)
@@ -837,7 +836,7 @@ int VkCompositor::ComposeNow(const Target &target, const Layer *layers, size_t c
   vk.UpdateDescriptorSets(dev, static_cast<uint32_t>(count), writes.data(), 0, nullptr);
 
   /* The distinct images of the call: a buffer that appears twice is
-   * acquired and released once. Index 0 is the target. */
+   * acquired once. Index 0 is the target, the only one released. */
   std::array<VkImage, kMaxLayers + 1> images{};
   std::array<int, kMaxLayers + 1> fences{};
   size_t n_images = 0;
@@ -1012,8 +1011,9 @@ int VkCompositor::ComposeNow(const Target &target, const Layer *layers, size_t c
   sub.waitSemaphoreCount = static_cast<uint32_t>(acquired);
   sub.pWaitSemaphores = slot.acquired.data();
   sub.pWaitDstStageMask = stages.data();
-  sub.signalSemaphoreCount = static_cast<uint32_t>(acquired);
-  sub.pSignalSemaphores = slot.drawn.data();
+  /* Only the target is released, so only its semaphore is signalled. */
+  sub.signalSemaphoreCount = acquired > 0 ? 1 : 0;
+  sub.pSignalSemaphores = &slot.drawn;
   /* A refused acquire still has to give back what was acquired: the work
    * goes out with no drawing in it, only the semaphores, and the call
    * refuses. */
@@ -1033,22 +1033,25 @@ int VkCompositor::ComposeNow(const Target &target, const Layer *layers, size_t c
     dst->drawn = true;
   next_slot_ = (next_slot_ + 1) % kSlots;
 
-  /* Each image released on its own drawn semaphore; the target's fence is
-   * the caller's, the sources' are covered by it and closed. */
-  int out = -1;
-  for (size_t k = 0; k < acquired; ++k) {
-    int fd = -1;
-    if (vk.QueueSignalReleaseImageANDROID(state_.queue(), 1, &slot.drawn[k], images[k], &fd) !=
-        VK_SUCCESS) {
-      LogOnce(kLogRelease, ANDROID_LOG_ERROR, "vk: release failed");
-      continue;
-    }
-    if (k == 0 && whole)
-      out = fd;
-    else if (fd >= 0)
-      close(fd);
+  /* The target alone is released: its fence is the caller's. A source's
+   * release would only hand back a fence the target's already covers --
+   * each one a submission of its own on the GPU's channel, five a frame
+   * behind the drawing in the traces, for fences that were closed unread.
+   * The sources are not the composer's to give back; the client gets
+   * them back by the present's own release fences. */
+  if (acquired == 0)
+    return -1;
+  int fd = -1;
+  if (vk.QueueSignalReleaseImageANDROID(state_.queue(), 1, &slot.drawn, images[0], &fd) !=
+      VK_SUCCESS) {
+    LogOnce(kLogRelease, ANDROID_LOG_ERROR, "vk: release failed");
+    return -1;
   }
-  return out;
+  if (whole)
+    return fd;
+  if (fd >= 0)
+    close(fd);
+  return -1;
 }
 
 }  // namespace android::hwc::vk
