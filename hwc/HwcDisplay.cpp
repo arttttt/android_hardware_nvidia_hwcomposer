@@ -448,24 +448,31 @@ void HwcDisplay::BeginClientOnGpu(
       begun_words_ += line;
     }
   }
-  /* A whole drawing is still only of the range's own part: the executor
-   * draws a buffer it has drawn before only inside the area it is given,
-   * and one it has not drawn whole, as before. */
+  static_assert(partial::kMostParts <= hwc::vk::Target::kMaxParts,
+                "the executor takes every part the redraw decides on");
+  /* What of the buffer to draw: the parts the redraw decided on -- where
+   * the members changed, or where they are and were -- and, for a buffer
+   * nothing is known of, still only the range's own part: the executor
+   * draws a buffer it has drawn before only inside what it is given, and
+   * one it has not drawn whole, as before. */
   const bool bounded = gpu_next_bounds_.right > gpu_next_bounds_.left &&
                        gpu_next_bounds_.bottom > gpu_next_bounds_.top;
-  const IRect *area = gpu_plan_.kind == partial::Plan::Kind::kPartial
-                          ? &gpu_plan_.parts.front()
-                      : bounded ? &gpu_next_bounds_
-                                : nullptr;
+  const IRect *parts = !gpu_plan_.parts.empty() ? gpu_plan_.parts.data()
+                       : bounded               ? &gpu_next_bounds_
+                                               : nullptr;
+  const size_t count = !gpu_plan_.parts.empty() ? gpu_plan_.parts.size()
+                       : bounded                ? 1
+                                                : 0;
   /* The GPU's clock is asked for before the drawing reaches its thread,
    * which starts on it at once. */
-  const uint32_t pixels =
-      area != nullptr
-          ? static_cast<uint32_t>(area->right - area->left) *
-                static_cast<uint32_t>(area->bottom - area->top)
-          : static_cast<uint32_t>(size.first * size.second);
-  GetPipe().atomic_state_manager->GpuPlanned(pixels);
-  gpu_begun_ = gpu->Begin(layers, area);
+  uint64_t pixels = 0;
+  for (size_t k = 0; k < count; ++k)
+    pixels += static_cast<uint64_t>(parts[k].right - parts[k].left) *
+              static_cast<uint64_t>(parts[k].bottom - parts[k].top);
+  if (count == 0)
+    pixels = static_cast<uint64_t>(size.first) * size.second;
+  GetPipe().atomic_state_manager->GpuPlanned(static_cast<uint32_t>(pixels));
+  gpu_begun_ = gpu->Begin(layers, parts, count);
 }
 
 bool HwcDisplay::DrawClientOnGpu(
@@ -511,9 +518,11 @@ bool HwcDisplay::DrawClientOnGpu(
     if (keep)
       snprintf(how, sizeof(how), ", buffer already held it");
     else if (gpu_plan_.kind == partial::Plan::Kind::kPartial)
-      snprintf(how, sizeof(how), ", in part %d,%d-%d,%d",
-               gpu_plan_.parts.front().left, gpu_plan_.parts.front().top,
-               gpu_plan_.parts.front().right, gpu_plan_.parts.front().bottom);
+      snprintf(how, sizeof(how), ", in %zu part(s) within %d,%d-%d,%d",
+               gpu_plan_.parts.size(), partial::Bounds(gpu_plan_.parts).left,
+               partial::Bounds(gpu_plan_.parts).top,
+               partial::Bounds(gpu_plan_.parts).right,
+               partial::Bounds(gpu_plan_.parts).bottom);
     char head[160];
     snprintf(head, sizeof(head), "%s%s (begun at %s); panel buffer %p\n",
              drawn ? "drawn" : "REFUSED, last picture stays", how,

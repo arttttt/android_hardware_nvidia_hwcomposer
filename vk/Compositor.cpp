@@ -91,6 +91,23 @@ enum LogKind {
   kLogTooMany,
 };
 
+VkRect2D Join(const VkRect2D &a, const VkRect2D &b) {
+  const int32_t l = std::min(a.offset.x, b.offset.x);
+  const int32_t t = std::min(a.offset.y, b.offset.y);
+  const int32_t r = std::max(a.offset.x + static_cast<int32_t>(a.extent.width),
+                             b.offset.x + static_cast<int32_t>(b.extent.width));
+  const int32_t btm = std::max(a.offset.y + static_cast<int32_t>(a.extent.height),
+                               b.offset.y + static_cast<int32_t>(b.extent.height));
+  return {{l, t}, {static_cast<uint32_t>(r - l), static_cast<uint32_t>(btm - t)}};
+}
+
+bool Meet(const VkRect2D &a, const VkRect2D &b) {
+  return a.offset.x < b.offset.x + static_cast<int32_t>(b.extent.width) &&
+         b.offset.x < a.offset.x + static_cast<int32_t>(a.extent.width) &&
+         a.offset.y < b.offset.y + static_cast<int32_t>(b.extent.height) &&
+         b.offset.y < a.offset.y + static_cast<int32_t>(a.extent.height);
+}
+
 }  // namespace
 
 std::unique_ptr<VkCompositor> VkCompositor::Create(Host *host) {
@@ -443,6 +460,11 @@ bool VkCompositor::InitPipeline() {
   if (vk.CreateRenderPass(dev, &rpi, nullptr, &cover_pass_) != VK_SUCCESS)
     cover_pass_ = VK_NULL_HANDLE;
 
+  att.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+  att.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  if (vk.CreateRenderPass(dev, &rpi, nullptr, &load_pass_) != VK_SUCCESS)
+    load_pass_ = VK_NULL_HANDLE;
+
   VkSamplerCreateInfo si = {};
   si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
   si.magFilter = VK_FILTER_LINEAR;
@@ -759,6 +781,8 @@ void VkCompositor::Teardown() {
     vk.DestroyRenderPass(dev, cover_pass_, nullptr);
   if (cover_keep_pass_)
     vk.DestroyRenderPass(dev, cover_keep_pass_, nullptr);
+  if (load_pass_)
+    vk.DestroyRenderPass(dev, load_pass_, nullptr);
   if (render_pass_)
     vk.DestroyRenderPass(dev, render_pass_, nullptr);
   state_.destroy();
@@ -878,23 +902,43 @@ int VkCompositor::ComposeNow(const Target &target, const Layer *layers, size_t c
                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
                           static_cast<uint32_t>(n_images - 1), barriers.data());
 
-  /* All of the target, or only the part asked for -- when the target holds
-   * a picture of ours to keep the rest of. The layers are drawn whole and
-   * cut by the scissor, so a member crossing the edge of the part is drawn
-   * exactly as it would be in the whole. */
+  /* All of the target, or only the parts asked for -- when the target
+   * holds a picture of ours to keep the rest of. The layers are drawn whole
+   * and cut by the scissor, so a member crossing the edge of a part is
+   * drawn exactly as it would be in the whole. One part is the render area
+   * itself, cleared by the pass; several are drawn in a pass over the box
+   * around them that loads it all, each cleared and drawn under its own
+   * scissor, so what lies between them is kept. */
   VkClearValue clear = {};
   VkRect2D area = {{0, 0}, {target.width, target.height}};
   VkRenderPass pass = render_pass_;
-  if (target.partial && keep_pass_ != VK_NULL_HANDLE && dst->drawn) {
-    const int32_t l = std::max(target.dirty_left, 0);
-    const int32_t t = std::max(target.dirty_top, 0);
-    const int32_t r = std::min(target.dirty_right, static_cast<int32_t>(target.width));
-    const int32_t b = std::min(target.dirty_bottom, static_cast<int32_t>(target.height));
-    if (r > l && b > t) {
-      area = {{l, t}, {static_cast<uint32_t>(r - l), static_cast<uint32_t>(b - t)}};
-      pass = keep_pass_;
+  std::array<VkRect2D, Target::kMaxParts> parts{};
+  size_t n_parts = 0;
+  if (target.part_count > 0 && keep_pass_ != VK_NULL_HANDLE && dst->drawn) {
+    const uint32_t asked = std::min<uint32_t>(target.part_count, Target::kMaxParts);
+    for (uint32_t k = 0; k < asked; ++k) {
+      const Target::Part &p = target.parts[k];
+      const int32_t l = std::max(p.left, 0);
+      const int32_t t = std::max(p.top, 0);
+      const int32_t r = std::min(p.right, static_cast<int32_t>(target.width));
+      const int32_t b = std::min(p.bottom, static_cast<int32_t>(target.height));
+      if (r > l && b > t)
+        parts[n_parts++] = {{l, t}, {static_cast<uint32_t>(r - l), static_cast<uint32_t>(b - t)}};
+    }
+    if (n_parts > 1 && load_pass_ == VK_NULL_HANDLE) {
+      for (size_t k = 1; k < n_parts; ++k)
+        parts[0] = Join(parts[0], parts[k]);
+      n_parts = 1;
+    }
+    if (n_parts > 0) {
+      area = parts[0];
+      for (size_t k = 1; k < n_parts; ++k)
+        area = Join(area, parts[k]);
+      pass = n_parts == 1 ? keep_pass_ : load_pass_;
     }
   }
+  if (n_parts == 0)
+    parts[n_parts++] = area;
   /* Which layers are written rather than blended, decided before the pass
    * begins. The area starts cleared, so a layer that lands on none of what
    * is drawn before it blends onto nothing and may as well be written; so
@@ -931,12 +975,20 @@ int VkCompositor::ComposeNow(const Target &target, const Layer *layers, size_t c
     if (written[i] && rr > rl && rb > rt)
       written_places[n_written++] = {rl, rt, rr, rb};
   }
-  {
+  /* A part the written layers cover needs no clearing: every pixel of it
+   * is set before anything blends there. */
+  std::array<VkClearRect, Target::kMaxParts> to_clear{};
+  uint32_t n_clear = 0;
+  for (size_t k = 0; k < n_parts; ++k) {
+    const VkRect2D &p = parts[k];
+    const Box box = {p.offset.x, p.offset.y, p.offset.x + static_cast<int32_t>(p.extent.width),
+                     p.offset.y + static_cast<int32_t>(p.extent.height)};
+    if (!Covers(box, written_places.data(), n_written))
+      to_clear[n_clear++] = {p, 0, 1};
+  }
+  if (pass != load_pass_ && n_clear == 0) {
     const VkRenderPass cover = pass == keep_pass_ ? cover_keep_pass_ : cover_pass_;
-    const Box whole = {area.offset.x, area.offset.y,
-                       area.offset.x + static_cast<int32_t>(area.extent.width),
-                       area.offset.y + static_cast<int32_t>(area.extent.height)};
-    if (cover != VK_NULL_HANDLE && Covers(whole, written_places.data(), n_written))
+    if (cover != VK_NULL_HANDLE)
       pass = cover;
   }
   VkRenderPassBeginInfo rbi = {};
@@ -952,43 +1004,57 @@ int VkCompositor::ComposeNow(const Target &target, const Layer *layers, size_t c
   const VkViewport vp = {0, 0, static_cast<float>(target.width),
                          static_cast<float>(target.height), 0, 1};
   vk.CmdSetViewport(cmd, 0, 1, &vp);
-  vk.CmdSetScissor(cmd, 0, 1, &area);
+  if (pass == load_pass_ && n_clear > 0) {
+    VkClearAttachment ca = {};
+    ca.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    ca.colorAttachment = 0;
+    ca.clearValue = clear;
+    vk.CmdClearAttachments(cmd, 1, &ca, n_clear, to_clear.data());
+  }
 
-  for (size_t i = 0; i < count; ++i) {
-    const Layer &l = layers[i];
-    const VkPipeline want = written[i] ? replace_pipeline_ : pipeline_;
-    if (want != bound) {
-      bound = want;
-      vk.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound);
+  for (size_t k = 0; k < n_parts; ++k) {
+    const VkRect2D &part = parts[k];
+    vk.CmdSetScissor(cmd, 0, 1, &part);
+    for (size_t i = 0; i < count; ++i) {
+      const Layer &l = layers[i];
+      /* A layer that lands nowhere in this part is not drawn for it. */
+      if (places[i].extent.width == 0 || places[i].extent.height == 0 ||
+          !Meet(places[i], part))
+        continue;
+      const VkPipeline want = written[i] ? replace_pipeline_ : pipeline_;
+      if (want != bound) {
+        bound = want;
+        vk.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound);
+      }
+
+      const Quad q = PlaceLayer(l.src_left, l.src_top, l.src_right, l.src_bottom,
+                                l.buffer ? l.width : 1, l.buffer ? l.height : 1, l.dst_left,
+                                l.dst_top, l.dst_right, l.dst_bottom, l.transform, target.width,
+                                target.height);
+      LayerConstants pc = {};
+      pc.ndc[0] = q.ndc_left;
+      pc.ndc[1] = q.ndc_top;
+      pc.ndc[2] = q.ndc_right;
+      pc.ndc[3] = q.ndc_bottom;
+      std::memcpy(pc.uv_tl, q.uv_tl, sizeof(pc.uv_tl));
+      std::memcpy(pc.uv_tr, q.uv_tr, sizeof(pc.uv_tr));
+      std::memcpy(pc.uv_bl, q.uv_bl, sizeof(pc.uv_bl));
+      std::memcpy(pc.color, l.color, sizeof(pc.color));
+      pc.corner[0] = l.corner_left;
+      pc.corner[1] = l.corner_top;
+      pc.corner[2] = l.corner_right;
+      pc.corner[3] = l.corner_bottom;
+      pc.radius = l.corner_radius;
+      pc.alpha = l.alpha;
+      pc.flags = (l.buffer == nullptr ? kFlagSolid : 0) | (l.premultiplied ? kFlagPremultiplied : 0) |
+                 (l.opaque || opaque[i] ? kFlagOpaque : 0);
+      vk.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1,
+                               &sets[i], 0, nullptr);
+      vk.CmdPushConstants(cmd, pipeline_layout_,
+                          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc),
+                          &pc);
+      vk.CmdDraw(cmd, 4, 1, 0, 0);
     }
-
-    const Quad q = PlaceLayer(l.src_left, l.src_top, l.src_right, l.src_bottom,
-                              l.buffer ? l.width : 1, l.buffer ? l.height : 1, l.dst_left,
-                              l.dst_top, l.dst_right, l.dst_bottom, l.transform, target.width,
-                              target.height);
-    LayerConstants pc = {};
-    pc.ndc[0] = q.ndc_left;
-    pc.ndc[1] = q.ndc_top;
-    pc.ndc[2] = q.ndc_right;
-    pc.ndc[3] = q.ndc_bottom;
-    std::memcpy(pc.uv_tl, q.uv_tl, sizeof(pc.uv_tl));
-    std::memcpy(pc.uv_tr, q.uv_tr, sizeof(pc.uv_tr));
-    std::memcpy(pc.uv_bl, q.uv_bl, sizeof(pc.uv_bl));
-    std::memcpy(pc.color, l.color, sizeof(pc.color));
-    pc.corner[0] = l.corner_left;
-    pc.corner[1] = l.corner_top;
-    pc.corner[2] = l.corner_right;
-    pc.corner[3] = l.corner_bottom;
-    pc.radius = l.corner_radius;
-    pc.alpha = l.alpha;
-    pc.flags = (l.buffer == nullptr ? kFlagSolid : 0) | (l.premultiplied ? kFlagPremultiplied : 0) |
-               (l.opaque || opaque[i] ? kFlagOpaque : 0);
-    vk.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1,
-                             &sets[i], 0, nullptr);
-    vk.CmdPushConstants(cmd, pipeline_layout_,
-                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc),
-                        &pc);
-    vk.CmdDraw(cmd, 4, 1, 0, 0);
   }
   vk.CmdEndRenderPass(cmd);
   vk.EndCommandBuffer(cmd);

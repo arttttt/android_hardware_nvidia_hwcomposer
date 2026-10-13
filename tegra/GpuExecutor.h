@@ -71,10 +71,11 @@ class GpuExecutor {
    * over an unfinished one drops the earlier drawing; nothing was shown of
    * it, and the buffer's turn was never taken.
    *
-   * `dirty`, when given, draws only that rectangle of the buffer and keeps
-   * the rest as it holds it; see vk::Target. */
+   * `parts`, when given, draws only those rectangles of the buffer -- at
+   * most vk::Target::kMaxParts, which the redraw's own bound matches -- and
+   * keeps the rest as it holds it; see vk::Target. */
   bool Begin(std::vector<vk::Layer> &layers,
-             const drm_hwcomposer::IRect *dirty = nullptr);
+             const drm_hwcomposer::IRect *parts = nullptr, size_t count = 0);
   std::optional<Drawn> Finish();
 
   /* The next buffer already holds the picture wanted: it takes its turn
