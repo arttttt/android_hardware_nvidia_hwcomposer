@@ -673,6 +673,18 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
                      : static_cast<int32_t>(modes_.front().GetRawMode()
                                                 .vdisplay);
 
+  /* The frame's record has readers only when one is looking: the ring, the
+   * calibration lines in a trace, a capture's words. Otherwise it is not
+   * kept -- the walk below still fills a row, but one thrown away, so no
+   * frame allocates for a record nobody reads. */
+  using hwc::PictureCapture;
+  const bool noted =
+      RingWanted() || hwc::CalibrationWanted() ||
+      PictureCapture::Wanted(PictureCapture::Source::kFrame) ||
+      PictureCapture::Wanted(PictureCapture::Source::kMerge) ||
+      PictureCapture::Wanted(PictureCapture::Source::kMergeTurned);
+  FrameNote::Row unnoted{};
+
   if (args.composition) {
     /* The frame's record is filled as the layers are walked: each layer's
      * seat, alpha, scale and landing place, beside the plan's own verdict.
@@ -682,6 +694,8 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
     note.chosen_run = static_cast<uint32_t>(args.composition->chosen_run);
     note.run_len = static_cast<uint32_t>(args.composition->run_len);
     for (const auto &run : args.composition->runs) {
+      if (!noted)
+        break;
       FrameNote::Run &r = note.runs.emplace_back();
       r.begin = static_cast<uint32_t>(run.begin);
       r.live = static_cast<uint32_t>(run.live);
@@ -694,7 +708,7 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
       if (!joining.plane)
         continue;
 
-      FrameNote::Row &row = note.layers.emplace_back();
+      FrameNote::Row &row = noted ? note.layers.emplace_back() : unnoted;
       const LayerData &note_layer = joining.layer;
       if (note_layer.bi) {
         row.id = note_layer.bi->unique_id;

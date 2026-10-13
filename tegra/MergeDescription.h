@@ -51,6 +51,9 @@ void MarkMergeForCalibration(
  * runs=b:l:kpx:s:v,..." -- begin, drawing layers, pixels in thousands,
  * steepest resize in percent, whether it could have been seated. Nothing
  * when there was no merge or no choice. */
+/* Whether a trace is being taken that the calibration lines would go into. */
+bool CalibrationWanted();
+
 void MarkSteeringForCalibration(const drm_hwcomposer::FrameNote &note,
                                 size_t merge_width, uint64_t seq);
 
