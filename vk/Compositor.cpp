@@ -19,6 +19,7 @@
 #include <android/log.h>
 #include <pthread.h>
 #include <sched.h>
+#include <poll.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -178,37 +179,88 @@ int VkCompositor::Compose(const Target &target, const Layer *layers, size_t coun
   return fence.get();
 }
 
-bool VkCompositor::Begin(const Target &target, const Layer *layers, size_t count) {
-  if (begun_)
-    return false;
-  auto begun = std::make_unique<Begun>();
-  begun->target = target;
-  begun->target.ready_fence = target.ready_fence >= 0 ? dup(target.ready_fence) : -1;
-  begun->layers.assign(layers, layers + count);
-  for (Layer &l : begun->layers)
-    l.acquire_fence = l.acquire_fence >= 0 ? dup(l.acquire_fence) : -1;
-  begun->fence = begun->done.get_future();
-  begun_ = std::move(begun);
-
-  Begun *b = begun_.get();
-  Post([this, b] {
-    b->done.set_value(ComposeNow(b->target, b->layers.data(), b->layers.size()));
-  });
-  Post([this] { cache_->Retire(retired_); });
-  return true;
+VkCompositor::Job &VkCompositor::Job::operator=(Job &&o) noexcept {
+  if (this != &o) {
+    this->~Job();
+    target = o.target;
+    layers = std::move(o.layers);
+    o.target.ready_fence = -1;
+    o.layers.clear();
+  }
+  return *this;
 }
 
-int VkCompositor::Finish() {
-  if (!begun_)
-    return -1;
-  const int fence = begun_->fence.get();
-  if (begun_->target.ready_fence >= 0)
-    close(begun_->target.ready_fence);
-  for (const Layer &l : begun_->layers)
+VkCompositor::Job::~Job() {
+  if (target.ready_fence >= 0)
+    close(target.ready_fence);
+  target.ready_fence = -1;
+  for (const Layer &l : layers)
     if (l.acquire_fence >= 0)
       close(l.acquire_fence);
-  begun_.reset();
-  return fence;
+  layers.clear();
+}
+
+VkCompositor::Fence &VkCompositor::Fence::operator=(Fence &&o) noexcept {
+  if (this != &o) {
+    if (fd >= 0)
+      close(fd);
+    fd = o.fd;
+    o.fd = -1;
+  }
+  return *this;
+}
+
+VkCompositor::Fence::~Fence() {
+  if (fd >= 0)
+    close(fd);
+}
+
+uint64_t VkCompositor::Queue(const Target &target, const Layer *layers, size_t count,
+                             bool droppable) {
+  Job job;
+  job.target = target;
+  job.target.ready_fence = target.ready_fence >= 0 ? dup(target.ready_fence) : -1;
+  job.layers.assign(layers, layers + count);
+  for (Layer &l : job.layers)
+    l.acquire_fence = l.acquire_fence >= 0 ? dup(l.acquire_fence) : -1;
+  const uint64_t id = jobs_.Queue(std::move(job), droppable);
+  /* One run for each job queued: a run that finds its job dropped finds
+   * nothing and is done. */
+  Post([this] { RunJob(); });
+  Post([this] { cache_->Retire(retired_); });
+  return id;
+}
+
+void VkCompositor::RunJob() {
+  /* The GPU still busy with the drawing before: the job waits, in the
+   * queue, where its frame can drop it -- looked at again in a moment,
+   * behind whatever else the thread has to do meanwhile. */
+  if (last_drawn_.fd >= 0) {
+    struct pollfd p = {last_drawn_.fd, POLLIN, 0};
+    if (poll(&p, 1, 1) == 0) {
+      if (jobs_.waiting() != 0)
+        Post([this] { RunJob(); });
+      return;
+    }
+  }
+  auto taken = jobs_.TryTake();
+  if (!taken)
+    return;
+  const Job &job = taken->second;
+  const int fence = ComposeNow(job.target, job.layers.data(), job.layers.size());
+  last_drawn_ = Fence(fence >= 0 ? dup(fence) : -1);
+  jobs_.Done(taken->first, fence >= 0, Fence(fence));
+}
+
+int VkCompositor::Resolve(uint64_t id, bool wait) {
+  auto out = jobs_.Resolve(id, wait);
+  if (out.state == Jobs::State::kDropped)
+    return -2;
+  return out.result ? out.result->Release() : -1;
+}
+
+void VkCompositor::Cancel(uint64_t id) {
+  jobs_.Cancel(id);
 }
 
 bool VkCompositor::Warm() {
@@ -712,13 +764,9 @@ VkCompositor::~VkCompositor() {
   wake_.notify_one();
   if (thread_.joinable())
     thread_.join();
-  /* A drawing begun and never finished: the thread ran it before it
-   * stopped, so its fence and the copies Begin took are closed here. */
-  if (begun_) {
-    const int fence = Finish();
-    if (fence >= 0)
-      close(fence);
-  }
+  /* Drawings queued and never run go with the queue, their fences
+   * closed; whoever still waits on one is answered. */
+  jobs_.Stop();
 }
 
 /* On the thread, after its last work: everything Vulkan goes down where it

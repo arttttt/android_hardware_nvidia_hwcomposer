@@ -22,10 +22,12 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "display/AtomicStateManager.h"
 #include "display/DrmMode.h"
+#include "compositor/JobQueue.h"
 #include "compositor/LayerData.h"
 #include "compositor/PartialRedraw.h"
 #include "compositor/PictureMemory.h"
@@ -317,6 +319,13 @@ class TegraAtomicStateManager : public AtomicStateManager {
     partial_ = Properties::PartialRedraw();
     cmu_ctm_ = CmuFromProperty();
     calibrated_home_ = Properties::CalibratedColorMode();
+    vic_worker_wanted_ = Properties::VicWorker();
+  }
+
+  ~TegraAtomicStateManager() override {
+    vic_jobs_.Stop();
+    if (vic_worker_.joinable())
+      vic_worker_.join();
   }
 
   std::unique_ptr<AtomicRequest> GetAtomicModeReqForArgs(
@@ -569,6 +578,15 @@ class TegraAtomicStateManager : public AtomicStateManager {
     uint64_t passes = 0;
     /* Frames whose parts the engine refused, drawn whole instead. */
     uint64_t parts_refused = 0;
+
+    /* Groups queued for the engine's worker at validate, those whose job
+     * the frame used, and those given up for a group drawn otherwise. */
+    uint64_t queued = 0;
+    uint64_t queued_used = 0;
+    uint64_t queued_given_up = 0;
+    /* Groups not drawn because the engine was still busy with the one
+     * before when the frame went up: the window showed that one again. */
+    uint64_t dropped = 0;
   };
   FenceCounters fences_;
   MergeCounters merges_;
@@ -641,6 +659,62 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * once. */
   partial::SlotPictures slot_pictures_{partial::Engine{true, true, false}};
   bool partial_ = true;
+
+  /* The engine's own worker. A group's drawing is decided when the frame
+   * is validated -- the slot, what of it to draw -- and queued then; the
+   * worker hands it to the engine while the client finishes its frame, and
+   * the frame's execute collects the fence. The binder thread the client
+   * waits on no longer describes and submits the engine's work itself.
+   *
+   * What is queued is checked at execute against the group the frame
+   * really carries: the same members in the same places, or the job is
+   * given up and the group drawn there and then, as before. That covers a
+   * second validate, a client target that arrived after validate, a group
+   * shown a frame behind, and anything else that changed in between. */
+  struct VicJob {
+    const hwc::VendorBuffer *target = nullptr;
+    std::vector<hwc::VicSession::Layer> layers;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    SharedFd target_ready;
+    uint32_t group_code = 0;
+    std::vector<IRect> parts;
+    /* Copies of the layers' acquire fences, owned by the job. */
+    std::vector<SharedFd> fences;
+  };
+  struct VicDrawn {
+    SharedFd fence;
+    uint32_t passes = 0;
+    /* A part was refused and the buffer drawn whole instead. */
+    bool drew_whole = false;
+  };
+  using VicJobs = JobQueue<VicJob, VicDrawn>;
+  VicJobs vic_jobs_;
+  std::thread vic_worker_;
+  void VicWorkerLoop();
+
+  struct PendingMerge {
+    VicJobs::Id id = 0;
+    const hwc::ScratchPool::Slot *target = nullptr;
+    partial::Plan plan;
+    std::vector<PictureMemory::Member> members;
+    /* The group the job was decided for, to be recognised at execute. */
+    PictureMemory key;
+    uint32_t group_code = 0;
+    bool untouched = false;
+    SharedFd held_fence;
+    /* Whether the window may show the last group drawn instead, should the
+     * engine still be busy with that one when this frame goes up. */
+    bool droppable = false;
+  };
+  std::optional<PendingMerge> pending_merge_;
+  bool vic_worker_wanted_ = true;
+
+  /* At a test the controller accepted: queue the group's drawing. */
+  void QueueMerge(const TegraAtomicRequest &tegra);
+  /* The queued drawing is not the one wanted: let it go and give its slot
+   * back. Whatever the worker had already written is never shown. */
+  void DropPendingMerge();
 
   /* Puts the frame's colour transform into the head's colour pipeline, or
    * puts the pipeline back when the transform is the identity. Called once

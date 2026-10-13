@@ -160,6 +160,9 @@ class HwcDisplay : public ICompositorDisplay {
    * shows on the panel broke in one of two places -- above this surface
    * or below it -- and these counters say which. */
   auto DumpColorBridge() const -> std::string;
+  /* The GPU executor's frames dropped, the GPU still busy with the one
+   * before: the client range showed its last picture again. */
+  auto DumpGpuDrops() const -> std::string;
 
 
   auto GetDisplayName() const -> std::string;
@@ -564,6 +567,7 @@ class HwcDisplay : public ICompositorDisplay {
   PictureMemory gpu_memory_;
   std::vector<PictureMemory::Member> gpu_pending_;
   SharedFd gpu_drawn_fence_;
+  uint64_t gpu_dropped_ = 0;
   /* What each of the executor's buffers holds, so the next one is drawn
    * only where its picture differs -- or not at all, and kept, when it
    * already holds it; see compositor/PartialRedraw.h. The plan for the

@@ -22,11 +22,14 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <pthread.h>
+#include <sched.h>
 #include <math.h>
 #include <ndk/sync.h>
 #include <string.h>
 #include <sync/sync.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <optional>
 #include <sstream>
@@ -935,6 +938,7 @@ bool TegraAtomicStateManager::Test(const AtomicRequest &request) {
    * one the governor hears about, which is the one that will be shown. */
   if (composition_governor_ != nullptr)
     TellGovernor(tegra);
+  QueueMerge(tegra);
   return true;
 }
 
@@ -1037,7 +1041,162 @@ std::vector<PictureMemory::Member> MergeMembers(
   return members;
 }
 
+/* One group's drawing, wherever it is done -- on the engine's worker or,
+ * when nothing was queued for it, on the binder thread. A part at a time
+ * into the same buffer when there are parts, each writing its own
+ * rectangle and leaving the rest; the channel runs them in the order
+ * given, so the last one's fence is the buffer's. A part the engine would
+ * not take -- a scaled member described whole past its edge is the one way
+ * it can come to that -- is no reason to drop the frame: the buffer is
+ * drawn whole instead. */
+template <typename Drawn, typename Job>
+Drawn DrawMergeJob(hwc::VicSession *vic, const Job &job) {
+  Drawn drawn;
+  const int ready = job.target_ready ? *job.target_ready : -1;
+  if (job.parts.empty()) {
+    drawn.fence = vic->Compose(*job.target, job.layers, job.width, job.height,
+                               ready, job.group_code);
+    return drawn;
+  }
+  for (const IRect &part : job.parts) {
+    drawn.fence = vic->Compose(*job.target, job.layers, job.width,
+                               job.height, ready, job.group_code, &part);
+    if (!drawn.fence)
+      break;
+    drawn.passes++;
+  }
+  if (!drawn.fence) {
+    drawn.drew_whole = true;
+    drawn.fence = vic->Compose(*job.target, job.layers, job.width, job.height,
+                               ready, job.group_code);
+  }
+  return drawn;
+}
+
 }  // namespace
+
+void TegraAtomicStateManager::VicWorkerLoop() {
+  pthread_setname_np(pthread_self(), "hwc-vic");
+  /* SCHED_FIFO at 2, as the binder thread it works for and the GPU
+   * executor's: the frame waits on this thread. */
+  struct sched_param param = {};
+  param.sched_priority = 2;
+  sched_setscheduler(0, SCHED_FIFO, &param);
+
+  /* A job is taken only once the engine is done with the one before.
+   * Work piled behind a drawing that runs long would only make each frame
+   * after it later still; held back instead, a job that may be dropped is
+   * dropped when its frame goes up, and the window shows the last group
+   * drawn -- one frame repeated rather than every frame after it late. */
+  SharedFd last;
+  for (;;) {
+    if (last)
+      sync_wait(*last, -1);
+    auto taken = vic_jobs_.Take();
+    if (!taken)
+      return;
+    VicDrawn drawn = DrawMergeJob<VicDrawn>(vic_, taken->second);
+    const bool submitted = static_cast<bool>(drawn.fence);
+    last = drawn.fence;
+    vic_jobs_.Done(taken->first, submitted, std::move(drawn));
+  }
+}
+
+void TegraAtomicStateManager::DropPendingMerge() {
+  if (!pending_merge_)
+    return;
+  /* Taken back whether or not the worker got to it: a drawing under way
+   * runs to its end into a slot that is then never shown, and the slot is
+   * known to hold nothing remembered. */
+  vic_jobs_.Cancel(pending_merge_->id);
+  slot_pictures_.Lost(pending_merge_->target);
+  scratch_->Rewind();
+  pending_merge_.reset();
+  merges_.queued_given_up++;
+}
+
+void TegraAtomicStateManager::QueueMerge(const TegraAtomicRequest &tegra) {
+  DropPendingMerge();
+  const auto &merge = tegra.GetMerge();
+  if (!vic_worker_wanted_ || vic_ == nullptr || scratch_ == nullptr ||
+      merge.layers.empty())
+    return;
+  /* A group the window already shows is not drawn at all. */
+  if (merge_cache_ && JudgeMerge(merge) == MergeVerdict::kSame)
+    return;
+  const auto group_turn = UniformTurn(merge.transforms);
+  if (!group_turn)
+    return;
+  const int forced_group = ForcedVicTransform();
+  const uint32_t group_code =
+      *group_turn != 0 && forced_group >= 0 && forced_group <= 7
+          ? static_cast<uint32_t>(forced_group)
+          : VicTransformFor(*group_turn);
+
+  if (!vic_worker_.joinable())
+    vic_worker_ = std::thread([this] { VicWorkerLoop(); });
+
+  SharedFd target_ready;
+  const hwc::ScratchPool::Slot *target = scratch_->Next(&target_ready);
+  if (target == nullptr)
+    return;
+
+  PendingMerge pending;
+  pending.target = target;
+  pending.group_code = group_code;
+  pending.members = MergeMembers(merge);
+  for (size_t i = 0; i < pending.members.size() && i < merge.damages.size();
+       ++i)
+    slot_pictures_.Record(pending.members[i], merge.damages[i].dmg_rects);
+  if (partial_ && group_code == 0)
+    pending.plan = slot_pictures_.Decide(target, merge.width, merge.height,
+                                         pending.members);
+  pending.untouched = pending.plan.kind == partial::Plan::Kind::kUnchanged;
+  if (pending.untouched)
+    pending.held_fence = slot_pictures_.Fence(target);
+  slot_pictures_.Lost(target);
+  pending.key.Remember(merge.window, merge.width, merge.height,
+                       pending.members);
+  /* The last group may stand in for this one only if it is the same group
+   * in the same buffer size: the same members, a newer frame of some or
+   * moved within the group. Anything that changes what the window is --
+   * its size, its members, their turn -- is drawn. */
+  if (merge_cache_ && last_merge_fence_) {
+    switch (JudgeMerge(merge)) {
+      case MergeVerdict::kChangedFrame:
+      case MergeVerdict::kChangedGeometry:
+      case MergeVerdict::kChangedBlend:
+        pending.droppable = true;
+        break;
+      default:
+        break;
+    }
+  }
+
+  if (!pending.untouched) {
+    VicJob job;
+    job.target = target->vendor;
+    job.layers = merge.layers;
+    /* The layers' fences are the client's, borrowed until its next buffer;
+     * the job may outlive that if this frame is validated again before it
+     * is shown, so it reads copies of its own. */
+    for (auto &l : job.layers) {
+      if (l.acquire_fence < 0)
+        continue;
+      SharedFd copy = MakeSharedFd(dup(l.acquire_fence));
+      l.acquire_fence = copy ? *copy : -1;
+      job.fences.push_back(std::move(copy));
+    }
+    job.width = merge.width;
+    job.height = merge.height;
+    job.target_ready = std::move(target_ready);
+    job.group_code = group_code;
+    job.parts = pending.plan.parts;
+    pending.id = vic_jobs_.Queue(std::move(job), pending.droppable);
+  }
+  pending_merge_ = std::move(pending);
+  merges_.queued++;
+}
 
 TegraAtomicStateManager::MergeVerdict TegraAtomicStateManager::JudgeMerge(
     const TegraAtomicRequest::Merge &merge) const {
@@ -1235,6 +1394,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   int32_t drawn_x = 0;
   int32_t drawn_y = 0;
   const auto &merge = tegra.GetMerge();
+  if (merge.layers.empty())
+    DropPendingMerge();
   if (!merge.layers.empty()) {
     if (vic_ == nullptr || scratch_ == nullptr) {
       ALOGE("a frame was planned for an engine this display has not got");
@@ -1242,6 +1403,27 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
     }
 
     const bool same = merge_cache_ && RecognisesMerge(merge);
+
+    /* Drawn already, or being drawn, if validate queued this very group. A
+     * droppable job the engine has not taken yet -- it is still busy with
+     * the group before -- is dropped now, and the window shows that group
+     * again, as for a group shown a frame behind. */
+    const bool queued =
+        !same && pending_merge_ &&
+        pending_merge_->key.Judge(merge.window, merge.width, merge.height,
+                                  MergeMembers(merge)) ==
+            PictureMemory::Verdict::kSame;
+    std::optional<VicDrawn> resolved;
+    bool dropped = false;
+    if (queued && !pending_merge_->untouched) {
+      auto out = vic_jobs_.Resolve(pending_merge_->id,
+                                   !pending_merge_->droppable);
+      if (out.state == VicJobs::State::kDropped) {
+        dropped = true;
+      } else {
+        resolved = out.result ? std::move(*out.result) : VicDrawn{};
+      }
+    }
     /* The group as last drawn but for a newer frame of some member whose
      * client is still drawing it: the engine would wait for that drawing
      * in the stream and the flip for the engine, so the panel would miss
@@ -1259,7 +1441,18 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
                     });
     lagged_last_ = lag;
 
-    if (same || lag) {
+    if (dropped) {
+      /* The slot the dropped job would have drawn into was never written:
+       * its turn is given back, and what it held is still what it held,
+       * but it was let go as known when the job was queued. */
+      pending_merge_.reset();
+      scratch_->Rewind();
+      merges_.dropped++;
+      hwc::MarkDropped("vic");
+    }
+
+    if (same || lag || dropped) {
+      DropPendingMerge();
       /* The group is the one already drawn, so the window is shown the
        * buffer it is already showing. No buffer changes hands: the pool is
        * not advanced, nothing is described again, and the layers' own fences
@@ -1274,7 +1467,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
        * retries itself out of what is remembered. */
       if (same)
         merges_.reused++;
-      else
+      else if (lag)
         merges_.lagged++;
       merge_reused = true;
       windows[merge.slot] = last_merge_described_;
@@ -1289,10 +1482,16 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       windows[merge.slot].outY = merge.origin_y;
       windows[merge.slot].z = merge.depth;
     } else {
+      /* Anything but the group queued at validate: the queued job is let go
+       * and the group drawn here, as it always was. */
+      if (!queued)
+        DropPendingMerge();
+
       /* The buffer and, separately, when it may be written to. The engine is
        * told the second and waits for it itself; nothing here does. */
       SharedFd target_ready;
-      const hwc::ScratchPool::Slot *target = scratch_->Next(&target_ready);
+      const hwc::ScratchPool::Slot *target =
+          queued ? pending_merge_->target : scratch_->Next(&target_ready);
       if (target == nullptr) {
         ForgetMerge();
         return -EBUSY;
@@ -1302,6 +1501,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
        * is a planner error: refuse rather than draw the members unturned. */
       const auto group_turn = UniformTurn(merge.transforms);
       if (!group_turn) {
+        pending_merge_.reset();
         scratch_->Rewind();
         ForgetMerge();
         return -EINVAL;
@@ -1318,18 +1518,30 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       /* What of the slot to draw again: the slot still holds the picture it
        * was last drawn with, and the members' damage since says where this
        * one differs from it. Their damage is kept whether or not it is
-       * asked of, so that a slot coming round finds the frames it missed. */
-      std::vector<PictureMemory::Member> members = MergeMembers(merge);
-      for (size_t i = 0; i < members.size() && i < merge.damages.size(); ++i)
-        slot_pictures_.Record(members[i], merge.damages[i].dmg_rects);
+       * asked of, so that a slot coming round finds the frames it missed.
+       * A queued group was decided so at validate. */
+      std::vector<PictureMemory::Member> members;
       partial::Plan plan;
-      if (partial_ && group_code == 0)
-        plan = slot_pictures_.Decide(target, merge.width, merge.height,
-                                     members);
-      const bool untouched = plan.kind == partial::Plan::Kind::kUnchanged;
-      const SharedFd held_fence =
-          untouched ? slot_pictures_.Fence(target) : SharedFd{};
-      slot_pictures_.Lost(target);
+      bool untouched = false;
+      SharedFd held_fence;
+      if (queued) {
+        members = std::move(pending_merge_->members);
+        plan = std::move(pending_merge_->plan);
+        untouched = pending_merge_->untouched;
+        held_fence = pending_merge_->held_fence;
+      } else {
+        members = MergeMembers(merge);
+        for (size_t i = 0; i < members.size() && i < merge.damages.size();
+             ++i)
+          slot_pictures_.Record(members[i], merge.damages[i].dmg_rects);
+        if (partial_ && group_code == 0)
+          plan = slot_pictures_.Decide(target, merge.width, merge.height,
+                                       members);
+        untouched = plan.kind == partial::Plan::Kind::kUnchanged;
+        if (untouched)
+          held_fence = slot_pictures_.Fence(target);
+        slot_pictures_.Lost(target);
+      }
 
       if (composition_governor_ != nullptr && !untouched)
         hwc::MarkMergeForCalibration(merge, planned_seq_);
@@ -1342,36 +1554,31 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
        * display reading it at the same time is no hazard. */
       if (untouched) {
         merged = held_fence;
-      } else if (plan.parts.empty()) {
-        merged = vic_->Compose(*target->vendor, merge.layers, merge.width,
-                               merge.height, target_ready ? *target_ready : -1,
-                               group_code);
       } else {
-        /* A pass for each part, into the same buffer: each writes its own
-         * rectangle and leaves the rest as it is. The channel runs them in
-         * the order given, so the last one's fence is the buffer's. */
-        for (const IRect &part : plan.parts) {
-          merged = vic_->Compose(*target->vendor, merge.layers, merge.width,
-                                 merge.height,
-                                 target_ready ? *target_ready : -1, group_code,
-                                 &part);
-          if (!merged)
-            break;
-          merges_.passes++;
+        VicDrawn drawn;
+        if (queued) {
+          if (resolved)
+            drawn = std::move(*resolved);
+          merges_.queued_used++;
+        } else {
+          VicJob job;
+          job.target = target->vendor;
+          job.layers = merge.layers;
+          job.width = merge.width;
+          job.height = merge.height;
+          job.target_ready = target_ready;
+          job.group_code = group_code;
+          job.parts = plan.parts;
+          drawn = DrawMergeJob<VicDrawn>(vic_, job);
         }
-        /* A part the engine would not take -- a scaled member described
-         * whole past its edge is the one way it can come to that -- is no
-         * reason to drop the frame: the buffer is drawn whole instead, and
-         * remembered as drawn whole. */
-        if (!merged) {
+        merged = drawn.fence;
+        merges_.passes += drawn.passes;
+        if (drawn.drew_whole) {
           merges_.parts_refused++;
           plan = partial::Plan{};
-          merged = vic_->Compose(*target->vendor, merge.layers, merge.width,
-                                 merge.height,
-                                 target_ready ? *target_ready : -1,
-                                 group_code);
         }
       }
+      pending_merge_.reset();
       if (!merged) {
         /* The engine would not take it. Nothing has been written, so the
          * honest thing is to drop the frame rather than show a window
@@ -1933,6 +2140,10 @@ std::string TegraAtomicStateManager::DumpState() {
     if (m.passes != 0 || m.parts_refused != 0)
       ss << "  passes for parts        : " << m.passes << ", refused "
          << m.parts_refused << "\n";
+    if (m.queued != 0)
+      ss << "  queued at validate      : " << m.queued << ", used "
+         << m.queued_used << ", given up " << m.queued_given_up
+         << ", dropped " << m.dropped << "\n";
     if (scratch_ != nullptr)
       ss << "  scratch pool            : " << scratch_->source_name()
          << " (" << scratch_->width() << "x" << scratch_->height() << ")\n"

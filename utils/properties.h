@@ -54,6 +54,10 @@ class Properties {
    * not being looked at should not pay for being measured. */
   static auto Statistics() -> bool;
 
+  /* Whether the image engine's work is queued at validate for a worker
+   * of its own, rather than done on the binder thread at present. */
+  static auto VicWorker() -> bool;
+
   /* Whether the pipeline's resting state corrects the panel's gamut toward
    * sRGB rather than showing the panel as it is. */
   static auto CalibratedColorMode() -> bool;

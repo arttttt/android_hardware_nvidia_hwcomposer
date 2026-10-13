@@ -74,6 +74,7 @@
 #include "hwc/HwcLayer.h"
 #include "stats/DisplayConfigurationResultReporter.h"
 #include "tegra/GpuExecutor.h"
+#include "tegra/MergeDescription.h"
 #include "tegra/PictureCapture.h"
 #include "stats/DisplayHotplugConnectModeDetectedAtomReporter.h"
 #include "stats/Stats.h"
@@ -472,7 +473,11 @@ void HwcDisplay::BeginClientOnGpu(
   if (count == 0)
     pixels = static_cast<uint64_t>(size.first) * size.second;
   GetPipe().atomic_state_manager->GpuPlanned(static_cast<uint32_t>(pixels));
-  gpu_begun_ = gpu->Begin(layers, parts, count);
+  /* Droppable once there is a picture to show instead: the GPU still busy
+   * with the drawing before when this frame goes up, the executor shows
+   * that one again rather than queue this behind it. */
+  gpu_begun_ = gpu->Begin(layers, parts, count,
+                          static_cast<bool>(gpu_drawn_fence_));
 }
 
 bool HwcDisplay::DrawClientOnGpu(
@@ -510,9 +515,10 @@ bool HwcDisplay::DrawClientOnGpu(
   const void *slot = gpu->NextSlot();
   const bool keep = gpu_keep_;
   gpu_keep_ = false;
+  bool dropped = false;
   auto drawn = keep ? std::optional<hwc::GpuExecutor::Drawn>(
                           gpu->Keep(gpu_slots_.Fence(slot)))
-                    : gpu->Finish();
+                    : gpu->Finish(&dropped);
   if (PictureCapture::Wanted(PictureCapture::Source::kGpu)) {
     char how[64] = "";
     if (keep)
@@ -536,6 +542,19 @@ bool HwcDisplay::DrawClientOnGpu(
      * reads it. A processor lock of the executor's buffer does not hand
      * back what the GPU wrote. */
     PictureCapture::WriteText(PictureCapture::Source::kGpu, words);
+  }
+  if (!drawn && dropped) {
+    /* Dropped, the GPU still busy with the drawing before: the last
+     * picture goes up again, against the fence it was drawn with, where it
+     * stood -- one frame of the client range repeated, the rest of the
+     * panel moving on. What the slots and the memory hold is unchanged:
+     * nothing was drawn. */
+    gpu_dropped_++;
+    hwc::MarkDropped("gpu");
+    gpu_pending_.clear();
+    last_gpu_use_ns_ = GetTimeMonotonicNs();
+    SeatGpuBuffer(gpu->Current(), gpu_drawn_fence_, gpu_shown_bounds_);
+    return true;
   }
   if (!drawn) {
     /* Refused: the client was told these layers are the device's, so the
@@ -2269,6 +2288,12 @@ std::string HwcDisplay::DumpGroupSelector() const {
     ss << "  layer z=" << layer.GetZOrder() << "             : "
        << (layer.IsLive() ? "live" : "quiet") << "\n";
   }
+  return ss.str();
+}
+
+std::string HwcDisplay::DumpGpuDrops() const {
+  std::stringstream ss;
+  ss << "GPU executor              : dropped " << gpu_dropped_;
   return ss.str();
 }
 

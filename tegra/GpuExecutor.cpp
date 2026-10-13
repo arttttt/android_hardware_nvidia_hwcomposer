@@ -122,16 +122,18 @@ GpuExecutor::~GpuExecutor() {
 }
 
 void GpuExecutor::DropBegun() {
+  /* Given up rather than waited for: a drawing the library's thread
+   * already has runs to its end into a buffer that is not shown, and the
+   * next drawing into it comes after it on the same thread and queue. */
   if (begun_at_) {
-    const int dropped = compositor_->Finish();
-    if (dropped >= 0)
-      close(dropped);
+    compositor_->Cancel(begun_id_);
     begun_at_.reset();
   }
 }
 
 bool GpuExecutor::Begin(std::vector<vk::Layer> &layers,
-                        const drm_hwcomposer::IRect *parts, size_t count) {
+                        const drm_hwcomposer::IRect *parts, size_t count,
+                        bool droppable) {
   DropBegun();
 
   const size_t at = (at_ + 1) % slots_.size();
@@ -154,18 +156,23 @@ bool GpuExecutor::Begin(std::vector<vk::Layer> &layers,
     p.bottom = parts[k].bottom;
   }
 
-  if (!compositor_->Begin(target, layers.data(), layers.size()))
-    return false;
+  begun_id_ =
+      compositor_->Queue(target, layers.data(), layers.size(), droppable);
+  begun_droppable_ = droppable;
   begun_at_ = at;
   return true;
 }
 
-std::optional<GpuExecutor::Drawn> GpuExecutor::Finish() {
+std::optional<GpuExecutor::Drawn> GpuExecutor::Finish(bool *dropped) {
+  if (dropped != nullptr)
+    *dropped = false;
   if (!begun_at_)
     return std::nullopt;
   const size_t at = *begun_at_;
   begun_at_.reset();
-  const int fd = compositor_->Finish();
+  const int fd = compositor_->Resolve(begun_id_, !begun_droppable_);
+  if (fd == -2 && dropped != nullptr)
+    *dropped = true;
   if (fd < 0)
     return std::nullopt;
   at_ = at;

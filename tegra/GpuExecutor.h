@@ -64,19 +64,24 @@ class GpuExecutor {
     drm_hwcomposer::SharedFd fence;
   };
 
-  /* Draws `layers`, bottom first, into the next buffer, in two halves:
-   * Begin starts the drawing and returns at once, Finish hands back the
-   * buffer and the fence its drawing signals -- nothing when the library
-   * refused the work, and the buffer's turn is then given back. A Begin
-   * over an unfinished one drops the earlier drawing; nothing was shown of
-   * it, and the buffer's turn was never taken.
+  /* Draws `layers`, bottom first, into the next buffer, through the
+   * engines' job queue: Begin queues the drawing for the library's thread
+   * and returns at once, Finish collects the buffer and the fence its
+   * drawing signals -- nothing when the library refused the work, and the
+   * buffer's turn is then given back. A Begin over an unfinished one gives
+   * the earlier drawing up; nothing was shown of it, and the buffer's turn
+   * was never taken.
    *
    * `parts`, when given, draws only those rectangles of the buffer -- at
    * most vk::Target::kMaxParts, which the redraw's own bound matches -- and
    * keeps the rest as it holds it; see vk::Target. */
   bool Begin(std::vector<vk::Layer> &layers,
-             const drm_hwcomposer::IRect *parts = nullptr, size_t count = 0);
-  std::optional<Drawn> Finish();
+             const drm_hwcomposer::IRect *parts = nullptr, size_t count = 0,
+             bool droppable = false);
+  /* `dropped` says whether a droppable drawing was dropped -- the GPU still
+   * busy with the one before when its frame went up -- rather than
+   * refused; the last picture stands either way. */
+  std::optional<Drawn> Finish(bool *dropped = nullptr);
 
   /* The next buffer already holds the picture wanted: it takes its turn
    * undrawn, to be shown against `fence` -- the one its own drawing came
@@ -127,8 +132,10 @@ class GpuExecutor {
   alloc_device_t *alloc_ = nullptr;
   std::array<Slot, 3> slots_{};
   size_t at_ = 0;
-  /* The buffer a begun drawing goes into, taken at Finish. */
+  /* The buffer a begun drawing goes into, taken at Finish, and its job. */
   std::optional<size_t> begun_at_;
+  uint64_t begun_id_ = 0;
+  bool begun_droppable_ = false;
   size_t showing_ = 0;
   bool anything_showing_ = false;
 
