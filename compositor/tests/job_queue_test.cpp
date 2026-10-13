@@ -154,6 +154,19 @@ void TestRefusedAndCancelled() {
   CHECK(q.Resolve(next, true).state == State::kCancelled);
 }
 
+/* A worker that cannot wait: nothing when nothing is queued, the job when
+ * one is, and nothing for one dropped before it looked. */
+void TestTryTake() {
+  Queue q;
+  CHECK(!q.TryTake().has_value());
+  const auto a = q.Queue(Job{1, nullptr}, true);
+  q.Queue(Job{2, nullptr}, true);
+  auto taken = q.TryTake();
+  CHECK(taken && taken->second.frame == 2);
+  CHECK(q.Resolve(a, true).state == State::kDropped);
+  CHECK(!q.TryTake().has_value());
+}
+
 /* Stopping answers the worker and whoever waits, and lets jobs go. */
 void TestStop() {
   Queue q;
@@ -213,6 +226,7 @@ int main() {
   TestNotTwiceInARow();
   TestResolveWithoutWaiting();
   TestRefusedAndCancelled();
+  TestTryTake();
   TestStop();
   TestRace();
   if (failures == 0)

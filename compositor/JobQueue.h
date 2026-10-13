@@ -101,16 +101,20 @@ class JobQueue {
     for (;;) {
       if (stopped_)
         return std::nullopt;
-      for (Entry &e : entries_) {
-        if (e.state != State::kQueued)
-          continue;
-        e.state = State::kSubmitting;
-        std::pair<Id, Job> taken{e.id, std::move(*e.job)};
-        e.job.reset();
+      if (auto taken = TakeLocked())
         return taken;
-      }
       changed_.wait(lock);
     }
+  }
+
+  /* The same for a worker with other work of its own to get on with: the
+   * oldest queued job if there is one, nothing otherwise -- a job dropped
+   * in the meantime is simply not there. */
+  std::optional<std::pair<Id, Job>> TryTake() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopped_)
+      return std::nullopt;
+    return TakeLocked();
   }
 
   /* The worker's side: how the job it took went. */
@@ -209,6 +213,18 @@ class JobQueue {
     std::optional<Result> result;
     bool cancelled = false;
   };
+
+  std::optional<std::pair<Id, Job>> TakeLocked() {
+    for (Entry &e : entries_) {
+      if (e.state != State::kQueued)
+        continue;
+      e.state = State::kSubmitting;
+      std::pair<Id, Job> taken{e.id, std::move(*e.job)};
+      e.job.reset();
+      return taken;
+    }
+    return std::nullopt;
+  }
 
   Entry *Find(Id id) {
     for (Entry &e : entries_)
