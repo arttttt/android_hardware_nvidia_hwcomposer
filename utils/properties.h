@@ -48,6 +48,12 @@ class Properties {
    * comparing. */
   static auto PartialRedraw() -> bool;
 
+  /* Whether the composer times its own steps for the dump -- the planning,
+   * the engine's merges, the description of buffers. Off unless asked: a
+   * clock read here is a system call on this kernel, and a frame that is
+   * not being looked at should not pay for being measured. */
+  static auto Statistics() -> bool;
+
   /* Whether the pipeline's resting state corrects the panel's gamut toward
    * sRGB rather than showing the panel as it is. */
   static auto CalibratedColorMode() -> bool;

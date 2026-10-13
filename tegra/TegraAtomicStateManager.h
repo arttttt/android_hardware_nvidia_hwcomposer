@@ -567,6 +567,8 @@ class TegraAtomicStateManager : public AtomicStateManager {
     uint64_t held_full_pixels = 0;
     uint64_t held_full_group_pixels = 0;
     uint64_t passes = 0;
+    /* Frames whose parts the engine refused, drawn whole instead. */
+    uint64_t parts_refused = 0;
   };
   FenceCounters fences_;
   MergeCounters merges_;
@@ -637,7 +639,7 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * the others. A slot whose drawing went wrong -- refused, or never
    * shown -- is drawn whole next time. Off with vendor.hwc.partial=0, read
    * once. */
-  partial::SlotPictures slot_pictures_{partial::Engine{false, true, false}};
+  partial::SlotPictures slot_pictures_{partial::Engine{true, true, false}};
   bool partial_ = true;
 
   /* Puts the frame's colour transform into the head's colour pipeline, or
@@ -697,9 +699,6 @@ class TegraAtomicStateManager : public AtomicStateManager {
 
   /* The fence the previous flip returned. */
   SharedFd previous_post_fence_;
-
-  /* When the last flip was posted. Diagnostic only, read by the trace. */
-  int64_t last_flip_ns_ = 0;
 
   /* A copy of the fence given to the client, and the moment it was given.
    * Kept so that a later frame can ask how long it actually took to come due:

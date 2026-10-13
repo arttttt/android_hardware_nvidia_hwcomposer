@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 
 
@@ -428,9 +429,25 @@ drm_hwcomposer::SharedFd VicSession::ComposeInto(
         static_cast<int32_t>(width), static_cast<int32_t>(height));
     drm_hwcomposer::IRect lands{placed.left, placed.top, placed.right,
                                 placed.bottom};
-    if (bounded &&
-        !drm_hwcomposer::partial::ClipTo(bound, &read, &lands))
-      continue;
+    if (bounded) {
+      const bool meets = lands.left < bound.right && bound.left < lands.right &&
+                         lands.top < bound.bottom && bound.top < lands.bottom;
+      if (!meets)
+        continue;
+      /* A member read at its own size is cut to the rectangle exactly. A
+       * scaled one is not cut: the filter would read its new edge from
+       * a shifted phase and clamp at it, and a seam would show where two
+       * parts meet. It is described whole, as the whole buffer would draw
+       * it, and the target rectangle alone keeps the engine's writes
+       * inside the part -- every pixel there sampled exactly as before. */
+      const bool scaled =
+          std::fabs((read.right - read.left) -
+                    static_cast<float>(lands.right - lands.left)) >= 0.01F ||
+          std::fabs((read.bottom - read.top) -
+                    static_cast<float>(lands.bottom - lands.top)) >= 0.01F;
+      if (!scaled && !drm_hwcomposer::partial::ClipTo(bound, &read, &lands))
+        continue;
+    }
 
     const NvRectF32 source = {
         .left = read.left,

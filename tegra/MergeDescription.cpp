@@ -69,6 +69,10 @@ std::vector<governor::Member> DescribeMembers(const Merge &merge) {
   return members;
 }
 
+bool CalibrationWanted() {
+  return ATRACE_ENABLED();
+}
+
 void MarkSteeringForCalibration(const drm_hwcomposer::FrameNote &note,
                                 size_t merge_width, uint64_t seq) {
   if (!ATRACE_ENABLED() || note.runs.empty() || merge_width == 0)

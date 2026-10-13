@@ -107,8 +107,11 @@ class Hwc2DeviceDisplay : public FrontendDisplayBase {
  */
 class SayIfSlow {
  public:
+  /* Nothing is timed unless the log is on: there is nowhere else the
+   * answer goes. */
   explicit SayIfSlow(const char *what)
-      : what_(what), entered_ns_(GetTimeMonotonicNs()) {
+      : what_(what),
+        entered_ns_(hwc::LoggingWanted() ? GetTimeMonotonicNs() : 0) {
   }
 
   ~SayIfSlow() {
@@ -116,6 +119,8 @@ class SayIfSlow {
      * the frame it belongs to; above it, it is a share worth naming. */
     constexpr int64_t kWorthSaying = 4000000;
 
+    if (entered_ns_ == 0)
+      return;
     const int64_t spent = GetTimeMonotonicNs() - entered_ns_;
     if (spent > kWorthSaying) {
       HWC_LOGD("%s took %" PRId64 "us", what_, spent / 1000);
@@ -1044,9 +1049,10 @@ static int32_t PresentDisplay(hwc2_device_t *device, hwc2_display_t display,
    * doing something are different answers to "where did the frame go". The
    * lock is the composer's one door: every call the client makes goes through
    * it, and one that is already inside holds up the rest. */
-  const int64_t before_lock = GetTimeMonotonicNs();
+  const bool lock_timed = hwc::LoggingWanted();
+  const int64_t before_lock = lock_timed ? GetTimeMonotonicNs() : 0;
   LOCK_COMPOSER(device);
-  const int64_t waited = GetTimeMonotonicNs() - before_lock;
+  const int64_t waited = lock_timed ? GetTimeMonotonicNs() - before_lock : 0;
   if (waited > 1000000) {
     HWC_LOGD("present waited %" PRId64 "us for the composer lock",
              waited / 1000);

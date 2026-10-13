@@ -33,6 +33,7 @@
 #include "hwc/HwcLayer.h"
 #include "utils/Logging.h"
 #include "utils/log.h"
+#include "utils/properties.h"
 
 namespace android::drm_hwcomposer {
 
@@ -57,9 +58,14 @@ auto GenericCompositionPlanner::ValidateDisplay(
   /* Counted whole, from any exit, which is what the destructor buys. */
   struct Timed {
     GenericCompositionPlanner* planner;
-    std::chrono::steady_clock::time_point began = std::chrono::steady_clock::
-        now();
+    /* For the dump only, and only when it is asked to. */
+    bool timed = Properties::Statistics();
+    std::chrono::steady_clock::time_point began =
+        timed ? std::chrono::steady_clock::now()
+              : std::chrono::steady_clock::time_point{};
     ~Timed() {
+      if (!timed)
+        return;
       planner->RecordValidation(static_cast<uint64_t>(
           std::chrono::duration_cast<std::chrono::microseconds>(
               std::chrono::steady_clock::now() - began)
@@ -106,13 +112,17 @@ auto GenericCompositionPlanner::ValidateDisplay(
                            reusable->flatten_reason == FlattenReason::kNone;
 
     if (invalidators == 0 && have_plan) {
-      const auto copy_began = std::chrono::steady_clock::now();
+      const bool timed = Properties::Statistics();
+      const auto copy_began = timed ? std::chrono::steady_clock::now()
+                                    : std::chrono::steady_clock::time_point{};
       ValidationResult result{.composition = *reusable,
                               .short_circuited = true};
-      const auto copy_us = static_cast<uint64_t>(
-          std::chrono::duration_cast<std::chrono::microseconds>(
-              std::chrono::steady_clock::now() - copy_began)
-              .count());
+      const auto copy_us =
+          timed ? static_cast<uint64_t>(
+                      std::chrono::duration_cast<std::chrono::microseconds>(
+                          std::chrono::steady_clock::now() - copy_began)
+                          .count())
+                : 0;
       for (ValidationStats* stats : {&lifetime_, &interval_}) {
         stats->reused.fetch_add(1, std::memory_order_relaxed);
         stats->reuse_copy_us.fetch_add(copy_us, std::memory_order_relaxed);

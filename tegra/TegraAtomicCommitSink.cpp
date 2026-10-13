@@ -114,13 +114,14 @@ TegraAtomicCommitSink::ExecuteAtomicCommit(
   /* Describing the frame and carrying it out, timed apart. Everything above
    * here has been measured and costs nothing; the composer's own work at the
    * bottom is about a millisecond, and this whole call is five. What is
-   * between those two is this. */
-  const int64_t before_build = GetTimeMonotonicNs();
+   * between those two is this -- when the log is on, where it is said. */
+  const bool timed = ::android::hwc::LoggingWanted();
+  const int64_t before_build = timed ? GetTimeMonotonicNs() : 0;
 
   if (!BuildRequests(args, &requests))
     return CommitStatusOr<Results>(CommitStatus::InternalFailure());
 
-  const int64_t after_build = GetTimeMonotonicNs();
+  const int64_t after_build = timed ? GetTimeMonotonicNs() : 0;
 
   if (requests.empty()) {
     ALOGD("Committing no input, success.");
@@ -149,7 +150,7 @@ TegraAtomicCommitSink::ExecuteAtomicCommit(
     results.emplace_back(state_manager, std::move(result));
   }
 
-  const int64_t after_execute = GetTimeMonotonicNs();
+  const int64_t after_execute = timed ? GetTimeMonotonicNs() : 0;
   if (after_execute - before_build > 3000000) {
     HWC_LOGD("slow execute: describing %" PRId64 "us, carrying out %" PRId64
              "us",

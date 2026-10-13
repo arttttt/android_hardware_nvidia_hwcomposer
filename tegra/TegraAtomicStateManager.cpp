@@ -57,6 +57,7 @@
 #include "utils/fence.h"
 #include "utils/Logging.h"
 #include "utils/log.h"
+#include "utils/properties.h"
 
 namespace android::drm_hwcomposer {
 
@@ -672,6 +673,18 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
                      : static_cast<int32_t>(modes_.front().GetRawMode()
                                                 .vdisplay);
 
+  /* The frame's record has readers only when one is looking: the ring, the
+   * calibration lines in a trace, a capture's words. Otherwise it is not
+   * kept -- the walk below still fills a row, but one thrown away, so no
+   * frame allocates for a record nobody reads. */
+  using hwc::PictureCapture;
+  const bool noted =
+      RingWanted() || hwc::CalibrationWanted() ||
+      PictureCapture::Wanted(PictureCapture::Source::kFrame) ||
+      PictureCapture::Wanted(PictureCapture::Source::kMerge) ||
+      PictureCapture::Wanted(PictureCapture::Source::kMergeTurned);
+  FrameNote::Row unnoted{};
+
   if (args.composition) {
     /* The frame's record is filled as the layers are walked: each layer's
      * seat, alpha, scale and landing place, beside the plan's own verdict.
@@ -681,6 +694,8 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
     note.chosen_run = static_cast<uint32_t>(args.composition->chosen_run);
     note.run_len = static_cast<uint32_t>(args.composition->run_len);
     for (const auto &run : args.composition->runs) {
+      if (!noted)
+        break;
       FrameNote::Run &r = note.runs.emplace_back();
       r.begin = static_cast<uint32_t>(run.begin);
       r.live = static_cast<uint32_t>(run.live);
@@ -693,7 +708,7 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
       if (!joining.plane)
         continue;
 
-      FrameNote::Row &row = note.layers.emplace_back();
+      FrameNote::Row &row = noted ? note.layers.emplace_back() : unnoted;
       const LayerData &note_layer = joining.layer;
       if (note_layer.bi) {
         row.id = note_layer.bi->unique_id;
@@ -1312,7 +1327,6 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         plan = slot_pictures_.Decide(target, merge.width, merge.height,
                                      members);
       const bool untouched = plan.kind == partial::Plan::Kind::kUnchanged;
-      const bool in_part = plan.kind == partial::Plan::Kind::kPartial;
       const SharedFd held_fence =
           untouched ? slot_pictures_.Fence(target) : SharedFd{};
       slot_pictures_.Lost(target);
@@ -1320,7 +1334,9 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       if (composition_governor_ != nullptr && !untouched)
         hwc::MarkMergeForCalibration(merge, planned_seq_);
 
-      const int64_t before_merge = GetTimeMonotonicNs();
+      /* Timed for the dump only, and only when it is asked to. */
+      const bool timed = Properties::Statistics();
+      const int64_t before_merge = timed ? GetTimeMonotonicNs() : 0;
       /* A slot that already holds the picture is shown as it stands, against
        * the fence its drawing came due on: nothing is written, so the
        * display reading it at the same time is no hazard. */
@@ -1342,6 +1358,18 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
           if (!merged)
             break;
           merges_.passes++;
+        }
+        /* A part the engine would not take -- a scaled member described
+         * whole past its edge is the one way it can come to that -- is no
+         * reason to drop the frame: the buffer is drawn whole instead, and
+         * remembered as drawn whole. */
+        if (!merged) {
+          merges_.parts_refused++;
+          plan = partial::Plan{};
+          merged = vic_->Compose(*target->vendor, merge.layers, merge.width,
+                                 merge.height,
+                                 target_ready ? *target_ready : -1,
+                                 group_code);
         }
       }
       if (!merged) {
@@ -1393,10 +1421,10 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       slot_pictures_.Drawn(target, merge.width, merge.height,
                            std::move(members), plan, merged);
 
-      const int64_t took = GetTimeMonotonicNs() - before_merge;
+      const int64_t took = timed ? GetTimeMonotonicNs() - before_merge : 0;
       const uint64_t group_pixels =
           static_cast<uint64_t>(merge.width) * merge.height;
-      if (in_part) {
+      if (plan.kind == partial::Plan::Kind::kPartial) {
         merges_.partial++;
         merges_.partial_pixels += partial::Area(plan.parts);
         merges_.partial_group_pixels += group_pixels;
@@ -1511,7 +1539,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
     }
   }
 
-  const int64_t before_flip = GetTimeMonotonicNs();
+  const bool flip_timed = ::android::hwc::LoggingWanted();
+  const int64_t before_flip = flip_timed ? GetTimeMonotonicNs() : 0;
 
   hwc::UniqueFd post_fence;
   int err = head_.flip(windows, &post_fence);
@@ -1626,13 +1655,11 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   /* Only when the flip did not fit comfortably inside a refresh -- the
    * rest is the ordinary case and says nothing. */
   constexpr int64_t kWorthSaying = 3000000;
-  const int64_t after_flip = GetTimeMonotonicNs();
+  const int64_t after_flip = flip_timed ? GetTimeMonotonicNs() : 0;
   if (after_flip - before_flip > kWorthSaying) {
     HWC_LOGD("slow present: flip %" PRId64 "us",
              (after_flip - before_flip) / 1000);
   }
-
-  last_flip_ns_ = before_flip;
 
   /* Which flip's fence goes back to the framework.
    *
@@ -1903,8 +1930,9 @@ std::string TegraAtomicStateManager::DumpState() {
                  ? m.held_full_pixels * 100 / m.held_full_group_pixels
                  : 0)
          << "% of group)\n";
-    if (m.passes != 0)
-      ss << "  passes for parts        : " << m.passes << "\n";
+    if (m.passes != 0 || m.parts_refused != 0)
+      ss << "  passes for parts        : " << m.passes << ", refused "
+         << m.parts_refused << "\n";
     if (scratch_ != nullptr)
       ss << "  scratch pool            : " << scratch_->source_name()
          << " (" << scratch_->width() << "x" << scratch_->height() << ")\n"

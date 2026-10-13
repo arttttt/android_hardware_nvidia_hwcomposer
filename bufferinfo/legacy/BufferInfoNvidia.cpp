@@ -31,6 +31,7 @@
 #include "bufferinfo/NvGralloc.h"
 #include "utils/Logging.h"
 #include "utils/log.h"
+#include "utils/properties.h"
 
 /* How this hardware arranges memory, said in the way everything else says it.
  *
@@ -134,8 +135,13 @@ auto BufferInfoNvidia::GetBoInfo(buffer_handle_t handle)
   bi.prime_fds[0] = fd;
   bi.unique_id = unique_id;
 
-  const auto asked_at = std::chrono::steady_clock::now();
-  const auto MicrosSince = [asked_at]() -> uint64_t {
+  /* Timed for the dump only, and only when it is asked to. */
+  const bool timed = Properties::Statistics();
+  const auto asked_at = timed ? std::chrono::steady_clock::now()
+                              : std::chrono::steady_clock::time_point{};
+  const auto MicrosSince = [timed, asked_at]() -> uint64_t {
+    if (!timed)
+      return 0;
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - asked_at)
