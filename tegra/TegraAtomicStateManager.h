@@ -698,9 +698,6 @@ class TegraAtomicStateManager : public AtomicStateManager {
   /* The fence the previous flip returned. */
   SharedFd previous_post_fence_;
 
-  /* When the last flip was posted. Diagnostic only, read by the trace. */
-  int64_t last_flip_ns_ = 0;
-
   /* A copy of the fence given to the client, and the moment it was given.
    * Kept so that a later frame can ask how long it actually took to come due:
    * a fence handed out as this frame's and coming due two frames later is a

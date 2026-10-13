@@ -182,6 +182,12 @@ auto Properties::PartialRedraw() -> bool {
   return wanted;
 }
 
+auto Properties::Statistics() -> bool {
+  /* Off unless asked; read once, at the composer's start. */
+  static const bool wanted = property_get_bool("vendor.hwc.stats", 0) != 0;
+  return wanted;
+}
+
 auto Properties::CmuColorPipeline() -> bool {
   /* On unless told otherwise. Off unclaims the skip capability and idles
    * the colour pipeline in one move -- the framework tints in GL again, as

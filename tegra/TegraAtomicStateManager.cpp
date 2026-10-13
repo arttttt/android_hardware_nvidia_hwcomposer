@@ -57,6 +57,7 @@
 #include "utils/fence.h"
 #include "utils/Logging.h"
 #include "utils/log.h"
+#include "utils/properties.h"
 
 namespace android::drm_hwcomposer {
 
@@ -1320,7 +1321,9 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       if (composition_governor_ != nullptr && !untouched)
         hwc::MarkMergeForCalibration(merge, planned_seq_);
 
-      const int64_t before_merge = GetTimeMonotonicNs();
+      /* Timed for the dump only, and only when it is asked to. */
+      const bool timed = Properties::Statistics();
+      const int64_t before_merge = timed ? GetTimeMonotonicNs() : 0;
       /* A slot that already holds the picture is shown as it stands, against
        * the fence its drawing came due on: nothing is written, so the
        * display reading it at the same time is no hazard. */
@@ -1393,7 +1396,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       slot_pictures_.Drawn(target, merge.width, merge.height,
                            std::move(members), plan, merged);
 
-      const int64_t took = GetTimeMonotonicNs() - before_merge;
+      const int64_t took = timed ? GetTimeMonotonicNs() - before_merge : 0;
       const uint64_t group_pixels =
           static_cast<uint64_t>(merge.width) * merge.height;
       if (in_part) {
@@ -1511,7 +1514,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
     }
   }
 
-  const int64_t before_flip = GetTimeMonotonicNs();
+  const bool flip_timed = ::android::hwc::LoggingWanted();
+  const int64_t before_flip = flip_timed ? GetTimeMonotonicNs() : 0;
 
   hwc::UniqueFd post_fence;
   int err = head_.flip(windows, &post_fence);
@@ -1626,13 +1630,11 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
   /* Only when the flip did not fit comfortably inside a refresh -- the
    * rest is the ordinary case and says nothing. */
   constexpr int64_t kWorthSaying = 3000000;
-  const int64_t after_flip = GetTimeMonotonicNs();
+  const int64_t after_flip = flip_timed ? GetTimeMonotonicNs() : 0;
   if (after_flip - before_flip > kWorthSaying) {
     HWC_LOGD("slow present: flip %" PRId64 "us",
              (after_flip - before_flip) / 1000);
   }
-
-  last_flip_ns_ = before_flip;
 
   /* Which flip's fence goes back to the framework.
    *

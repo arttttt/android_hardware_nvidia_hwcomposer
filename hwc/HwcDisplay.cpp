@@ -1909,17 +1909,19 @@ AtomicCommitArgs HwcDisplay::CreateModesetCommit(
 
 CommitStatusOr<AtomicCommitResult> HwcDisplay::ExecuteAtomicCommit(
     AtomicCommitArgs &a_args) const {
-  const int64_t commit_start_time = GetTimeMonotonicNs();
+  // Log successful modesets (seamless and full), including teardowns. Only
+  // those are timed: an ordinary frame has nothing to log.
+  const bool is_config_change = a_args.display_mode || a_args.power_mode ||
+                                a_args.teardown;
+  const int64_t commit_start_time =
+      is_config_change ? GetTimeMonotonicNs() : 0;
   const auto status_or_result = GetPipe()
                                     .device->GetAtomicCommitSink()
                                     .ExecuteAtomicCommit(
                                         {{GetPipe().atomic_state_manager.get(),
                                           a_args}});
-  const int64_t commit_end_time = GetTimeMonotonicNs();
+  const int64_t commit_end_time = is_config_change ? GetTimeMonotonicNs() : 0;
 
-  // Log successful modesets (seamless and full), including teardowns.
-  const bool is_config_change = a_args.display_mode || a_args.power_mode ||
-                                a_args.teardown;
   if (is_config_change) {
     LogConfigResult(a_args, status_or_result.IsSuccess(),
                     commit_end_time - commit_start_time);
@@ -2302,8 +2304,10 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
    * is known to lose several milliseconds somewhere among them: the composer's
    * own work at the bottom -- posting the flip -- has been timed at about
    * one, and the lock is never waited on. Timed apart
-   * so the answer names a step rather than a range. */
-  const int64_t t0 = GetTimeMonotonicNs();
+   * so the answer names a step rather than a range -- when the log is on,
+   * the only place the answer goes. */
+  const bool timed = hwc::LoggingWanted();
+  const int64_t t0 = timed ? GetTimeMonotonicNs() : 0;
 
   const bool gpu_drew = validated_composition_->gpu_draws_client &&
                         DrawClientOnGpu(validated_composition_.value());
@@ -2311,10 +2315,10 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
   if (!validated_composition_->gpu_draws_client)
     gpu_memory_.Forget();
   PrepareCompositionForCommit(validated_composition_.value());
-  const int64_t t1 = GetTimeMonotonicNs();
+  const int64_t t1 = timed ? GetTimeMonotonicNs() : 0;
 
   auto a_args = CreateFrameUpdateCommit(validated_composition_.value());
-  const int64_t t2 = GetTimeMonotonicNs();
+  const int64_t t2 = timed ? GetTimeMonotonicNs() : 0;
 
   if (a_args && !staged_composition_reused_) {
     /* A reused composition IS the kept plan -- writing it back would copy a
@@ -2356,7 +2360,7 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
     return status_or_result.GetStatus();
   }
 
-  const int64_t t3 = GetTimeMonotonicNs();
+  const int64_t t3 = timed ? GetTimeMonotonicNs() : 0;
 
   out_present_fence = result->present_fence;
   if (gpu_drew)
@@ -2371,7 +2375,7 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
 
   ApplyCommitChanges(*a_args, result.value());
 
-  const int64_t t4 = GetTimeMonotonicNs();
+  const int64_t t4 = timed ? GetTimeMonotonicNs() : 0;
   if (t4 - t0 > 3000000) {
     HWC_LOGX("slow commit: prepare %" PRId64 "us, describe %" PRId64
              "us, execute %" PRId64 "us, apply %" PRId64 "us",
