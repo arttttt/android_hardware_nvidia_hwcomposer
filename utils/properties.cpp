@@ -184,6 +184,13 @@ auto Properties::PartialRedraw() -> bool {
   return wanted;
 }
 
+auto Properties::DropShadow() -> bool {
+  /* Off unless asked; read once, at the composer's start. */
+  static const bool wanted =
+      property_get_bool("vendor.hwc.dropshadow", 0) != 0;
+  return wanted;
+}
+
 auto Properties::VicWorker() -> bool {
   /* On unless told otherwise; read once, at the composer's start. */
   static const bool wanted =

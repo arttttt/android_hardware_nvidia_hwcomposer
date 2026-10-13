@@ -58,6 +58,13 @@ bool CalibrationWanted();
  * it drew shown again: "hwc_drop <engine>". Nothing if tracing is off. */
 void MarkDropped(const char *engine);
 
+/* One trace moment for the drop oracle's verdict on a job just queued:
+ * "hwc_judge <engine> late=L kpx=P pred=Tus dl=Dus" -- whether it would be
+ * late, its pixels in thousands, the predicted time to its end and the time
+ * left to the latch. Nothing if tracing is off. */
+void MarkJudged(const char *engine, bool late, uint64_t pixels,
+                int64_t predicted_ns, int64_t deadline_ns);
+
 void MarkSteeringForCalibration(const drm_hwcomposer::FrameNote &note,
                                 size_t merge_width, uint64_t seq);
 

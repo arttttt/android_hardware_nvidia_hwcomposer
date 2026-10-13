@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <deque>
 #include <optional>
 #include <string>
 #include <utility>
@@ -28,6 +29,7 @@
 #include <ui/ColorSpace.h>
 #include <ui/GraphicTypes.h>
 
+#include "compositor/DropOracle.h"
 #include "compositor/PartialRedraw.h"
 #include "compositor/PictureMemory.h"
 #include "compositor/CompositionPlanner.h"
@@ -568,6 +570,16 @@ class HwcDisplay : public ICompositorDisplay {
   std::vector<PictureMemory::Member> gpu_pending_;
   SharedFd gpu_drawn_fence_;
   uint64_t gpu_dropped_ = 0;
+
+  /* Judging the executor's jobs in the shadow; see DropOracle. The verdict
+   * on the job begun, and the fences of those judged and drawn, oldest
+   * first, read for their ends. */
+  DropOracle gpu_oracle_;
+  std::optional<DropOracle::Verdict> gpu_verdict_;
+  int64_t gpu_queued_ns_ = 0;
+  uint64_t gpu_pixels_ = 0;
+  std::deque<SharedFd> gpu_judged_fences_;
+  void ScoreJudgedGpu();
   /* What each of the executor's buffers holds, so the next one is drawn
    * only where its picture differs -- or not at all, and kept, when it
    * already holds it; see compositor/PartialRedraw.h. The plan for the

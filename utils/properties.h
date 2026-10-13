@@ -58,6 +58,12 @@ class Properties {
    * of its own, rather than done on the binder thread at present. */
   static auto VicWorker() -> bool;
 
+  /* Whether each engine job is judged, as it is queued, for whether it
+   * will be done before the panel takes its frame -- and the verdict
+   * scored against what then happened, for the dump. Judged only: nothing
+   * is dropped for it. */
+  static auto DropShadow() -> bool;
+
   /* Whether the pipeline's resting state corrects the panel's gamut toward
    * sRGB rather than showing the panel as it is. */
   static auto CalibratedColorMode() -> bool;

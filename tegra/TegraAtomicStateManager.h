@@ -18,6 +18,7 @@
 
 #include <cutils/native_handle.h>
 
+#include <deque>
 #include <map>
 #include <memory>
 #include <optional>
@@ -27,6 +28,7 @@
 
 #include "display/AtomicStateManager.h"
 #include "display/DrmMode.h"
+#include "compositor/DropOracle.h"
 #include "compositor/JobQueue.h"
 #include "compositor/LayerData.h"
 #include "compositor/PartialRedraw.h"
@@ -320,6 +322,7 @@ class TegraAtomicStateManager : public AtomicStateManager {
     cmu_ctm_ = CmuFromProperty();
     calibrated_home_ = Properties::CalibratedColorMode();
     vic_worker_wanted_ = Properties::VicWorker();
+    drop_shadow_ = Properties::DropShadow();
   }
 
   ~TegraAtomicStateManager() override {
@@ -706,9 +709,22 @@ class TegraAtomicStateManager : public AtomicStateManager {
     /* Whether the window may show the last group drawn instead, should the
      * engine still be busy with that one when this frame goes up. */
     bool droppable = false;
+    /* The oracle's verdict on the job, when it is asked. */
+    std::optional<DropOracle::Verdict> verdict;
+    int64_t queued_ns = 0;
+    uint64_t pixels = 0;
   };
   std::optional<PendingMerge> pending_merge_;
   bool vic_worker_wanted_ = true;
+
+  /* Judging the engine's jobs in the shadow; see DropOracle. The fences of
+   * the jobs judged and handed over, oldest first, read for their ends. */
+  bool drop_shadow_ = false;
+  DropOracle vic_oracle_;
+  std::deque<SharedFd> vic_judged_fences_;
+  void ScoreJudgedMerges();
+  /* The panel's next latch after `now_ns`, from the last one seen. */
+  int64_t NextLatchNs(int64_t now_ns) const;
 
   /* At a test the controller accepted: queue the group's drawing. */
   void QueueMerge(const TegraAtomicRequest &tegra);

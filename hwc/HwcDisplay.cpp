@@ -75,6 +75,7 @@
 #include "stats/DisplayConfigurationResultReporter.h"
 #include "tegra/GpuExecutor.h"
 #include "tegra/MergeDescription.h"
+#include "utils/fence.h"
 #include "tegra/PictureCapture.h"
 #include "stats/DisplayHotplugConnectModeDetectedAtomReporter.h"
 #include "stats/Stats.h"
@@ -473,6 +474,18 @@ void HwcDisplay::BeginClientOnGpu(
   if (count == 0)
     pixels = static_cast<uint64_t>(size.first) * size.second;
   GetPipe().atomic_state_manager->GpuPlanned(static_cast<uint32_t>(pixels));
+  gpu_verdict_.reset();
+  if (Properties::DropShadow() && vsync_worker_) {
+    ScoreJudgedGpu();
+    gpu_queued_ns_ = GetTimeMonotonicNs();
+    gpu_pixels_ = pixels;
+    gpu_verdict_ = gpu_oracle_.Judge(
+        gpu_queued_ns_, vsync_worker_->GetNextVsyncTimestamp(gpu_queued_ns_),
+        pixels);
+    hwc::MarkJudged("gpu", gpu_verdict_->late, pixels,
+                    gpu_verdict_->predicted_end_ns - gpu_queued_ns_,
+                    gpu_verdict_->deadline_ns - gpu_queued_ns_);
+  }
   /* Droppable once there is a picture to show instead: the GPU still busy
    * with the drawing before when this frame goes up, the executor shows
    * that one again rather than queue this behind it. */
@@ -573,6 +586,11 @@ bool HwcDisplay::DrawClientOnGpu(
    * GPU's clock is held for. */
   if (!keep)
     GetPipe().atomic_state_manager->GpuSubmitted(drawn->fence);
+  if (!keep && gpu_verdict_) {
+    gpu_oracle_.Track(*gpu_verdict_, gpu_queued_ns_, gpu_pixels_);
+    gpu_judged_fences_.push_back(drawn->fence);
+    gpu_verdict_.reset();
+  }
   const auto size = GetSize();
   gpu_slots_.Drawn(slot, size.first, size.second, gpu_pending_, gpu_plan_,
                    drawn->fence);
@@ -2294,7 +2312,25 @@ std::string HwcDisplay::DumpGroupSelector() const {
 std::string HwcDisplay::DumpGpuDrops() const {
   std::stringstream ss;
   ss << "GPU executor              : dropped " << gpu_dropped_;
+  if (Properties::DropShadow())
+    ss << "\n  drop oracle             : " << gpu_oracle_.Describe();
   return ss.str();
+}
+
+void HwcDisplay::ScoreJudgedGpu() {
+  /* In order: a later drawing cannot end before an earlier one on the same
+   * queue, so the first one not yet due holds the rest. */
+  while (!gpu_judged_fences_.empty()) {
+    const auto end = SignalTimeNs(gpu_judged_fences_.front());
+    if (!end) {
+      if (QueryFence(gpu_judged_fences_.front()) == FenceState::kPending)
+        return;
+      gpu_oracle_.Lost();
+    } else {
+      gpu_oracle_.Ended(*end);
+    }
+    gpu_judged_fences_.pop_front();
+  }
 }
 
 std::string HwcDisplay::DumpColorBridge() const {

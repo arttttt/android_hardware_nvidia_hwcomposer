@@ -234,13 +234,6 @@ int ForcedWindowTransform() {
   return property_get_int32("vendor.hwc.test.wintransform", -1);
 }
 
-/* When a fence came due, or nothing if it has not yet.
- *
- * Read rather than waited on: the question is whether it was due by a given
- * moment, and waiting to find out would change the answer. The time is the
- * fence's own, so it says when the hardware finished rather than when this
- * thread got round to asking.
- */
 /* Has this fence come due yet?
  *
  * Separate from SignalTimeNs, which answers "not yet" and "could not ask" with
@@ -260,30 +253,6 @@ Due FenceDue(const SharedFd &fence) {
     default:
       return Due::kCouldNotAsk;
   }
-}
-
-std::optional<int64_t> SignalTimeNs(const SharedFd &fence) {
-  if (!fence)
-    return std::nullopt;
-
-  struct sync_file_info *info = sync_file_info(*fence);
-  if (info == nullptr)
-    return std::nullopt;
-
-  if (info->status != 1) {
-    sync_file_info_free(info);
-    return std::nullopt;
-  }
-
-  int64_t latest = 0;
-  struct sync_fence_info *each = sync_get_fence_info(info);
-  for (size_t i = 0; i < info->num_fences; i++) {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-    latest = std::max(latest, static_cast<int64_t>(each[i].timestamp_ns));
-  }
-
-  sync_file_info_free(info);
-  return latest;
 }
 
 uint32_t BlendFor(BufferBlendMode mode) {
@@ -1115,8 +1084,35 @@ void TegraAtomicStateManager::DropPendingMerge() {
   merges_.queued_given_up++;
 }
 
+int64_t TegraAtomicStateManager::NextLatchNs(int64_t now_ns) const {
+  if (period_ns_ <= 0)
+    return now_ns;
+  if (last_latch_ns_ <= 0 || last_latch_ns_ > now_ns)
+    return now_ns + period_ns_;
+  const int64_t periods = (now_ns - last_latch_ns_) / period_ns_ + 1;
+  return last_latch_ns_ + periods * period_ns_;
+}
+
+void TegraAtomicStateManager::ScoreJudgedMerges() {
+  /* In order: a later job cannot end before an earlier one on the same
+   * engine, so the first one not yet due holds the rest. */
+  while (!vic_judged_fences_.empty()) {
+    const auto end = SignalTimeNs(vic_judged_fences_.front());
+    if (!end) {
+      if (QueryFence(vic_judged_fences_.front()) == FenceState::kPending)
+        return;
+      vic_oracle_.Lost();
+    } else {
+      vic_oracle_.Ended(*end);
+    }
+    vic_judged_fences_.pop_front();
+  }
+}
+
 void TegraAtomicStateManager::QueueMerge(const TegraAtomicRequest &tegra) {
   DropPendingMerge();
+  if (drop_shadow_)
+    ScoreJudgedMerges();
   const auto &merge = tegra.GetMerge();
   if (!vic_worker_wanted_ || vic_ == nullptr || scratch_ == nullptr ||
       merge.layers.empty())
@@ -1171,6 +1167,19 @@ void TegraAtomicStateManager::QueueMerge(const TegraAtomicRequest &tegra) {
       default:
         break;
     }
+  }
+
+  if (!pending.untouched && drop_shadow_) {
+    pending.pixels = pending.plan.parts.empty()
+                         ? static_cast<uint64_t>(merge.width) * merge.height
+                         : partial::Area(pending.plan.parts);
+    pending.queued_ns = GetTimeMonotonicNs();
+    pending.verdict = vic_oracle_.Judge(pending.queued_ns,
+                                        NextLatchNs(pending.queued_ns),
+                                        pending.pixels);
+    hwc::MarkJudged("vic", pending.verdict->late, pending.pixels,
+                    pending.verdict->predicted_end_ns - pending.queued_ns,
+                    pending.verdict->deadline_ns - pending.queued_ns);
   }
 
   if (!pending.untouched) {
@@ -1560,6 +1569,12 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
           if (resolved)
             drawn = std::move(*resolved);
           merges_.queued_used++;
+          if (pending_merge_->verdict && drawn.fence) {
+            vic_oracle_.Track(*pending_merge_->verdict,
+                              pending_merge_->queued_ns,
+                              pending_merge_->pixels);
+            vic_judged_fences_.push_back(drawn.fence);
+          }
         } else {
           VicJob job;
           job.target = target->vendor;
@@ -2144,6 +2159,8 @@ std::string TegraAtomicStateManager::DumpState() {
       ss << "  queued at validate      : " << m.queued << ", used "
          << m.queued_used << ", given up " << m.queued_given_up
          << ", dropped " << m.dropped << "\n";
+    if (drop_shadow_)
+      ss << "  drop oracle             : " << vic_oracle_.Describe() << "\n";
     if (scratch_ != nullptr)
       ss << "  scratch pool            : " << scratch_->source_name()
          << " (" << scratch_->width() << "x" << scratch_->height() << ")\n"

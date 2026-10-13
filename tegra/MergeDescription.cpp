@@ -73,6 +73,19 @@ bool CalibrationWanted() {
   return ATRACE_ENABLED();
 }
 
+void MarkJudged(const char *engine, bool late, uint64_t pixels,
+                int64_t predicted_ns, int64_t deadline_ns) {
+  if (!ATRACE_ENABLED())
+    return;
+  char line[112];
+  snprintf(line, sizeof(line),
+           "hwc_judge %s late=%d kpx=%" PRIu64 " pred=%" PRId64
+           "us dl=%" PRId64 "us",
+           engine, late ? 1 : 0, pixels / 1000, predicted_ns / 1000,
+           deadline_ns / 1000);
+  ATRACE_INSTANT(line);
+}
+
 void MarkDropped(const char *engine) {
   if (!ATRACE_ENABLED())
     return;

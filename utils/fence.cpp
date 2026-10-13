@@ -18,6 +18,8 @@
 
 #include <sync/sync.h>
 
+#include <algorithm>
+
 namespace android::drm_hwcomposer {
 
 FenceState QueryFence(int fd) {
@@ -30,6 +32,30 @@ FenceState QueryFence(int fd) {
                                              : FenceState::kPending;
   sync_file_info_free(info);
   return state;
+}
+
+std::optional<int64_t> SignalTimeNs(const SharedFd &fence) {
+  if (!fence)
+    return std::nullopt;
+
+  struct sync_file_info *info = sync_file_info(*fence);
+  if (info == nullptr)
+    return std::nullopt;
+
+  if (info->status != 1) {
+    sync_file_info_free(info);
+    return std::nullopt;
+  }
+
+  int64_t latest = 0;
+  struct sync_fence_info *each = sync_get_fence_info(info);
+  for (size_t i = 0; i < info->num_fences; i++) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    latest = std::max(latest, static_cast<int64_t>(each[i].timestamp_ns));
+  }
+
+  sync_file_info_free(info);
+  return latest;
 }
 
 }  // namespace android::drm_hwcomposer

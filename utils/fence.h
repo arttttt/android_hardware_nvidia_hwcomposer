@@ -16,6 +16,9 @@
 
 #pragma once
 
+#include <cstdint>
+#include <optional>
+
 #include "utils/fd.h"
 
 namespace android::drm_hwcomposer {
@@ -31,5 +34,13 @@ FenceState QueryFence(int fd);
 inline FenceState QueryFence(const SharedFd &fd) {
   return fd ? QueryFence(*fd) : FenceState::kNone;
 }
+
+/* When a fence came due, or nothing if it has not yet.
+ *
+ * Read rather than waited on: the question is whether it was due by a given
+ * moment, and waiting to find out would change the answer. The time is the
+ * fence's own, so it says when the hardware finished rather than when this
+ * thread got round to asking. */
+std::optional<int64_t> SignalTimeNs(const SharedFd &fence);
 
 }  // namespace android::drm_hwcomposer
