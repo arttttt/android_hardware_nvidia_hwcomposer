@@ -730,7 +730,8 @@ class TegraAtomicStateManager : public AtomicStateManager {
   size_t frame_ring_pos_ = 0; /* where the next line goes, once full */
   void NoteFrame(const TegraAtomicRequest &tegra,
                  const std::vector<hwc::DcHead::Window> &windows,
-                 bool merge_reused);
+                 bool merge_reused, const partial::Plan *drawn,
+                 int32_t drawn_x, int32_t drawn_y);
 };
 
 }  // namespace android::drm_hwcomposer

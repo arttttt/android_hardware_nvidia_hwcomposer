@@ -1216,6 +1216,9 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
    * reach the panel: a flip that fails leaves it holding nothing known. */
   const hwc::ScratchPool::Slot *drawn_slot = nullptr;
   partial::Plan drawn_plan;
+  /* Where the drawn buffer's group stands on the panel. */
+  int32_t drawn_x = 0;
+  int32_t drawn_y = 0;
   const auto &merge = tegra.GetMerge();
   if (!merge.layers.empty()) {
     if (vic_ == nullptr || scratch_ == nullptr) {
@@ -1384,7 +1387,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       merged_turned = any_turn;
       last_merge_vendor_ = target->vendor;
       drawn_slot = target;
-      drawn_plan = plan;
+      drawn_x = merge.origin_x;
+      drawn_y = merge.origin_y;
 
       slot_pictures_.Drawn(target, merge.width, merge.height,
                            std::move(members), plan, merged);
@@ -1419,6 +1423,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         if (took > merges_.engine_ns_max)
           merges_.engine_ns_max = took;
       }
+
+      drawn_plan = std::move(plan);
 
       /* Cut from the zone by this composer: there is no allocator to ask,
        * and nothing to ask it -- the buffer is described by what the
@@ -1606,7 +1612,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
 
   /* The frame as it went up: the ring's line is written only here, past
    * every refusal above, so what the ring says was shown was shown. */
-  NoteFrame(tegra, windows, merge_reused);
+  NoteFrame(tegra, windows, merge_reused,
+            drawn_slot != nullptr ? &drawn_plan : nullptr, drawn_x, drawn_y);
 
   /* Said even when the flip failed would be wrong -- nothing is showing that
    * buffer then, and holding it back would cost a frame for nothing. Said
@@ -1772,7 +1779,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
 
 void TegraAtomicStateManager::NoteFrame(
     const TegraAtomicRequest &tegra,
-    const std::vector<hwc::DcHead::Window> &windows, bool merge_reused) {
+    const std::vector<hwc::DcHead::Window> &windows, bool merge_reused,
+    const partial::Plan *drawn, int32_t drawn_x, int32_t drawn_y) {
   if (!RingWanted())
     return;
 
@@ -1791,6 +1799,25 @@ void TegraAtomicStateManager::NoteFrame(
              static_cast<unsigned long long>(row.id), row.seat, row.plane,
              row.blend, row.alpha, row.scale_w, row.scale_h, row.x, row.y);
     line << b;
+  }
+  /* How the engine drew the group's buffer, when it drew one: k for a
+   * slot that already held it, w for the whole buffer, f for a full
+   * drawing by the members' places, p for a partial one -- then where the
+   * group stands on the panel, and each part it drew, a pass apiece, in
+   * the group's own pixels. Enough to lay the parts over a picture of the
+   * panel afterwards; nothing of it is drawn on the panel itself. */
+  if (drawn != nullptr) {
+    const char kind = drawn->kind == partial::Plan::Kind::kUnchanged ? 'k'
+                      : drawn->parts.empty()                         ? 'w'
+                      : drawn->kind == partial::Plan::Kind::kPartial ? 'p'
+                                                                     : 'f';
+    line << " | M" << kind << " @" << drawn_x << "," << drawn_y;
+    for (const IRect &part : drawn->parts) {
+      char b[48];
+      snprintf(b, sizeof(b), " %d,%d,%d,%d", part.left, part.top,
+               part.right, part.bottom);
+      line << b;
+    }
   }
   line << " | W";
   for (const auto &window : windows) {
