@@ -184,6 +184,13 @@ auto Properties::PartialRedraw() -> bool {
   return wanted;
 }
 
+auto Properties::VicWorker() -> bool {
+  /* On unless told otherwise; read once, at the composer's start. */
+  static const bool wanted =
+      property_get_bool("vendor.hwc.vicworker", 1) != 0;
+  return wanted;
+}
+
 auto Properties::Statistics() -> bool {
   /* Off unless asked; read once, at the composer's start. */
   static const bool wanted = property_get_bool("vendor.hwc.stats", 0) != 0;
