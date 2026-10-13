@@ -1327,7 +1327,6 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         plan = slot_pictures_.Decide(target, merge.width, merge.height,
                                      members);
       const bool untouched = plan.kind == partial::Plan::Kind::kUnchanged;
-      const bool in_part = plan.kind == partial::Plan::Kind::kPartial;
       const SharedFd held_fence =
           untouched ? slot_pictures_.Fence(target) : SharedFd{};
       slot_pictures_.Lost(target);
@@ -1359,6 +1358,18 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
           if (!merged)
             break;
           merges_.passes++;
+        }
+        /* A part the engine would not take -- a scaled member described
+         * whole past its edge is the one way it can come to that -- is no
+         * reason to drop the frame: the buffer is drawn whole instead, and
+         * remembered as drawn whole. */
+        if (!merged) {
+          merges_.parts_refused++;
+          plan = partial::Plan{};
+          merged = vic_->Compose(*target->vendor, merge.layers, merge.width,
+                                 merge.height,
+                                 target_ready ? *target_ready : -1,
+                                 group_code);
         }
       }
       if (!merged) {
@@ -1413,7 +1424,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       const int64_t took = timed ? GetTimeMonotonicNs() - before_merge : 0;
       const uint64_t group_pixels =
           static_cast<uint64_t>(merge.width) * merge.height;
-      if (in_part) {
+      if (plan.kind == partial::Plan::Kind::kPartial) {
         merges_.partial++;
         merges_.partial_pixels += partial::Area(plan.parts);
         merges_.partial_group_pixels += group_pixels;
@@ -1919,8 +1930,9 @@ std::string TegraAtomicStateManager::DumpState() {
                  ? m.held_full_pixels * 100 / m.held_full_group_pixels
                  : 0)
          << "% of group)\n";
-    if (m.passes != 0)
-      ss << "  passes for parts        : " << m.passes << "\n";
+    if (m.passes != 0 || m.parts_refused != 0)
+      ss << "  passes for parts        : " << m.passes << ", refused "
+         << m.parts_refused << "\n";
     if (scratch_ != nullptr)
       ss << "  scratch pool            : " << scratch_->source_name()
          << " (" << scratch_->width() << "x" << scratch_->height() << ")\n"
