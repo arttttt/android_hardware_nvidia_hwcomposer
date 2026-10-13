@@ -559,6 +559,14 @@ class TegraAtomicStateManager : public AtomicStateManager {
     uint64_t partial_pixels = 0;
     uint64_t partial_group_pixels = 0;
     uint64_t untouched = 0;
+
+    /* Frames drawn in full but only where their members are and were, how
+     * much of their groups that came to, and the engine passes all the
+     * frames drawn by parts took. */
+    uint64_t held_full = 0;
+    uint64_t held_full_pixels = 0;
+    uint64_t held_full_group_pixels = 0;
+    uint64_t passes = 0;
   };
   FenceCounters fences_;
   MergeCounters merges_;
@@ -629,7 +637,7 @@ class TegraAtomicStateManager : public AtomicStateManager {
    * the others. A slot whose drawing went wrong -- refused, or never
    * shown -- is drawn whole next time. Off with vendor.hwc.partial=0, read
    * once. */
-  partial::SlotPictures slot_pictures_{partial::Engine{}};
+  partial::SlotPictures slot_pictures_{partial::Engine{false, true, false}};
   bool partial_ = true;
 
   /* Puts the frame's colour transform into the head's colour pipeline, or

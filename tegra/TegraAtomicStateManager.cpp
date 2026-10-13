@@ -1145,18 +1145,15 @@ std::string HowDrawn(bool reused, bool drawn, const partial::Plan &plan) {
     return ", group shown from memory";
   if (!drawn)
     return "";
-  switch (plan.kind) {
-    case partial::Plan::Kind::kFull:
-      return ", slot drawn whole";
-    case partial::Plan::Kind::kUnchanged:
-      return ", slot already held it";
-    case partial::Plan::Kind::kPartial:
-      break;
-  }
-  char how[64];
-  snprintf(how, sizeof(how), ", slot drawn in part %d,%d-%d,%d",
-           plan.dirty.left, plan.dirty.top, plan.dirty.right,
-           plan.dirty.bottom);
+  if (plan.kind == partial::Plan::Kind::kUnchanged)
+    return ", slot already held it";
+  if (plan.parts.empty())
+    return ", slot drawn whole";
+  const IRect box = partial::Bounds(plan.parts);
+  char how[96];
+  snprintf(how, sizeof(how), ", slot drawn %s in %zu part(s) within %d,%d-%d,%d",
+           plan.kind == partial::Plan::Kind::kPartial ? "in part" : "in full",
+           plan.parts.size(), box.left, box.top, box.right, box.bottom);
   return how;
 }
 
@@ -1324,12 +1321,26 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       /* A slot that already holds the picture is shown as it stands, against
        * the fence its drawing came due on: nothing is written, so the
        * display reading it at the same time is no hazard. */
-      merged = untouched
-                   ? held_fence
-                   : vic_->Compose(*target->vendor, merge.layers, merge.width,
-                                   merge.height,
-                                   target_ready ? *target_ready : -1,
-                                   group_code, in_part ? &plan.dirty : nullptr);
+      if (untouched) {
+        merged = held_fence;
+      } else if (plan.parts.empty()) {
+        merged = vic_->Compose(*target->vendor, merge.layers, merge.width,
+                               merge.height, target_ready ? *target_ready : -1,
+                               group_code);
+      } else {
+        /* A pass for each part, into the same buffer: each writes its own
+         * rectangle and leaves the rest as it is. The channel runs them in
+         * the order given, so the last one's fence is the buffer's. */
+        for (const IRect &part : plan.parts) {
+          merged = vic_->Compose(*target->vendor, merge.layers, merge.width,
+                                 merge.height,
+                                 target_ready ? *target_ready : -1, group_code,
+                                 &part);
+          if (!merged)
+            break;
+          merges_.passes++;
+        }
+      }
       if (!merged) {
         /* The engine would not take it. Nothing has been written, so the
          * honest thing is to drop the frame rather than show a window
@@ -1379,12 +1390,16 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
                            std::move(members), plan, merged);
 
       const int64_t took = GetTimeMonotonicNs() - before_merge;
+      const uint64_t group_pixels =
+          static_cast<uint64_t>(merge.width) * merge.height;
       if (in_part) {
         merges_.partial++;
-        merges_.partial_pixels += static_cast<uint64_t>(plan.dirty.Width()) *
-                                  static_cast<uint64_t>(plan.dirty.Height());
-        merges_.partial_group_pixels +=
-            static_cast<uint64_t>(merge.width) * merge.height;
+        merges_.partial_pixels += partial::Area(plan.parts);
+        merges_.partial_group_pixels += group_pixels;
+      } else if (!untouched && !plan.parts.empty()) {
+        merges_.held_full++;
+        merges_.held_full_pixels += partial::Area(plan.parts);
+        merges_.held_full_group_pixels += group_pixels;
       }
       /* A slot that already held the picture woke no engine: counted on its
        * own, and kept out of the engine's averages. */
@@ -1855,6 +1870,14 @@ std::string TegraAtomicStateManager::DumpState() {
                  ? m.partial_pixels * 100 / m.partial_group_pixels
                  : 0)
          << "% of group), slot already held it " << m.untouched << "\n";
+    if (m.held_full != 0)
+      ss << "  drawn in full by places : " << m.held_full << " (avg "
+         << (m.held_full_group_pixels != 0
+                 ? m.held_full_pixels * 100 / m.held_full_group_pixels
+                 : 0)
+         << "% of group)\n";
+    if (m.passes != 0)
+      ss << "  passes for parts        : " << m.passes << "\n";
     if (scratch_ != nullptr)
       ss << "  scratch pool            : " << scratch_->source_name()
          << " (" << scratch_->width() << "x" << scratch_->height() << ")\n"

@@ -454,7 +454,7 @@ void HwcDisplay::BeginClientOnGpu(
   const bool bounded = gpu_next_bounds_.right > gpu_next_bounds_.left &&
                        gpu_next_bounds_.bottom > gpu_next_bounds_.top;
   const IRect *area = gpu_plan_.kind == partial::Plan::Kind::kPartial
-                          ? &gpu_plan_.dirty
+                          ? &gpu_plan_.parts.front()
                       : bounded ? &gpu_next_bounds_
                                 : nullptr;
   /* The GPU's clock is asked for before the drawing reaches its thread,
@@ -511,9 +511,9 @@ bool HwcDisplay::DrawClientOnGpu(
     if (keep)
       snprintf(how, sizeof(how), ", buffer already held it");
     else if (gpu_plan_.kind == partial::Plan::Kind::kPartial)
-      snprintf(how, sizeof(how), ", in part %d,%d-%d,%d", gpu_plan_.dirty.left,
-               gpu_plan_.dirty.top, gpu_plan_.dirty.right,
-               gpu_plan_.dirty.bottom);
+      snprintf(how, sizeof(how), ", in part %d,%d-%d,%d",
+               gpu_plan_.parts.front().left, gpu_plan_.parts.front().top,
+               gpu_plan_.parts.front().right, gpu_plan_.parts.front().bottom);
     char head[160];
     snprintf(head, sizeof(head), "%s%s (begun at %s); panel buffer %p\n",
              drawn ? "drawn" : "REFUSED, last picture stays", how,
