@@ -18,34 +18,51 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <utility>
 
 namespace android::drm_hwcomposer {
 
 namespace {
 
-/* How far one job moves the model: an eighth, so a few jobs under a new
- * load are enough to follow it, and one odd job is not. */
-constexpr double kStep = 1.0 / 8.0;
+/* How far one job moves its cell: a fifth of the error when the job took
+ * longer than predicted, a twentieth when shorter -- the model settles
+ * where about four jobs in five take less than it says. */
+constexpr double kStepUp = 1.0 / 5.0;
+constexpr double kStepDown = 1.0 / 20.0;
 
-/* Jobs this small say what the engine costs to start; larger ones what
+/* Jobs this small teach a cell what it costs to start; larger ones what
  * it costs per pixel. */
 constexpr uint64_t kSmallPixels = 100000;
 
 }  // namespace
 
-DropOracle::Verdict DropOracle::Judge(int64_t now_ns, int64_t deadline_ns,
+DropOracle::DropOracle(std::vector<Seed> seeds, int64_t slack_ns)
+    : cells_(std::move(seeds)), slack_ns_(slack_ns) {
+}
+
+double DropOracle::Predict(size_t cell, uint64_t pixels) const {
+  if (cell >= cells_.size())
+    return 0.0;
+  const Seed &c = cells_[cell];
+  return c.fixed_ns + c.ns_per_pixel * static_cast<double>(pixels);
+}
+
+DropOracle::Verdict DropOracle::Judge(size_t cell, int64_t now_ns,
+                                      int64_t deadline_ns,
                                       uint64_t pixels) const {
   Verdict v;
   v.deadline_ns = deadline_ns;
-  v.predicted_end_ns = now_ns + static_cast<int64_t>(Base(pixels) * recent_);
+  v.predicted_end_ns = now_ns + static_cast<int64_t>(Predict(cell, pixels));
   v.late = v.predicted_end_ns > deadline_ns - kFlipMarginNs + slack_ns_;
   return v;
 }
 
-void DropOracle::Track(const Verdict &verdict, int64_t queued_ns,
+void DropOracle::Track(size_t cell, const Verdict &verdict, int64_t queued_ns,
                        uint64_t pixels) {
+  if (cell >= cells_.size())
+    return;
   counts_.judged++;
-  tracked_.push_back(Tracked{verdict, queued_ns, pixels});
+  tracked_.push_back(Tracked{cell, verdict, queued_ns, pixels});
   while (tracked_.size() > kMostTracked)
     tracked_.pop_front();
 }
@@ -63,12 +80,7 @@ void DropOracle::Ended(int64_t end_ns) {
     (was_late ? counts_.said_on_time_was_late
               : counts_.said_on_time_was_on_time)++;
 
-  const int64_t took_ns = end_ns - t.queued_ns;
-  if (took_ns > 0) {
-    const double ratio = static_cast<double>(took_ns) / Base(t.pixels);
-    recent_ += 0.5 * (std::clamp(ratio, kRecentMin, kRecentMax) - recent_);
-  }
-  Learn(t.pixels, took_ns);
+  Learn(t.cell, t.pixels, end_ns - t.queued_ns);
 }
 
 void DropOracle::Lost() {
@@ -76,34 +88,41 @@ void DropOracle::Lost() {
     tracked_.pop_front();
 }
 
-void DropOracle::Learn(uint64_t pixels, int64_t took_ns) {
-  if (took_ns <= 0)
+void DropOracle::Learn(size_t cell, uint64_t pixels, int64_t took_ns) {
+  if (took_ns <= 0 || cell >= cells_.size())
     return;
+  Seed &c = cells_[cell];
   const double took = static_cast<double>(took_ns);
+  const double error = took - Predict(cell, pixels);
+  const double step = error > 0 ? kStepUp : kStepDown;
   if (pixels < kSmallPixels) {
-    fixed_ns_ += kStep * (took - fixed_ns_);
+    c.fixed_ns = std::max(0.0, c.fixed_ns + step * error);
     return;
   }
-  const double per_pixel =
-      std::max(0.0, took - fixed_ns_) / static_cast<double>(pixels);
-  ns_per_pixel_ += kStep * (per_pixel - ns_per_pixel_);
+  c.ns_per_pixel = std::max(
+      0.0, c.ns_per_pixel + step * error / static_cast<double>(pixels));
 }
 
 std::string DropOracle::Describe() const {
-  char line[240];
+  char line[160];
   snprintf(line, sizeof(line),
            "judged %llu; said late: was %llu, was not %llu; said on time: "
-           "was late %llu, was %llu; model %.2f ms + %.2f ms/Mpx, recent "
-           "x%.2f, slack %.2f ms",
+           "was late %llu, was %llu; slack %.2f ms; cells",
            static_cast<unsigned long long>(counts_.judged),
            static_cast<unsigned long long>(counts_.said_late_was_late),
            static_cast<unsigned long long>(counts_.said_late_was_on_time),
            static_cast<unsigned long long>(counts_.said_on_time_was_late),
            static_cast<unsigned long long>(counts_.said_on_time_was_on_time),
-           /* ns per pixel is ms per million pixels */
-           fixed_ns_ / 1e6, ns_per_pixel_, recent_,
            static_cast<double>(slack_ns_) / 1e6);
-  return line;
+  std::string out = line;
+  for (const Seed &c : cells_) {
+    /* ns per pixel is ms per million pixels */
+    char one[40];
+    snprintf(one, sizeof(one), " %.2f+%.2f", c.fixed_ns / 1e6,
+             c.ns_per_pixel);
+    out += one;
+  }
+  return out;
 }
 
 }  // namespace android::drm_hwcomposer

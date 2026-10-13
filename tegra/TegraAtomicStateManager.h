@@ -323,7 +323,9 @@ class TegraAtomicStateManager : public AtomicStateManager {
     calibrated_home_ = Properties::CalibratedColorMode();
     vic_worker_wanted_ = Properties::VicWorker();
     drop_shadow_ = Properties::DropShadow();
-    vic_oracle_ = DropOracle(Properties::DropSlackNs());
+    vic_oracle_ = DropOracle({{0.8e6, 1.0}, {1.8e6, 1.0}, {0.6e6, 1.0},
+                              {2.0e6, 1.6}},
+                             Properties::DropSlackNs());
   }
 
   ~TegraAtomicStateManager() override {
@@ -712,6 +714,7 @@ class TegraAtomicStateManager : public AtomicStateManager {
     bool droppable = false;
     /* The oracle's verdict on the job, when it is asked. */
     std::optional<DropOracle::Verdict> verdict;
+    size_t cell = 0;
     int64_t queued_ns = 0;
     uint64_t pixels = 0;
   };
@@ -721,7 +724,13 @@ class TegraAtomicStateManager : public AtomicStateManager {
   /* Judging the engine's jobs in the shadow; see DropOracle. The fences of
    * the jobs judged and handed over, oldest first, read for their ends. */
   bool drop_shadow_ = false;
-  DropOracle vic_oracle_;
+  DropOracle vic_oracle_{{}};
+  /* The oracle's cells for a merge: its size, and whether the engine was
+   * powered down -- it is after half a second idle -- when it came. */
+  static size_t VicCell(uint64_t pixels, bool cold) {
+    constexpr uint64_t kFullPixels = 1500000;
+    return (pixels >= kFullPixels ? 2 : 0) + (cold ? 1 : 0);
+  }
   std::deque<SharedFd> vic_judged_fences_;
   void ScoreJudgedMerges();
   /* The panel's next latch after `now_ns`, from the last one seen. */

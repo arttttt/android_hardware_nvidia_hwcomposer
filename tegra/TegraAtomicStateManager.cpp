@@ -1174,7 +1174,12 @@ void TegraAtomicStateManager::QueueMerge(const TegraAtomicRequest &tegra) {
                          ? static_cast<uint64_t>(merge.width) * merge.height
                          : partial::Area(pending.plan.parts);
     pending.queued_ns = GetTimeMonotonicNs();
-    pending.verdict = vic_oracle_.Judge(pending.queued_ns,
+    constexpr int64_t kVicColdNs = 450'000'000;
+    pending.cell = VicCell(
+        pending.pixels,
+        vic_ != nullptr &&
+            pending.queued_ns - vic_->last_use_ns() >= kVicColdNs);
+    pending.verdict = vic_oracle_.Judge(pending.cell, pending.queued_ns,
                                         NextLatchNs(pending.queued_ns),
                                         pending.pixels);
     hwc::MarkJudged("vic", pending.verdict->late, pending.pixels,
@@ -1570,7 +1575,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
             drawn = std::move(*resolved);
           merges_.queued_used++;
           if (pending_merge_->verdict && drawn.fence) {
-            vic_oracle_.Track(*pending_merge_->verdict,
+            vic_oracle_.Track(pending_merge_->cell, *pending_merge_->verdict,
                               pending_merge_->queued_ns,
                               pending_merge_->pixels);
             vic_judged_fences_.push_back(drawn.fence);

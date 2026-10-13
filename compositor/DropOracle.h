@@ -19,33 +19,45 @@
 #include <cstdint>
 #include <deque>
 #include <string>
+#include <vector>
 
 namespace android::drm_hwcomposer {
 
 /* Whether an engine's job will be done before the panel takes its frame.
  *
- * Asked when a job is queued: from what the job is -- the pixels it
- * writes -- and from what the engine's recent jobs really took, it
- * predicts when this one will be done, and says whether that misses the
- * next latch. A job predicted late could be dropped then, before the
- * engine has it, and the last picture shown instead: one frame repeated,
- * the panel's cadence kept, nothing piled up behind.
+ * Asked when a job is queued, while the engine has not got it yet: a job
+ * predicted late could be dropped then and the last picture shown instead
+ * -- one frame repeated, the panel's cadence kept, nothing piled up behind.
  *
- * It learns as it goes. Each job's real end -- when its fence came due --
- * is told back once known: the model's cost per pixel and its fixed cost
- * are drawn towards what the engine actually did, so a GPU busy with an
- * application's frames is seen as a slower GPU by the next prediction, and
- * the verdict is scored against what happened.
+ * What a job takes depends less on its pixels than on the state the engine
+ * is found in. Measured on the device: the image engine merges a screen in
+ * 3.8 ms warm and 7 ms when it was powered down after half a second idle;
+ * the GPU draws in about 1 ms on the heels of its last drawing, 2 ms after
+ * a pause, 8.6 ms once its rail was gated. One cost per pixel averaged
+ * those, and called warm screens late and cold ones on time. So the caller
+ * names the job's cell -- the engine's state, and for the image engine the
+ * job's size -- and each cell keeps its own model: a fixed cost and a cost
+ * per pixel, learnt from that cell's jobs alone.
  *
- * Only a judge: nothing here drops anything. Whoever asks decides what to
- * do with the answer, and while the answer is being weighed it is only
- * counted -- the four ways a verdict and the truth can meet.
+ * Learnt towards the upper end of what a cell's jobs take, not the middle:
+ * a job longer than predicted moves the model four times as far as one
+ * shorter, which settles near the fifth of jobs that take longest -- the
+ * ones that decide whether a frame is late.
+ *
+ * Only a judge: nothing here drops anything. Each job's real end, told
+ * back once its fence is due, is learnt from and scores the verdict, in
+ * one of four counts.
  */
 class DropOracle {
  public:
-  /* `slack_ns`: added to the latch before a verdict -- later, fewer jobs
-   * called late, only those predicted to miss by more. */
-  explicit DropOracle(int64_t slack_ns = 0) : slack_ns_(slack_ns) {}
+  struct Seed {
+    double fixed_ns;
+    double ns_per_pixel;
+  };
+
+  /* One cell for each of `seeds`, starting from it; `slack_ns` is added
+   * to the latch before a verdict. */
+  explicit DropOracle(std::vector<Seed> seeds, int64_t slack_ns = 0);
 
   struct Verdict {
     bool late = false;
@@ -53,13 +65,15 @@ class DropOracle {
     int64_t deadline_ns = 0;
   };
 
-  /* The job queued at `now_ns`, writing `pixels`, for the panel's latch at
-   * `deadline_ns`. */
-  Verdict Judge(int64_t now_ns, int64_t deadline_ns, uint64_t pixels) const;
+  /* The job of cell `cell`, queued at `now_ns`, writing `pixels`, for the
+   * panel's latch at `deadline_ns`. */
+  Verdict Judge(size_t cell, int64_t now_ns, int64_t deadline_ns,
+                uint64_t pixels) const;
 
   /* A job judged and then handed to its engine: kept until its end is
    * told. Older ones past the bound are forgotten unscored. */
-  void Track(const Verdict &verdict, int64_t queued_ns, uint64_t pixels);
+  void Track(size_t cell, const Verdict &verdict, int64_t queued_ns,
+             uint64_t pixels);
 
   /* The oldest tracked job ended at `end_ns`: learnt from, and scored. */
   void Ended(int64_t end_ns);
@@ -67,7 +81,7 @@ class DropOracle {
   void Lost();
   bool Tracking() const { return !tracked_.empty(); }
 
-  /* What the counts and the model say, one line. */
+  /* What the counts and the cells say, one line. */
   std::string Describe() const;
 
   /* A job is late when its fence comes due after this much before the
@@ -84,39 +98,24 @@ class DropOracle {
     uint64_t said_on_time_was_on_time = 0;
   };
   const Counts &counts() const { return counts_; }
-  double fixed_ns() const { return fixed_ns_; }
-  double ns_per_pixel() const { return ns_per_pixel_; }
-  double recent() const { return recent_; }
+  const Seed &cell(size_t i) const { return cells_[i]; }
   int64_t slack_ns() const { return slack_ns_; }
-
-  /* The fast correction's bounds. */
-  static constexpr double kRecentMin = 0.5;
-  static constexpr double kRecentMax = 6.0;
 
  private:
   struct Tracked {
+    size_t cell;
     Verdict verdict;
     int64_t queued_ns;
     uint64_t pixels;
   };
 
-  void Learn(uint64_t pixels, int64_t took_ns);
-  double Base(uint64_t pixels) const {
-    return fixed_ns_ + ns_per_pixel_ * static_cast<double>(pixels);
-  }
+  double Predict(size_t cell, uint64_t pixels) const;
+  void Learn(size_t cell, uint64_t pixels, int64_t took_ns);
 
+  std::vector<Seed> cells_;
+  int64_t slack_ns_ = 0;
   std::deque<Tracked> tracked_;
   Counts counts_;
-  /* Seeded with the image engine's measured cost: 0.6 ms for a strip
-   * group's handful of rows, a few ms for a screen. */
-  double fixed_ns_ = 500000.0;
-  double ns_per_pixel_ = 1.0;
-  /* How much longer than the model the last few jobs took: moved half way
-   * by each, so a run of slow jobs -- the engine shared with an
-   * application's frames through an animation -- shows in the next verdict
-   * at once, where the model itself follows over many. */
-  double recent_ = 1.0;
-  int64_t slack_ns_ = 0;
 };
 
 }  // namespace android::drm_hwcomposer

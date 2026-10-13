@@ -575,8 +575,13 @@ class HwcDisplay : public ICompositorDisplay {
   /* Judging the executor's jobs in the shadow; see DropOracle. The verdict
    * on the job begun, and the fences of those judged and drawn, oldest
    * first, read for their ends. */
-  DropOracle gpu_oracle_{Properties::DropSlackNs()};
+  enum GpuCell : size_t { kGpuInARow, kGpuAfterPause, kGpuCold };
+  /* Seeds measured on the device; the cold one is the rail gated after
+   * half a second idle, whatever the size. */
+  DropOracle gpu_oracle_{{{0.95e6, 1.31}, {1.93e6, 1.10}, {7.5e6, 0.35}},
+                         Properties::DropSlackNs()};
   std::optional<DropOracle::Verdict> gpu_verdict_;
+  size_t gpu_cell_ = kGpuInARow;
   int64_t gpu_queued_ns_ = 0;
   uint64_t gpu_pixels_ = 0;
   std::deque<SharedFd> gpu_judged_fences_;

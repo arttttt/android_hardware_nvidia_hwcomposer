@@ -479,8 +479,14 @@ void HwcDisplay::BeginClientOnGpu(
     ScoreJudgedGpu();
     gpu_queued_ns_ = GetTimeMonotonicNs();
     gpu_pixels_ = pixels;
+    /* What state the GPU is found in, by our own last drawing: its rail
+     * gated after half a second, its clocks down after a pause of a frame. */
+    const int64_t idle = gpu_queued_ns_ - last_gpu_use_ns_;
+    gpu_cell_ = idle >= 500'000'000 ? kGpuCold
+                : idle >= 18'000'000 ? kGpuAfterPause
+                                     : kGpuInARow;
     gpu_verdict_ = gpu_oracle_.Judge(
-        gpu_queued_ns_, vsync_worker_->GetNextVsyncTimestamp(gpu_queued_ns_),
+        gpu_cell_, gpu_queued_ns_, vsync_worker_->GetNextVsyncTimestamp(gpu_queued_ns_),
         pixels);
     hwc::MarkJudged("gpu", gpu_verdict_->late, pixels,
                     gpu_verdict_->predicted_end_ns - gpu_queued_ns_,
@@ -587,7 +593,7 @@ bool HwcDisplay::DrawClientOnGpu(
   if (!keep)
     GetPipe().atomic_state_manager->GpuSubmitted(drawn->fence);
   if (!keep && gpu_verdict_) {
-    gpu_oracle_.Track(*gpu_verdict_, gpu_queued_ns_, gpu_pixels_);
+    gpu_oracle_.Track(gpu_cell_, *gpu_verdict_, gpu_queued_ns_, gpu_pixels_);
     gpu_judged_fences_.push_back(drawn->fence);
     gpu_verdict_.reset();
   }

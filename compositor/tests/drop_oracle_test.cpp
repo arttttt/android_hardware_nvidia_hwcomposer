@@ -42,51 +42,63 @@ constexpr int64_t kMs = 1000000;
 constexpr uint64_t kScreen = 1536 * 2048;
 constexpr uint64_t kStrips = 420864;
 
-/* A small job well ahead of the latch is on time; a screen just before it
- * is late; the flip's margin counts against the job. */
-void TestJudge() {
-  DropOracle o;
-  CHECK(!o.Judge(0, 10 * kMs, kStrips).late);
-  CHECK(o.Judge(0, 2 * kMs, kScreen).late);
-  /* 0.5 ms fixed + 0.42 ms of strips = 0.92 ms: inside 1.5 ms less the
-   * margin, outside 1.3 ms less it. */
-  CHECK(!o.Judge(0, int64_t(1.5 * kMs), kStrips).late);
-  CHECK(o.Judge(0, int64_t(1.3 * kMs), kStrips).late);
+/* Two cells, a warm and a cold engine: the same screen costs 3.8 and 7 ms. */
+enum Cell : size_t { kWarm, kCold };
+DropOracle Make(int64_t slack = 0) {
+  return DropOracle({{0.6 * kMs, 1.0}, {2.0 * kMs, 1.6}}, slack);
 }
 
-/* The model follows what the engine really takes: jobs three times as
- * slow as it thought make it predict three times as slow. */
-void TestLearns() {
-  DropOracle o;
-  const double before = o.ns_per_pixel();
-  for (int i = 0; i < 40; ++i) {
-    const auto v = o.Judge(0, 100 * kMs, kScreen);
-    o.Track(v, 0, kScreen);
-    o.Ended(int64_t(o.fixed_ns() + 3.0 * double(kScreen)));
+/* The cell decides: a screen 6 ms before the latch is on time warm, late
+ * cold; the flip's margin counts against the job; slack moves the line. */
+void TestJudge() {
+  DropOracle o = Make();
+  CHECK(!o.Judge(kWarm, 0, 6 * kMs, kScreen).late);
+  CHECK(o.Judge(kCold, 0, 6 * kMs, kScreen).late);
+  CHECK(!o.Judge(kWarm, 0, 2 * kMs, kStrips).late);
+  CHECK(o.Judge(kWarm, 0, int64_t(1.3 * kMs), kStrips).late);
+  CHECK(!Make(2 * kMs).Judge(kWarm, 0, int64_t(1.3 * kMs), kStrips).late);
+}
+
+/* A cell learns only from its own jobs, towards their longer end: jobs
+ * slower than it thinks move it fast, faster ones move it slowly. */
+void TestLearnsPerCell() {
+  DropOracle o = Make();
+  const double warm = o.cell(kWarm).ns_per_pixel;
+  for (int i = 0; i < 30; ++i) {
+    o.Track(kCold, o.Judge(kCold, 0, 100 * kMs, kScreen), 0, kScreen);
+    o.Ended(int64_t(2.0 * kMs + 3.0 * double(kScreen)));
   }
-  CHECK(o.ns_per_pixel() > 2.5 * before);
+  CHECK(o.cell(kCold).ns_per_pixel > 2.5);
+  CHECK(o.cell(kWarm).ns_per_pixel == warm);
+
+  /* Half the jobs at 1x, half at 2x the warm cost: the cell settles above
+   * the middle, towards the slower half. */
+  for (int i = 0; i < 400; ++i) {
+    const double per = i % 2 ? 2.0 : 1.0;
+    o.Track(kWarm, o.Judge(kWarm, 0, 100 * kMs, kScreen), 0, kScreen);
+    o.Ended(int64_t(0.6 * kMs + per * double(kScreen)));
+  }
+  CHECK(o.cell(kWarm).ns_per_pixel > 1.6);
+  CHECK(o.cell(kWarm).ns_per_pixel <= 2.05);
+
+  /* Small jobs teach the fixed cost. */
   for (int i = 0; i < 40; ++i) {
-    const auto v = o.Judge(0, 100 * kMs, 1000);
-    o.Track(v, 0, 1000);
+    o.Track(kWarm, o.Judge(kWarm, 0, 100 * kMs, 1000), 0, 1000);
     o.Ended(2 * kMs);
   }
-  CHECK(o.fixed_ns() > 1.8 * kMs);
+  CHECK(o.cell(kWarm).fixed_ns > 1.8 * kMs);
 }
 
-/* Each verdict is scored against the job's real end, in its own cell. */
+/* Each verdict is scored against the job's real end, in its own count. */
 void TestScores() {
-  DropOracle o;
-  auto v = o.Judge(0, 2 * kMs, kScreen); /* said late */
-  o.Track(v, 0, kScreen);
-  o.Ended(5 * kMs); /* was late */
-  v = o.Judge(0, 2 * kMs, kScreen);
-  o.Track(v, 0, kScreen);
-  o.Ended(1 * kMs); /* was not */
-  v = o.Judge(0, 10 * kMs, kStrips); /* said on time */
-  o.Track(v, 0, kStrips);
-  o.Ended(12 * kMs); /* was late */
-  v = o.Judge(0, 10 * kMs, kStrips);
-  o.Track(v, 0, kStrips);
+  DropOracle o = Make();
+  o.Track(kCold, o.Judge(kCold, 0, 2 * kMs, kScreen), 0, kScreen);
+  o.Ended(5 * kMs); /* said late, was late */
+  o.Track(kCold, o.Judge(kCold, 0, 2 * kMs, kScreen), 0, kScreen);
+  o.Ended(1 * kMs); /* said late, was not */
+  o.Track(kWarm, o.Judge(kWarm, 0, 10 * kMs, kStrips), 0, kStrips);
+  o.Ended(12 * kMs); /* said on time, was late */
+  o.Track(kWarm, o.Judge(kWarm, 0, 10 * kMs, kStrips), 0, kStrips);
   o.Ended(1 * kMs);
   const auto &c = o.counts();
   CHECK(c.judged == 4);
@@ -96,43 +108,16 @@ void TestScores() {
   CHECK(c.said_on_time_was_on_time == 1);
 }
 
-/* A run of jobs slower than the model shows in the next verdict at once:
- * strips that the model alone would call on time are called late. */
-void TestRecent() {
-  DropOracle o;
-  CHECK(!o.Judge(0, 3 * kMs, kStrips).late);
-  for (int i = 0; i < 2; ++i) {
-    o.Track(o.Judge(0, 100 * kMs, kStrips), 0, kStrips);
-    o.Ended(4 * kMs);
-  }
-  CHECK(o.recent() > 2.5);
-  CHECK(o.Judge(0, 3 * kMs, kStrips).late);
-  /* and back once they are quick again */
-  for (int i = 0; i < 6; ++i) {
-    o.Track(o.Judge(0, 100 * kMs, kStrips), 0, kStrips);
-    o.Ended(1 * kMs);
-  }
-  CHECK(!o.Judge(0, 3 * kMs, kStrips).late);
-}
-
-/* Slack moves the threshold: a job that misses by less than it is not
- * called late. */
-void TestSlack() {
-  DropOracle strict;
-  DropOracle lenient(2 * kMs);
-  CHECK(strict.Judge(0, int64_t(1.3 * kMs), kStrips).late);
-  CHECK(!lenient.Judge(0, int64_t(1.3 * kMs), kStrips).late);
-  CHECK(lenient.slack_ns() == 2 * kMs);
-}
-
-/* Tracking is bounded; a lost end and an end with nothing tracked are
- * harmless. */
+/* Tracking is bounded; a lost end, an end with nothing tracked and a cell
+ * that does not exist are harmless. */
 void TestBounds() {
-  DropOracle o;
+  DropOracle o = Make();
   o.Ended(1);
   o.Lost();
+  o.Track(7, o.Judge(7, 0, 10 * kMs, 1), 0, 1);
+  CHECK(!o.Tracking());
   for (size_t i = 0; i < DropOracle::kMostTracked + 5; ++i)
-    o.Track(o.Judge(0, 10 * kMs, 1), 0, 1);
+    o.Track(kWarm, o.Judge(kWarm, 0, 10 * kMs, 1), 0, 1);
   size_t n = 0;
   while (o.Tracking()) {
     o.Lost();
@@ -145,10 +130,8 @@ void TestBounds() {
 
 int main() {
   TestJudge();
-  TestLearns();
+  TestLearnsPerCell();
   TestScores();
-  TestRecent();
-  TestSlack();
   TestBounds();
   if (failures == 0)
     std::printf("drop_oracle_test: all passed\n");
