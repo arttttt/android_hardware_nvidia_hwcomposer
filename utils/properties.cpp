@@ -18,6 +18,8 @@
 
 #include <cmath>
 #include <cstdlib>
+
+#include <sys/system_properties.h>
 #include <string>
 
 #include "utils/log.h"
@@ -226,21 +228,57 @@ auto Properties::DisplaySaturation() -> float {
   constexpr float kNeutral = 1.0F;
   constexpr float kCeiling = 2.0F;
 
-  char value[PROPERTY_VALUE_MAX];
-  property_get("persist.vendor.hwc.display_saturation", value, "");
+  /* Asked every frame, changed once in a long while: the text is parsed
+   * again only when the property has changed since -- the serial it is
+   * read with says so, and both come from shared memory without a call
+   * into anyone. Until the property exists it is looked for each time,
+   * a lookup in the same memory. Its one caller asks under the composer's
+   * lock. */
+  struct Read {
+    char value[PROPERTY_VALUE_MAX];
+    uint32_t serial;
+  };
+  static const prop_info *info = nullptr;
+  static bool parsed_once = false;
+  static uint32_t parsed_serial = 0;
+  static float cached = kNeutral;
+  if (info == nullptr)
+    info = __system_property_find("persist.vendor.hwc.display_saturation");
+  Read read{};
+  if (info != nullptr) {
+    __system_property_read_callback(
+        info,
+        [](void *cookie, const char * /*name*/, const char *v,
+           uint32_t serial) {
+          auto *r = static_cast<Read *>(cookie);
+          strlcpy(r->value, v, sizeof(r->value));
+          r->serial = serial;
+        },
+        &read);
+  }
+  if (parsed_once && read.serial == parsed_serial) {
+    return cached;
+  }
+  parsed_once = true;
+  parsed_serial = read.serial;
+
+  const char *value = read.value;
   if (value[0] == '\0') {
-    return kNeutral;
+    cached = kNeutral;
+    return cached;
   }
 
   char *end = nullptr;
   const float wanted = std::strtof(value, &end);
-  if (end == static_cast<char *>(value) || *end != '\0' ||
+  if (end == value || *end != '\0' ||
       !std::isfinite(wanted) || wanted < 0.0F || wanted > kCeiling) {
     ALOGW("Ignoring display saturation '%s'", value);
-    return kNeutral;
+    cached = kNeutral;
+    return cached;
   }
 
-  return wanted;
+  cached = wanted;
+  return cached;
 }
 
 auto Properties::GetBackendOverride() -> std::string {
