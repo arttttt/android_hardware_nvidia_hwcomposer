@@ -96,6 +96,35 @@ void TestScores() {
   CHECK(c.said_on_time_was_on_time == 1);
 }
 
+/* A run of jobs slower than the model shows in the next verdict at once:
+ * strips that the model alone would call on time are called late. */
+void TestRecent() {
+  DropOracle o;
+  CHECK(!o.Judge(0, 3 * kMs, kStrips).late);
+  for (int i = 0; i < 2; ++i) {
+    o.Track(o.Judge(0, 100 * kMs, kStrips), 0, kStrips);
+    o.Ended(4 * kMs);
+  }
+  CHECK(o.recent() > 2.5);
+  CHECK(o.Judge(0, 3 * kMs, kStrips).late);
+  /* and back once they are quick again */
+  for (int i = 0; i < 6; ++i) {
+    o.Track(o.Judge(0, 100 * kMs, kStrips), 0, kStrips);
+    o.Ended(1 * kMs);
+  }
+  CHECK(!o.Judge(0, 3 * kMs, kStrips).late);
+}
+
+/* Slack moves the threshold: a job that misses by less than it is not
+ * called late. */
+void TestSlack() {
+  DropOracle strict;
+  DropOracle lenient(2 * kMs);
+  CHECK(strict.Judge(0, int64_t(1.3 * kMs), kStrips).late);
+  CHECK(!lenient.Judge(0, int64_t(1.3 * kMs), kStrips).late);
+  CHECK(lenient.slack_ns() == 2 * kMs);
+}
+
 /* Tracking is bounded; a lost end and an end with nothing tracked are
  * harmless. */
 void TestBounds() {
@@ -118,6 +147,8 @@ int main() {
   TestJudge();
   TestLearns();
   TestScores();
+  TestRecent();
+  TestSlack();
   TestBounds();
   if (failures == 0)
     std::printf("drop_oracle_test: all passed\n");

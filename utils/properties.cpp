@@ -184,6 +184,14 @@ auto Properties::PartialRedraw() -> bool {
   return wanted;
 }
 
+auto Properties::DropSlackNs() -> int64_t {
+  /* Read once, at the composer's start. */
+  static const int64_t slack =
+      static_cast<int64_t>(property_get_int32("vendor.hwc.dropslack_us", 0)) *
+      1000;
+  return slack;
+}
+
 auto Properties::DropShadow() -> bool {
   /* Off unless asked; read once, at the composer's start. */
   static const bool wanted =

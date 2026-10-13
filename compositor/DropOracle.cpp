@@ -37,10 +37,8 @@ DropOracle::Verdict DropOracle::Judge(int64_t now_ns, int64_t deadline_ns,
                                       uint64_t pixels) const {
   Verdict v;
   v.deadline_ns = deadline_ns;
-  v.predicted_end_ns =
-      now_ns + static_cast<int64_t>(fixed_ns_ +
-                                    ns_per_pixel_ * static_cast<double>(pixels));
-  v.late = v.predicted_end_ns > deadline_ns - kFlipMarginNs;
+  v.predicted_end_ns = now_ns + static_cast<int64_t>(Base(pixels) * recent_);
+  v.late = v.predicted_end_ns > deadline_ns - kFlipMarginNs + slack_ns_;
   return v;
 }
 
@@ -65,7 +63,12 @@ void DropOracle::Ended(int64_t end_ns) {
     (was_late ? counts_.said_on_time_was_late
               : counts_.said_on_time_was_on_time)++;
 
-  Learn(t.pixels, end_ns - t.queued_ns);
+  const int64_t took_ns = end_ns - t.queued_ns;
+  if (took_ns > 0) {
+    const double ratio = static_cast<double>(took_ns) / Base(t.pixels);
+    recent_ += 0.5 * (std::clamp(ratio, kRecentMin, kRecentMax) - recent_);
+  }
+  Learn(t.pixels, took_ns);
 }
 
 void DropOracle::Lost() {
@@ -87,17 +90,19 @@ void DropOracle::Learn(uint64_t pixels, int64_t took_ns) {
 }
 
 std::string DropOracle::Describe() const {
-  char line[200];
+  char line[240];
   snprintf(line, sizeof(line),
            "judged %llu; said late: was %llu, was not %llu; said on time: "
-           "was late %llu, was %llu; model %.2f ms + %.2f ms/Mpx",
+           "was late %llu, was %llu; model %.2f ms + %.2f ms/Mpx, recent "
+           "x%.2f, slack %.2f ms",
            static_cast<unsigned long long>(counts_.judged),
            static_cast<unsigned long long>(counts_.said_late_was_late),
            static_cast<unsigned long long>(counts_.said_late_was_on_time),
            static_cast<unsigned long long>(counts_.said_on_time_was_late),
            static_cast<unsigned long long>(counts_.said_on_time_was_on_time),
            /* ns per pixel is ms per million pixels */
-           fixed_ns_ / 1e6, ns_per_pixel_);
+           fixed_ns_ / 1e6, ns_per_pixel_, recent_,
+           static_cast<double>(slack_ns_) / 1e6);
   return line;
 }
 

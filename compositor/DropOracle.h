@@ -43,6 +43,10 @@ namespace android::drm_hwcomposer {
  */
 class DropOracle {
  public:
+  /* `slack_ns`: added to the latch before a verdict -- later, fewer jobs
+   * called late, only those predicted to miss by more. */
+  explicit DropOracle(int64_t slack_ns = 0) : slack_ns_(slack_ns) {}
+
   struct Verdict {
     bool late = false;
     int64_t predicted_end_ns = 0;
@@ -82,6 +86,12 @@ class DropOracle {
   const Counts &counts() const { return counts_; }
   double fixed_ns() const { return fixed_ns_; }
   double ns_per_pixel() const { return ns_per_pixel_; }
+  double recent() const { return recent_; }
+  int64_t slack_ns() const { return slack_ns_; }
+
+  /* The fast correction's bounds. */
+  static constexpr double kRecentMin = 0.5;
+  static constexpr double kRecentMax = 6.0;
 
  private:
   struct Tracked {
@@ -91,6 +101,9 @@ class DropOracle {
   };
 
   void Learn(uint64_t pixels, int64_t took_ns);
+  double Base(uint64_t pixels) const {
+    return fixed_ns_ + ns_per_pixel_ * static_cast<double>(pixels);
+  }
 
   std::deque<Tracked> tracked_;
   Counts counts_;
@@ -98,6 +111,12 @@ class DropOracle {
    * group's handful of rows, a few ms for a screen. */
   double fixed_ns_ = 500000.0;
   double ns_per_pixel_ = 1.0;
+  /* How much longer than the model the last few jobs took: moved half way
+   * by each, so a run of slow jobs -- the engine shared with an
+   * application's frames through an animation -- shows in the next verdict
+   * at once, where the model itself follows over many. */
+  double recent_ = 1.0;
+  int64_t slack_ns_ = 0;
 };
 
 }  // namespace android::drm_hwcomposer

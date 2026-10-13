@@ -64,6 +64,10 @@ class Properties {
    * is dropped for it. */
   static auto DropShadow() -> bool;
 
+  /* How much later than the latch less the flip's margin a job's predicted
+   * end may fall before the oracle calls it late, in microseconds. */
+  static auto DropSlackNs() -> int64_t;
+
   /* Whether the pipeline's resting state corrects the panel's gamut toward
    * sRGB rather than showing the panel as it is. */
   static auto CalibratedColorMode() -> bool;

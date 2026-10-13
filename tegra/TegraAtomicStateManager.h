@@ -323,6 +323,7 @@ class TegraAtomicStateManager : public AtomicStateManager {
     calibrated_home_ = Properties::CalibratedColorMode();
     vic_worker_wanted_ = Properties::VicWorker();
     drop_shadow_ = Properties::DropShadow();
+    vic_oracle_ = DropOracle(Properties::DropSlackNs());
   }
 
   ~TegraAtomicStateManager() override {

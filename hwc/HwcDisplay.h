@@ -30,6 +30,7 @@
 #include <ui/GraphicTypes.h>
 
 #include "compositor/DropOracle.h"
+#include "utils/properties.h"
 #include "compositor/PartialRedraw.h"
 #include "compositor/PictureMemory.h"
 #include "compositor/CompositionPlanner.h"
@@ -574,7 +575,7 @@ class HwcDisplay : public ICompositorDisplay {
   /* Judging the executor's jobs in the shadow; see DropOracle. The verdict
    * on the job begun, and the fences of those judged and drawn, oldest
    * first, read for their ends. */
-  DropOracle gpu_oracle_;
+  DropOracle gpu_oracle_{Properties::DropSlackNs()};
   std::optional<DropOracle::Verdict> gpu_verdict_;
   int64_t gpu_queued_ns_ = 0;
   uint64_t gpu_pixels_ = 0;
