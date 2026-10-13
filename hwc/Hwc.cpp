@@ -94,6 +94,7 @@ std::string DumpDisplayStats(const HwcDisplay *display,
 
   ss << display->DumpGroupSelector() << "\n";
   ss << display->DumpColorBridge() << "\n";
+  ss << display->DumpGpuDrops() << "\n";
   /* The one door a picture run is asked through; see PictureCapture.h. */
   ss << hwc::PictureCapture::Arm() << "\n";
 

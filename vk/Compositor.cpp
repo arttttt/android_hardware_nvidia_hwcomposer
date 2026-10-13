@@ -19,6 +19,7 @@
 #include <android/log.h>
 #include <pthread.h>
 #include <sched.h>
+#include <poll.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -231,16 +232,30 @@ uint64_t VkCompositor::Queue(const Target &target, const Layer *layers, size_t c
 }
 
 void VkCompositor::RunJob() {
+  /* The GPU still busy with the drawing before: the job waits, in the
+   * queue, where its frame can drop it -- looked at again in a moment,
+   * behind whatever else the thread has to do meanwhile. */
+  if (last_drawn_.fd >= 0) {
+    struct pollfd p = {last_drawn_.fd, POLLIN, 0};
+    if (poll(&p, 1, 1) == 0) {
+      if (jobs_.waiting() != 0)
+        Post([this] { RunJob(); });
+      return;
+    }
+  }
   auto taken = jobs_.TryTake();
   if (!taken)
     return;
   const Job &job = taken->second;
   const int fence = ComposeNow(job.target, job.layers.data(), job.layers.size());
+  last_drawn_ = Fence(fence >= 0 ? dup(fence) : -1);
   jobs_.Done(taken->first, fence >= 0, Fence(fence));
 }
 
 int VkCompositor::Resolve(uint64_t id, bool wait) {
   auto out = jobs_.Resolve(id, wait);
+  if (out.state == Jobs::State::kDropped)
+    return -2;
   return out.result ? out.result->Release() : -1;
 }
 

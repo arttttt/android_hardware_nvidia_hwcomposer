@@ -132,7 +132,8 @@ void GpuExecutor::DropBegun() {
 }
 
 bool GpuExecutor::Begin(std::vector<vk::Layer> &layers,
-                        const drm_hwcomposer::IRect *parts, size_t count) {
+                        const drm_hwcomposer::IRect *parts, size_t count,
+                        bool droppable) {
   DropBegun();
 
   const size_t at = (at_ + 1) % slots_.size();
@@ -155,17 +156,23 @@ bool GpuExecutor::Begin(std::vector<vk::Layer> &layers,
     p.bottom = parts[k].bottom;
   }
 
-  begun_id_ = compositor_->Queue(target, layers.data(), layers.size(), false);
+  begun_id_ =
+      compositor_->Queue(target, layers.data(), layers.size(), droppable);
+  begun_droppable_ = droppable;
   begun_at_ = at;
   return true;
 }
 
-std::optional<GpuExecutor::Drawn> GpuExecutor::Finish() {
+std::optional<GpuExecutor::Drawn> GpuExecutor::Finish(bool *dropped) {
+  if (dropped != nullptr)
+    *dropped = false;
   if (!begun_at_)
     return std::nullopt;
   const size_t at = *begun_at_;
   begun_at_.reset();
-  const int fd = compositor_->Resolve(begun_id_, true);
+  const int fd = compositor_->Resolve(begun_id_, !begun_droppable_);
+  if (fd == -2 && dropped != nullptr)
+    *dropped = true;
   if (fd < 0)
     return std::nullopt;
   at_ = at;

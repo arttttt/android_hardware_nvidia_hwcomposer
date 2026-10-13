@@ -136,12 +136,14 @@ class Compositor {
    * caller with other work to do meanwhile: Queue hands the drawing to the
    * library's thread and returns at once, with the job's id; Resolve gives
    * back what Compose would have, waiting with `wait` for the drawing to
-   * be sent, and without it dropping a droppable one not yet taken -- -1
-   * then, and for a refused or cancelled one; Cancel lets a job go that is
+   * be sent, and without it dropping a droppable one not yet taken -- -2
+   * then, -1 for a refused or cancelled one; Cancel lets a job go that is
    * no longer wanted. Queue copies what it is given -- the layers, and a
    * duplicate of every fence -- so nothing need outlive the call. A newer
    * droppable job drops an older one the thread has not taken, as the
-   * queue's own rule says. */
+   * queue's own rule says; and the thread takes a job only once the GPU is
+   * done with the one before, so work does not pile up behind a drawing
+   * that runs long. */
   virtual uint64_t Queue(const Target &target, const Layer *layers, size_t count,
                          bool droppable) = 0;
   virtual int Resolve(uint64_t id, bool wait) = 0;

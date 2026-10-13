@@ -196,8 +196,10 @@ class VkCompositor : public Compositor {
   };
   using Jobs = android::drm_hwcomposer::JobQueue<Job, Fence>;
   Jobs jobs_;
-  /* On the thread: the oldest queued drawing, if one is still there. */
+  /* On the thread: the oldest queued drawing, if one is still there --
+   * once the GPU is done with the drawing before, whose fence is kept. */
   void RunJob();
+  Fence last_drawn_;
 
   std::thread thread_;
   std::mutex mutex_;
