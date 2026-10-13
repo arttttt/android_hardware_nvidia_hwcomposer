@@ -1083,12 +1083,21 @@ void TegraAtomicStateManager::VicWorkerLoop() {
   param.sched_priority = 2;
   sched_setscheduler(0, SCHED_FIFO, &param);
 
+  /* A job is taken only once the engine is done with the one before.
+   * Work piled behind a drawing that runs long would only make each frame
+   * after it later still; held back instead, a job that may be dropped is
+   * dropped when its frame goes up, and the window shows the last group
+   * drawn -- one frame repeated rather than every frame after it late. */
+  SharedFd last;
   for (;;) {
+    if (last)
+      sync_wait(*last, -1);
     auto taken = vic_jobs_.Take();
     if (!taken)
       return;
     VicDrawn drawn = DrawMergeJob<VicDrawn>(vic_, taken->second);
     const bool submitted = static_cast<bool>(drawn.fence);
+    last = drawn.fence;
     vic_jobs_.Done(taken->first, submitted, std::move(drawn));
   }
 }
@@ -1148,6 +1157,21 @@ void TegraAtomicStateManager::QueueMerge(const TegraAtomicRequest &tegra) {
   slot_pictures_.Lost(target);
   pending.key.Remember(merge.window, merge.width, merge.height,
                        pending.members);
+  /* The last group may stand in for this one only if it is the same group
+   * in the same buffer size: the same members, a newer frame of some or
+   * moved within the group. Anything that changes what the window is --
+   * its size, its members, their turn -- is drawn. */
+  if (merge_cache_ && last_merge_fence_) {
+    switch (JudgeMerge(merge)) {
+      case MergeVerdict::kChangedFrame:
+      case MergeVerdict::kChangedGeometry:
+      case MergeVerdict::kChangedBlend:
+        pending.droppable = true;
+        break;
+      default:
+        break;
+    }
+  }
 
   if (!pending.untouched) {
     VicJob job;
@@ -1168,7 +1192,7 @@ void TegraAtomicStateManager::QueueMerge(const TegraAtomicRequest &tegra) {
     job.target_ready = std::move(target_ready);
     job.group_code = group_code;
     job.parts = pending.plan.parts;
-    pending.id = vic_jobs_.Queue(std::move(job), false);
+    pending.id = vic_jobs_.Queue(std::move(job), pending.droppable);
   }
   pending_merge_ = std::move(pending);
   merges_.queued++;
@@ -1379,6 +1403,27 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
     }
 
     const bool same = merge_cache_ && RecognisesMerge(merge);
+
+    /* Drawn already, or being drawn, if validate queued this very group. A
+     * droppable job the engine has not taken yet -- it is still busy with
+     * the group before -- is dropped now, and the window shows that group
+     * again, as for a group shown a frame behind. */
+    const bool queued =
+        !same && pending_merge_ &&
+        pending_merge_->key.Judge(merge.window, merge.width, merge.height,
+                                  MergeMembers(merge)) ==
+            PictureMemory::Verdict::kSame;
+    std::optional<VicDrawn> resolved;
+    bool dropped = false;
+    if (queued && !pending_merge_->untouched) {
+      auto out = vic_jobs_.Resolve(pending_merge_->id,
+                                   !pending_merge_->droppable);
+      if (out.state == VicJobs::State::kDropped) {
+        dropped = true;
+      } else {
+        resolved = out.result ? std::move(*out.result) : VicDrawn{};
+      }
+    }
     /* The group as last drawn but for a newer frame of some member whose
      * client is still drawing it: the engine would wait for that drawing
      * in the stream and the flip for the engine, so the panel would miss
@@ -1396,7 +1441,17 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
                     });
     lagged_last_ = lag;
 
-    if (same || lag) {
+    if (dropped) {
+      /* The slot the dropped job would have drawn into was never written:
+       * its turn is given back, and what it held is still what it held,
+       * but it was let go as known when the job was queued. */
+      pending_merge_.reset();
+      scratch_->Rewind();
+      merges_.dropped++;
+      hwc::MarkDropped("vic");
+    }
+
+    if (same || lag || dropped) {
       DropPendingMerge();
       /* The group is the one already drawn, so the window is shown the
        * buffer it is already showing. No buffer changes hands: the pool is
@@ -1412,7 +1467,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
        * retries itself out of what is remembered. */
       if (same)
         merges_.reused++;
-      else
+      else if (lag)
         merges_.lagged++;
       merge_reused = true;
       windows[merge.slot] = last_merge_described_;
@@ -1427,14 +1482,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       windows[merge.slot].outY = merge.origin_y;
       windows[merge.slot].z = merge.depth;
     } else {
-      /* Drawn already, or being drawn, if validate queued this very group;
-       * anything else and the queued job is let go and the group drawn
-       * here, as it always was. */
-      const bool queued =
-          pending_merge_ &&
-          pending_merge_->key.Judge(merge.window, merge.width, merge.height,
-                                    MergeMembers(merge)) ==
-              PictureMemory::Verdict::kSame;
+      /* Anything but the group queued at validate: the queued job is let go
+       * and the group drawn here, as it always was. */
       if (!queued)
         DropPendingMerge();
 
@@ -1508,9 +1557,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
       } else {
         VicDrawn drawn;
         if (queued) {
-          auto out = vic_jobs_.Resolve(pending_merge_->id, true);
-          if (out.result)
-            drawn = std::move(*out.result);
+          if (resolved)
+            drawn = std::move(*resolved);
           merges_.queued_used++;
         } else {
           VicJob job;
@@ -2094,7 +2142,8 @@ std::string TegraAtomicStateManager::DumpState() {
          << m.parts_refused << "\n";
     if (m.queued != 0)
       ss << "  queued at validate      : " << m.queued << ", used "
-         << m.queued_used << ", given up " << m.queued_given_up << "\n";
+         << m.queued_used << ", given up " << m.queued_given_up
+         << ", dropped " << m.dropped << "\n";
     if (scratch_ != nullptr)
       ss << "  scratch pool            : " << scratch_->source_name()
          << " (" << scratch_->width() << "x" << scratch_->height() << ")\n"

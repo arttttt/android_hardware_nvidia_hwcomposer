@@ -73,6 +73,14 @@ bool CalibrationWanted() {
   return ATRACE_ENABLED();
 }
 
+void MarkDropped(const char *engine) {
+  if (!ATRACE_ENABLED())
+    return;
+  char line[48];
+  snprintf(line, sizeof(line), "hwc_drop %s", engine);
+  ATRACE_INSTANT(line);
+}
+
 void MarkSteeringForCalibration(const drm_hwcomposer::FrameNote &note,
                                 size_t merge_width, uint64_t seq) {
   if (!ATRACE_ENABLED() || note.runs.empty() || merge_width == 0)

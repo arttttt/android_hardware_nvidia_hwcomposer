@@ -54,6 +54,10 @@ void MarkMergeForCalibration(
 /* Whether a trace is being taken that the calibration lines would go into. */
 bool CalibrationWanted();
 
+/* One trace moment when an engine's job was dropped and the last picture
+ * it drew shown again: "hwc_drop <engine>". Nothing if tracing is off. */
+void MarkDropped(const char *engine);
+
 void MarkSteeringForCalibration(const drm_hwcomposer::FrameNote &note,
                                 size_t merge_width, uint64_t seq);
 

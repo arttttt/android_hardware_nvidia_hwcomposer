@@ -584,6 +584,9 @@ class TegraAtomicStateManager : public AtomicStateManager {
     uint64_t queued = 0;
     uint64_t queued_used = 0;
     uint64_t queued_given_up = 0;
+    /* Groups not drawn because the engine was still busy with the one
+     * before when the frame went up: the window showed that one again. */
+    uint64_t dropped = 0;
   };
   FenceCounters fences_;
   MergeCounters merges_;
@@ -700,6 +703,9 @@ class TegraAtomicStateManager : public AtomicStateManager {
     uint32_t group_code = 0;
     bool untouched = false;
     SharedFd held_fence;
+    /* Whether the window may show the last group drawn instead, should the
+     * engine still be busy with that one when this frame goes up. */
+    bool droppable = false;
   };
   std::optional<PendingMerge> pending_merge_;
   bool vic_worker_wanted_ = true;
