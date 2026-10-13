@@ -286,9 +286,11 @@ int main(int argc, char **argv) {
   fprintf(stderr, "three layers into %ux%u: mean %.2f ms, worst %.2f ms over %d\n", kW, kH,
           total / kRuns, worst, kRuns);
 
-  /* The same drawing in two halves, as the composer runs it: begun at
-   * validate, collected at commit. The picture must be the same, and the
-   * collection cheap once the drawing has had its head start. */
+  /* The same drawing through the job queue, as the composer runs it:
+   * queued at validate, collected at commit. The picture must be the same,
+   * and the collection cheap once the drawing has had its head start. A
+   * second droppable job queued before the thread takes the first drops
+   * it; a collected job is gone. */
   {
     /* A target of its own, never drawn: what it shows can only be this. */
     sp<GraphicBuffer> fresh_target = Make(kW, kH, scanout, "stand target 2");
@@ -300,28 +302,21 @@ int main(int argc, char **argv) {
     t2.buffer = fresh_target->handle;
     t2.stride = fresh_target->getStride();
     t2.ready_fence = -1;
-    if (!c->Begin(t2, layers, 3)) {
-      fprintf(stderr, "FAIL: Begin refused\n");
-      return 1;
-    }
-    if (c->Begin(t2, layers, 3)) {
-      fprintf(stderr, "FAIL: a second Begin was taken over an unfinished one\n");
-      return 1;
-    }
+    const uint64_t id = c->Queue(t2, layers, 3, false);
     usleep(8 * 1000);
     const double t0 = NowMs();
-    const int fd = c->Finish();
+    const int fd = c->Resolve(id, true);
     const double collect_ms = NowMs() - t0;
     if (fd < 0 || !WaitFd(fd)) {
-      fprintf(stderr, "FAIL: Begin/Finish gave no fence that came due\n");
+      fprintf(stderr, "FAIL: Queue/Resolve gave no fence that came due\n");
       return 1;
     }
     close(fd);
-    fprintf(stderr, "begun 8 ms ahead, collected in %.2f ms\n", collect_ms);
-    if (!CheckThree(fresh_target, "begin/finish"))
+    fprintf(stderr, "queued 8 ms ahead, collected in %.2f ms\n", collect_ms);
+    if (!CheckThree(fresh_target, "queue/resolve"))
       return 1;
-    if (c->Finish() != -1) {
-      fprintf(stderr, "FAIL: Finish with nothing begun gave a fence\n");
+    if (c->Resolve(id, true) != -1) {
+      fprintf(stderr, "FAIL: a job collected twice gave a fence\n");
       return 1;
     }
   }

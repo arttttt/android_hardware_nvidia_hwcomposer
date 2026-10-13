@@ -64,12 +64,13 @@ class GpuExecutor {
     drm_hwcomposer::SharedFd fence;
   };
 
-  /* Draws `layers`, bottom first, into the next buffer, in two halves:
-   * Begin starts the drawing and returns at once, Finish hands back the
-   * buffer and the fence its drawing signals -- nothing when the library
-   * refused the work, and the buffer's turn is then given back. A Begin
-   * over an unfinished one drops the earlier drawing; nothing was shown of
-   * it, and the buffer's turn was never taken.
+  /* Draws `layers`, bottom first, into the next buffer, through the
+   * engines' job queue: Begin queues the drawing for the library's thread
+   * and returns at once, Finish collects the buffer and the fence its
+   * drawing signals -- nothing when the library refused the work, and the
+   * buffer's turn is then given back. A Begin over an unfinished one gives
+   * the earlier drawing up; nothing was shown of it, and the buffer's turn
+   * was never taken.
    *
    * `parts`, when given, draws only those rectangles of the buffer -- at
    * most vk::Target::kMaxParts, which the redraw's own bound matches -- and
@@ -127,8 +128,9 @@ class GpuExecutor {
   alloc_device_t *alloc_ = nullptr;
   std::array<Slot, 3> slots_{};
   size_t at_ = 0;
-  /* The buffer a begun drawing goes into, taken at Finish. */
+  /* The buffer a begun drawing goes into, taken at Finish, and its job. */
   std::optional<size_t> begun_at_;
+  uint64_t begun_id_ = 0;
   size_t showing_ = 0;
   bool anything_showing_ = false;
 

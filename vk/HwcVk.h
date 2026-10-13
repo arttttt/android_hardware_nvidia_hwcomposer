@@ -40,7 +40,7 @@ namespace android::hwc::vk {
 
 /* Bumped whenever anything below changes shape. The composer refuses a
  * library that answers another number. */
-constexpr uint32_t apiVersion = 7;
+constexpr uint32_t apiVersion = 8;
 
 /* One layer to draw. Rectangles are in pixels; `dst` is in the target's
  * own space, whose origin is wherever the composer puts the target. */
@@ -132,15 +132,20 @@ class Compositor {
    * on the CPU for the GPU. */
   virtual int Compose(const Target &target, const Layer *layers, size_t count) = 0;
 
-  /* Compose in two halves, for a caller with other work to do meanwhile:
-   * Begin queues the drawing and returns at once, Finish waits for it to
-   * be sent and returns what Compose would have. Begin copies what it is
-   * given -- the layers, and a duplicate of every fence -- so nothing need
-   * outlive the call. One drawing begun at a time: Begin refuses (false)
-   * while the last one is unfinished, and Finish with nothing begun
-   * returns -1. */
-  virtual bool Begin(const Target &target, const Layer *layers, size_t count) = 0;
-  virtual int Finish() = 0;
+  /* Compose through the engines' job queue (compositor/JobQueue.h), for a
+   * caller with other work to do meanwhile: Queue hands the drawing to the
+   * library's thread and returns at once, with the job's id; Resolve gives
+   * back what Compose would have, waiting with `wait` for the drawing to
+   * be sent, and without it dropping a droppable one not yet taken -- -1
+   * then, and for a refused or cancelled one; Cancel lets a job go that is
+   * no longer wanted. Queue copies what it is given -- the layers, and a
+   * duplicate of every fence -- so nothing need outlive the call. A newer
+   * droppable job drops an older one the thread has not taken, as the
+   * queue's own rule says. */
+  virtual uint64_t Queue(const Target &target, const Layer *layers, size_t count,
+                         bool droppable) = 0;
+  virtual int Resolve(uint64_t id, bool wait) = 0;
+  virtual void Cancel(uint64_t id) = 0;
 
   /* Brings the GPU up ahead of a composition: a tiny drawing into a
    * buffer of the library's own, sent and not waited for. False if the

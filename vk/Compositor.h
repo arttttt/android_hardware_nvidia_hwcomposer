@@ -27,6 +27,7 @@
 #include <thread>
 #include <vector>
 
+#include "compositor/JobQueue.h"
 #include "vk/HwcVk.h"
 #include "vk/ImageCache.h"
 #include "vk/runtime/VulkanDeviceState.h"
@@ -52,8 +53,10 @@ class VkCompositor : public Compositor {
   ~VkCompositor() override;
 
   int Compose(const Target &target, const Layer *layers, size_t count) override;
-  bool Begin(const Target &target, const Layer *layers, size_t count) override;
-  int Finish() override;
+  uint64_t Queue(const Target &target, const Layer *layers, size_t count,
+                 bool droppable) override;
+  int Resolve(uint64_t id, bool wait) override;
+  void Cancel(uint64_t id) override;
   bool Warm() override;
   void Prepare(const Layer &layer) override;
 
@@ -160,13 +163,41 @@ class VkCompositor : public Compositor {
 
   /* What Begin was handed, copied, with fences of its own -- read by the
    * thread until the drawing is sent, then by Finish to close them. */
-  struct Begun {
+  /* A queued drawing: the target and the layers with fences of its own,
+   * closed when it goes, whether drawn, dropped or cancelled. */
+  struct Job {
     Target target;
     std::vector<Layer> layers;
-    std::promise<int> done;
-    std::future<int> fence;
+    Job() = default;
+    Job(const Job &) = delete;
+    Job &operator=(const Job &) = delete;
+    Job(Job &&o) noexcept : target(o.target), layers(std::move(o.layers)) {
+      o.target.ready_fence = -1;
+      o.layers.clear();
+    }
+    Job &operator=(Job &&o) noexcept;
+    ~Job();
   };
-  std::unique_ptr<Begun> begun_;
+  /* The fence a drawing signals, closed unless someone takes it. */
+  struct Fence {
+    int fd = -1;
+    Fence() = default;
+    explicit Fence(int f) : fd(f) {}
+    Fence(const Fence &) = delete;
+    Fence &operator=(const Fence &) = delete;
+    Fence(Fence &&o) noexcept : fd(o.fd) { o.fd = -1; }
+    Fence &operator=(Fence &&o) noexcept;
+    ~Fence();
+    int Release() {
+      const int f = fd;
+      fd = -1;
+      return f;
+    }
+  };
+  using Jobs = android::drm_hwcomposer::JobQueue<Job, Fence>;
+  Jobs jobs_;
+  /* On the thread: the oldest queued drawing, if one is still there. */
+  void RunJob();
 
   std::thread thread_;
   std::mutex mutex_;
