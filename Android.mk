@@ -198,6 +198,11 @@ LOCAL_CFLAGS := \
     -Werror \
     -std=c++17
 
+# nvhost's interface from the kernel's own header, named outright for the
+# reason given at the composer's KERNEL_NVMAP_H.
+LOCAL_CFLAGS += \
+    -DKERNEL_NVHOST_IOCTL_H='"$(abspath $(TARGET_KERNEL_SOURCE))/include/linux/nvhost_ioctl.h"'
+
 LOCAL_C_INCLUDES := $(LOCAL_PATH)
 
 LOCAL_SHARED_LIBRARIES := \
