@@ -274,7 +274,33 @@ uint32_t ZoneBytesFor(uint32_t width, uint32_t height) {
 
 }  // namespace
 
-int main() {
+/* What the scene's sources hold, and how the zone's image is declared;
+ * set from the command line:
+ *   hwcvk_zone_stand [solid|noise] [plain|storage|mutable] [wc|cached]
+ * Noise does not compress, so a target the driver lays out compressed
+ * writes it all; storage and mutable usage are what drivers commonly lay
+ * out uncompressed. The zone holds one stand target at a time. */
+bool g_noise = false;
+VkImageUsageFlags g_zone_usage = 0;
+VkImageCreateFlags g_zone_flags = 0;
+bool g_zone_wc = true;
+
+uint32_t Noise(uint32_t *state) {
+  uint32_t x = *state;
+  x ^= x << 13;
+  x ^= x >> 17;
+  x ^= x << 5;
+  *state = x;
+  return x;
+}
+
+int main(int argc, char **argv) {
+  if (argc > 1 && !strcmp(argv[1], "noise")) g_noise = true;
+  if (argc > 2 && !strcmp(argv[2], "storage")) g_zone_usage = VK_IMAGE_USAGE_STORAGE_BIT;
+  if (argc > 2 && !strcmp(argv[2], "mutable")) g_zone_flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+  if (argc > 3 && !strcmp(argv[3], "cached")) g_zone_wc = false;
+  P("scene %s, zone image %s, zone %s\n", g_noise ? "noise" : "solid",
+    argc > 2 ? argv[2] : "plain", g_zone_wc ? "write-combined" : "cached");
   VulkanDeviceState state;
   if (!state.init()) FAIL("Vulkan device did not come up");
   const VulkanPfn &vk = *state.pfn();
@@ -301,9 +327,13 @@ int main() {
     void *p = nullptr;
     if (gb->lock(GRALLOC_USAGE_SW_WRITE_OFTEN, &p) != NO_ERROR || !p) FAIL("lock source");
     auto *px = static_cast<uint32_t *>(p);
+    uint32_t seed = 2463534242u + i;
     for (uint32_t y = 0; y < kSrcH; y++)
-      for (uint32_t x = 0; x < kSrcW; x++)
-        px[y * gb->getStride() + x] = QuadrantColour(x, y, i);
+      for (uint32_t x = 0; x < kSrcW; x++) {
+        const uint32_t c = QuadrantColour(x, y, i);
+        px[y * gb->getStride() + x] =
+            g_noise ? (c & 0xff000000u) | (Noise(&seed) & 0x00ffffffu) : c;
+      }
     gb->unlock();
 
     NativeBufferProbe nb = {};
@@ -703,7 +733,8 @@ int main() {
     ci.arrayLayers = 1;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.tiling = VK_IMAGE_TILING_LINEAR;
-    ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | g_zone_usage;
+    ci.flags = g_zone_flags;
     VkResult r = vk.CreateImage(dev, &ci, nullptr, &t.image);
     if (r != VK_SUCCESS) {
       P("  %s: LINEAR refused (%d), trying OPTIMAL\n", name, r);
@@ -823,11 +854,9 @@ int main() {
               &creation_ms);
   const double pitch_ms = creation_ms;
   creation_ms = -1;
-  MakeZone("zone-wc", true, &creation_ms);
-  const double wc_ms = creation_ms;
-  creation_ms = -1;
-  MakeZone("zone-cached", false, &creation_ms);
-  const double cached_ms = creation_ms;
+  MakeZone(g_zone_wc ? "zone-wc" : "zone-cached", g_zone_wc, &creation_ms);
+  const double wc_ms = g_zone_wc ? creation_ms : -1;
+  const double cached_ms = g_zone_wc ? -1 : creation_ms;
 
   if (targets.empty()) FAIL("no target came up at all");
 
@@ -877,7 +906,10 @@ int main() {
       }
     }
     P("%s readback:\n", t.name);
-    CheckTarget(t);
+    if (g_noise)
+      P("  (noise scene: pixel check skipped)\n");
+    else
+      CheckTarget(t);
   }
 
   for (Target &t : targets) CloseTarget(state, t, const_cast<VulkanPfn &>(vk));
