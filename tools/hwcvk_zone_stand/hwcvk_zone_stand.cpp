@@ -293,6 +293,11 @@ bool g_zone_wc = true;
 /* "own": the same image in memory the driver allocates itself, nothing
  * imported -- the zone buffer is still taken, only to be left alone. */
 bool g_own = false;
+/* Which targets come up at all: "gralloc", "zone" (the zone or own
+ * variant alone), or both. Alone, every mapping and allocation the kernel
+ * reports belongs to the one target. */
+bool g_want_gralloc = true;
+bool g_want_zone = true;
 
 uint32_t Noise(uint32_t *state) {
   uint32_t x = *state;
@@ -308,6 +313,8 @@ int main(int argc, char **argv) {
   if (argc > 2 && !strcmp(argv[2], "storage")) g_zone_usage = VK_IMAGE_USAGE_STORAGE_BIT;
   if (argc > 2 && !strcmp(argv[2], "mutable")) g_zone_flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
   if (argc > 2 && !strcmp(argv[2], "own")) g_own = true;
+  if (argc > 4 && !strcmp(argv[4], "gralloc")) g_want_zone = false;
+  if (argc > 4 && !strcmp(argv[4], "zone")) g_want_gralloc = false;
   if (argc > 3 && !strcmp(argv[3], "cached")) g_zone_wc = false;
   P("scene %s, zone image %s, zone %s\n", g_noise ? "noise" : "solid",
     argc > 2 ? argv[2] : "plain", g_zone_wc ? "write-combined" : "cached");
@@ -854,17 +861,21 @@ int main(int argc, char **argv) {
   double creation_ms = -1;
   /* The executor's own target usage (tegra/GpuExecutor.cpp kTargetUsage):
    * with a CPU-read bit the allocator would lay it out in rows instead. */
-  MakeGralloc("gralloc-bl", GRALLOC_USAGE_HW_RENDER | GRALLOC_USAGE_HW_COMPOSER,
-              &creation_ms);
+  if (g_want_gralloc)
+    MakeGralloc("gralloc-bl", GRALLOC_USAGE_HW_RENDER | GRALLOC_USAGE_HW_COMPOSER,
+                &creation_ms);
   const double bl_ms = creation_ms;
   creation_ms = -1;
+  if (g_want_gralloc)
   MakeGralloc("gralloc-pitch",
               GRALLOC_USAGE_HW_RENDER | GRALLOC_USAGE_HW_COMPOSER | GRALLOC_USAGE_SW_READ_OFTEN |
                   GRALLOC_USAGE_SW_WRITE_OFTEN,
               &creation_ms);
   const double pitch_ms = creation_ms;
   creation_ms = -1;
-  MakeZone(g_own ? "vk-own" : g_zone_wc ? "zone-wc" : "zone-cached", g_zone_wc, &creation_ms);
+  if (g_want_zone)
+    MakeZone(g_own ? "vk-own" : g_zone_wc ? "zone-wc" : "zone-cached", g_zone_wc,
+             &creation_ms);
   const double wc_ms = g_zone_wc ? creation_ms : -1;
   const double cached_ms = g_zone_wc ? -1 : creation_ms;
 
