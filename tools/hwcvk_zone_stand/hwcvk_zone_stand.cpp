@@ -97,11 +97,6 @@ double NowMs() {
   return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
 }
 
-bool WaitFd(int fd) {
-  pollfd p = {fd, POLLIN, 0};
-  return poll(&p, 1, 2000) == 1;
-}
-
 #define P(...)                    \
   do {                            \
     fprintf(stderr, __VA_ARGS__); \
