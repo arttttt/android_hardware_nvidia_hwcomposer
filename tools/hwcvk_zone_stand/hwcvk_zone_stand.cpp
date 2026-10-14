@@ -78,6 +78,7 @@ namespace {
 /* The zone's own pitch grain, as VicSession keeps it for the engine's
  * parser; the driver's own pitch for a LINEAR image is asked of the image
  * itself, and the read-back follows whichever it said. */
+constexpr uint32_t kZoneMarker = 0x7a6f7a6fu;
 constexpr uint32_t kZonePitchGrain = 256;
 
 constexpr uint32_t kSrcW = 1536, kSrcH = 2048;
@@ -259,7 +260,12 @@ ZoneBuffer TakeZone(int nvmap_fd, bool write_combine, uint32_t bytes) {
     close(z.fd);
     z.fd = -1;
     z.pixels = nullptr;
+    return z;
   }
+  /* A marker the GPU's writes would replace: what still reads as the
+   * marker after drawing was never written. */
+  auto *w = static_cast<uint32_t *>(z.pixels);
+  for (size_t i = 0; i < bytes / 4; i++) w[i] = kZoneMarker;
   return z;
 }
 
@@ -284,6 +290,9 @@ bool g_noise = false;
 VkImageUsageFlags g_zone_usage = 0;
 VkImageCreateFlags g_zone_flags = 0;
 bool g_zone_wc = true;
+/* "own": the same image in memory the driver allocates itself, nothing
+ * imported -- the zone buffer is still taken, only to be left alone. */
+bool g_own = false;
 
 uint32_t Noise(uint32_t *state) {
   uint32_t x = *state;
@@ -298,6 +307,7 @@ int main(int argc, char **argv) {
   if (argc > 1 && !strcmp(argv[1], "noise")) g_noise = true;
   if (argc > 2 && !strcmp(argv[2], "storage")) g_zone_usage = VK_IMAGE_USAGE_STORAGE_BIT;
   if (argc > 2 && !strcmp(argv[2], "mutable")) g_zone_flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+  if (argc > 2 && !strcmp(argv[2], "own")) g_own = true;
   if (argc > 3 && !strcmp(argv[3], "cached")) g_zone_wc = false;
   P("scene %s, zone image %s, zone %s\n", g_noise ? "noise" : "solid",
     argc > 2 ? argv[2] : "plain", g_zone_wc ? "write-combined" : "cached");
@@ -725,7 +735,7 @@ int main(int argc, char **argv) {
     emi.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR;
     VkImageCreateInfo ci = {};
     ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    ci.pNext = &emi;
+    ci.pNext = g_own ? nullptr : &emi;
     ci.imageType = VK_IMAGE_TYPE_2D;
     ci.format = VK_FORMAT_R8G8B8A8_UNORM;
     ci.extent = {kW, kH, 1};
@@ -785,7 +795,7 @@ int main(int argc, char **argv) {
     VkMemoryDedicatedAllocateInfoLocal dedicated = {};
     dedicated.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO_KHR;
     dedicated.image = t.image;
-    dedicated.pNext = &import;
+    dedicated.pNext = g_own ? nullptr : &import;
     VkMemoryAllocateInfo mai = {};
     mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     mai.allocationSize = req.size;
@@ -794,7 +804,7 @@ int main(int argc, char **argv) {
     r = vk.AllocateMemory(dev, &mai, nullptr, &t.memory);
     if (r != VK_SUCCESS) {
       P("  %s: dedicated+import refused (%d), retrying without dedicated\n", name, r);
-      mai.pNext = &import;
+      mai.pNext = g_own ? nullptr : &import;
       r = vk.AllocateMemory(dev, &mai, nullptr, &t.memory);
       if (r != VK_SUCCESS) {
         P("  %s: import refused (%d) -- variant skipped\n", name, r);
@@ -854,7 +864,7 @@ int main(int argc, char **argv) {
               &creation_ms);
   const double pitch_ms = creation_ms;
   creation_ms = -1;
-  MakeZone(g_zone_wc ? "zone-wc" : "zone-cached", g_zone_wc, &creation_ms);
+  MakeZone(g_own ? "vk-own" : g_zone_wc ? "zone-wc" : "zone-cached", g_zone_wc, &creation_ms);
   const double wc_ms = g_zone_wc ? creation_ms : -1;
   const double cached_ms = g_zone_wc ? -1 : creation_ms;
 
@@ -891,8 +901,8 @@ int main(int argc, char **argv) {
     const size_t words = size_t{kW} * kH;
     size_t nonzero = 0;
     for (size_t i = 0; i < words; i++)
-      if (w[i] != 0) nonzero++;
-    P("%s: %zu of %zu words written in the zone\n", t.name, nonzero, words);
+      if (w[i] != kZoneMarker) nonzero++;
+    P("%s: %zu of %zu words of the zone no longer the marker\n", t.name, nonzero, words);
   }
 
   /* Correctness, and the read-back for the gralloc targets by lock. */
