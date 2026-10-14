@@ -69,6 +69,7 @@
 
 #include "tegra/nvmap.h"
 #include "vk/runtime/VulkanDeviceState.h"
+#include "vk/runtime/loader/VulkanPfn.h"
 
 using namespace android;
 
