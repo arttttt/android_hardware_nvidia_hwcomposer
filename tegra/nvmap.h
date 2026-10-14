@@ -33,12 +33,16 @@
  * paired with add the bit and the zone it names. */
 #define NVMAP_HEAP_CARVEOUT_COMPOSER (1ul << 26)
 
-/* Allocation flags: the memory is read and written by the engine and
- * never mapped into this process. The two bits pick the caching policy:
- * write-combine (0x2), uncached (0x1), or cacheable (0x3, both set). */
-#define NVMAP_HANDLE_UNCACHEABLE  (0x1ul << 0)
-#define NVMAP_HANDLE_WRITE_COMBINE (0x2ul << 0)
-#define NVMAP_HANDLE_CACHEABLE    (0x3ul << 0)
+/* Allocation flags: the two low bits pick the caching policy, in the
+ * kernel's numbering (include/linux/nvmap.h): uncached 0, write-combine
+ * 1, inner-cacheable 2, cacheable 3. This header once had write-combine
+ * as 2, so every zone slot asked for write-combine was made
+ * inner-cacheable -- the CPU's paint of a slot could sit in its cache
+ * while the engines read memory. */
+#define NVMAP_HANDLE_UNCACHEABLE     (0x0ul << 0)
+#define NVMAP_HANDLE_WRITE_COMBINE   (0x1ul << 0)
+#define NVMAP_HANDLE_INNER_CACHEABLE (0x2ul << 0)
+#define NVMAP_HANDLE_CACHEABLE       (0x3ul << 0)
 
 struct nvmap_create_handle {
   union {
