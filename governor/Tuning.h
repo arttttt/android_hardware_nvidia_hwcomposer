@@ -143,11 +143,11 @@ struct Tuning {
    * ramps the core rail under the clock lock the flips wait on. */
   uint32_t warm_ahead = 0;
 
-  /* How long after a merge the engine is kept up through frames that do
-   * not merge, nought for not at all; see KeepWarm. It is given its tiny
-   * pass `keep_margin_ms` before it would power down. On the device the
-   * engine sat between half a second and a second and a quarter without a
-   * merge before two in five of a transition's cold merges. */
+  /* How long after a merge the engine is kept up, nought for not at all;
+   * see KeepWarm. It is given its tiny pass `keep_margin_ms` before it
+   * would power down. On the device a transition's cold merge came a
+   * second to a second and a half after the last merge, the screen still
+   * in between. */
   uint32_t keep_warm_ms = 1500;
   uint32_t keep_margin_ms = 100;
 

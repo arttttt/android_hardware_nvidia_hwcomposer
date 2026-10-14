@@ -29,17 +29,16 @@ namespace android::hwc::governor {
  * were flowing all along -- the screen alive, the engine not wanted for
  * half a second to a second and a quarter, and down by the time it was.
  *
- * So while frames come and the engine did real work not long ago, it is
- * given a tiny job shortly before it would power down. Only while it is
- * still up: waking a powered-down engine ramps the core rail under the
- * clock lock the flips wait on, which is what made warming ahead of a
- * transition cost more than it saved. A still screen asks nothing, so the
- * engine powers down as before; past the window after its last real work,
- * neither.
+ * So while the engine did real work not long ago, it is given a tiny job
+ * shortly before it would power down. Only while it is still up: waking a
+ * powered-down engine ramps the core rail under the clock lock the flips
+ * wait on, which is what made warming ahead of a transition cost more than
+ * it saved. Past the window after its last real work it powers down as
+ * before.
  *
  * Plain state, no clock of its own and no lock: its owner calls it from
  * one thread with the time it already has -- on each frame, or on a timer
- * set from NextDueNs and told whether frames came meanwhile.
+ * set from NextDueNs.
  */
 class KeepWarm {
  public:
@@ -56,8 +55,8 @@ class KeepWarm {
     given_up_ = false;
   }
   void Warmed(int64_t now_ns) { last_up_ns_ = now_ns; }
-  /* No frames came while it was up: the screen is still, and the engine
-   * is let power down; real work starts it over. */
+  /* The engine is let power down: its owner could not give the job in
+   * time. Real work starts it over. */
   void GiveUp() { given_up_ = true; }
 
   /* Whether a frame at `now_ns` should give the engine its tiny job. */

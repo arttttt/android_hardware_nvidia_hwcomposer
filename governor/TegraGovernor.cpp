@@ -109,10 +109,9 @@ void TegraGovernor::GpuSubmitted(uint64_t seq, int gpu_fence_fd) {
 }
 
 void TegraGovernor::FramePresented(uint64_t /*seq*/) {
-  /* Counted only, for keeping the engine up while frames come; the thread
-   * is not woken for it. The merge's own fence says when the engine is
-   * done, and the submit says when the processor may be let go. */
-  presented_.fetch_add(1, std::memory_order_relaxed);
+  /* Nothing to do with it in this version: the merge's own fence says
+   * when the engine is done, and the submit says when the processor may
+   * be let go. */
 }
 
 void TegraGovernor::PowerMode(Power mode) {
@@ -201,7 +200,6 @@ void TegraGovernor::ThreadFn() {
       DropCpu();
       vic_.Reported();
       keep_vic_.Worked(now);
-      presented_at_up_ = presented_.load(std::memory_order_relaxed);
     }
     for (const Watched &w : mail.submitted)
       NoteSubmit(w.seq, w.since_ns);
@@ -518,22 +516,22 @@ void TegraGovernor::WarmAhead(const Frame &f, int64_t now, int64_t gap_ns) {
 }
 
 /* The engine still up from a merge not long ago and about to power down:
- * given its pass if frames came since its last job -- see KeepWarm -- let
- * go if none did. Let go as well when the thread woke too late, the
- * engine down already, or the pass was refused: the timer is not set
- * again for it. Not in power save. */
+ * given its pass -- see KeepWarm. Whether frames came meanwhile is not
+ * asked: on the device every cold merge left came after a second or so
+ * with no frame at all, the transition's first frame bringing its merge
+ * straight away. Let go when the thread woke too late, the engine down
+ * already, or the pass was refused: the timer is not set again for it.
+ * Not in power save. */
 void TegraGovernor::KeepWarmIfDue(int64_t now) {
   const int64_t due = keep_vic_.NextDueNs();
   if (due == 0 || now < due)
     return;
-  const uint64_t presented = presented_.load(std::memory_order_relaxed);
-  if (!keep_vic_.Due(now) || presented == presented_at_up_ ||
+  if (!keep_vic_.Due(now) ||
       profile_.Read(now, int64_t(tuning_.profile_poll_ms) * nsPerMs) ==
           PerfProfile::powerSave) {
     keep_vic_.GiveUp();
     return;
   }
-  presented_at_up_ = presented;
   host_.TraceInt("hwc_gov_keep_warm", 1);
   Warm(now);
   host_.TraceInt("hwc_gov_keep_warm", 0);
