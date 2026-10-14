@@ -682,11 +682,11 @@ int main() {
         vk.GetMemoryFdPropertiesKHR(dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR,
                                     z.fd, &fdp) != VK_SUCCESS ||
         fdp.memoryTypeBits == 0) {
-      P("  %s: fd properties refused (bits 0x%x) -- the camera's path is closed here\n",
+      /* The query is not defined for opaque descriptors by the spec;
+       * the import itself is the answer, tried with the image's types. */
+      P("  %s: fd properties refused (bits 0x%x) -- trying the import anyway\n",
         name, fdp.memoryTypeBits);
-      munmap(z.pixels, z.size);
-      close(z.fd);
-      return false;
+      fdp.memoryTypeBits = ~0u;
     }
     P("  %s: fd typeBits 0x%x\n", name, fdp.memoryTypeBits);
 
