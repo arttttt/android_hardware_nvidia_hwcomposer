@@ -40,6 +40,7 @@
 #include "compositor/PlanInvalidation.h"
 #include "display/DisplayPipeline.h"
 #include "drm/drm_mode.h"
+#include "governor/KeepWarm.h"
 #include "hwc/HwcDisplayConfigs.h"
 #include "hwc/HwcLayer.h"
 #include "utils/BacklightController.h"
@@ -604,6 +605,11 @@ class HwcDisplay : public ICompositorDisplay {
   void SeatGpuBuffer(buffer_handle_t buffer, SharedFd fence,
                      const IRect &bounds);
   int64_t last_gpu_use_ns_ = 0;
+  /* The GPU's rail is gated half a second after its last job; given a
+   * tiny drawing a tenth of a second before, through frames that do not
+   * draw on it. */
+  hwc::governor::KeepWarm gpu_warmth_{Properties::GpuKeepWarmNs(),
+                                      400'000'000, 500'000'000};
 
   /* Display-level PlanInvalidator bits; the layers carry their own. Starts
    * all-dirty so the first frame of a life is planned in full, and every

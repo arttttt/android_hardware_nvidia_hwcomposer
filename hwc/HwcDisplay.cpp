@@ -481,7 +481,9 @@ void HwcDisplay::BeginClientOnGpu(
     gpu_pixels_ = pixels;
     /* What state the GPU is found in, by our own last drawing: its rail
      * gated after half a second, its clocks down after a pause of a frame. */
-    const int64_t idle = gpu_queued_ns_ - last_gpu_use_ns_;
+    const int64_t idle =
+        gpu_queued_ns_ -
+        std::max(last_gpu_use_ns_, gpu_warmth_.last_up_ns());
     gpu_cell_ = idle >= 500'000'000 ? kGpuCold
                 : idle >= 18'000'000 ? kGpuAfterPause
                                      : kGpuInARow;
@@ -588,6 +590,8 @@ bool HwcDisplay::DrawClientOnGpu(
     return false;
   }
   last_gpu_use_ns_ = GetTimeMonotonicNs();
+  if (!keep)
+    gpu_warmth_.Worked(last_gpu_use_ns_);
   /* A kept picture was drawn frames ago; only a drawing has a fence the
    * GPU's clock is held for. */
   if (!keep)
@@ -973,6 +977,10 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
      * between validate and present -- a millisecond or more -- is time the
      * GPU and its driver no longer take out of the commit. */
     BeginClientOnGpu(*validated_composition_);
+  } else if (gpu != nullptr) {
+    const int64_t now = GetTimeMonotonicNs();
+    if (gpu_warmth_.Due(now) && gpu->Warm())
+      gpu_warmth_.Warmed(now);
   }
 
   // Iterate through the layers to find which layers actually changed.

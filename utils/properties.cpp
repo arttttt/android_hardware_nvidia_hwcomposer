@@ -192,6 +192,15 @@ auto Properties::DropSlackNs() -> int64_t {
   return slack;
 }
 
+auto Properties::GpuKeepWarmNs() -> int64_t {
+  /* Read once, at the composer's start. */
+  static const int64_t window =
+      static_cast<int64_t>(property_get_int32("vendor.hwc.gpu_keepwarm_ms",
+                                              1500)) *
+      1000000;
+  return window;
+}
+
 auto Properties::DropShadow() -> bool {
   /* Off unless asked; read once, at the composer's start. */
   static const bool wanted =

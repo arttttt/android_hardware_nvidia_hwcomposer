@@ -68,6 +68,11 @@ class Properties {
    * end may fall before the oracle calls it late, in microseconds. */
   static auto DropSlackNs() -> int64_t;
 
+  /* How long after the GPU's last drawing it is kept up through frames it
+   * does not draw, in milliseconds, nought for not at all; see
+   * governor/KeepWarm.h. */
+  static auto GpuKeepWarmNs() -> int64_t;
+
   /* Whether the pipeline's resting state corrects the panel's gamut toward
    * sRGB rather than showing the panel as it is. */
   static auto CalibratedColorMode() -> bool;
