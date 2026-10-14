@@ -28,6 +28,7 @@
 #include "governor/FloorLane.h"
 #include "governor/GpuClock.h"
 #include "governor/HwcGovernor.h"
+#include "governor/KeepWarm.h"
 #include "governor/Mailbox.h"
 #include "governor/MergePlan.h"
 #include "governor/PerfProfile.h"
@@ -107,6 +108,7 @@ class TegraGovernor final : public Governor {
              int64_t lag_ns, int64_t now_ns);
   void Warm(int64_t now);
   void WarmAhead(const Frame &frame, int64_t now, int64_t gap_ns);
+  void KeepWarmThrough(const Frame &frame, int64_t now);
   void DropCpu();
   void DropEverything();
   /* A merge reported: if it is the last plan's, the path from its
@@ -140,6 +142,7 @@ class TegraGovernor final : public Governor {
   /* Thread-only state from here down. */
   int64_t cpu_until_ns_ = 0;    /* processor lifted until, nought if not */
   int64_t last_warm_ns_ = 0;
+  KeepWarm keep_vic_{0, 0, 0};
   bool warm_refused_logged_ = false;
   /* The previous frame's validate, merge or not; nought before the first. */
   int64_t last_plan_ns_ = 0;

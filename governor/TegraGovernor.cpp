@@ -46,6 +46,12 @@ bool TegraGovernor::Start() {
          tuning_.powergate_ms);
   if (ReadTuningFile(tuningPath, &tuning_, host_))
     host_.Log(ANDROID_LOG_INFO, "tuning read from the device");
+  keep_vic_ = KeepWarm(
+      int64_t(tuning_.keep_warm_ms) * nsPerMs,
+      int64_t(tuning_.powergate_ms - std::min(tuning_.keep_margin_ms,
+                                              tuning_.powergate_ms)) *
+          nsPerMs,
+      int64_t(tuning_.powergate_ms) * nsPerMs);
 
   if (!mailbox_.Open()) {
     LogErrno(host_, ANDROID_LOG_ERROR, "eventfd", errno);
@@ -254,8 +260,10 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
   if (!f.merge_planned || f.merge_reuse_predicted) {
     host_.TraceInt("hwc_gov_need_mhz", 0);
     WarmAhead(f, now, gap_ns);
+    KeepWarmThrough(f, now);
     return;
   }
+  keep_vic_.Worked(now);
 
   const int profile =
       profile_.Read(now, int64_t(tuning_.profile_poll_ms) * nsPerMs);
@@ -483,6 +491,7 @@ void TegraGovernor::Warm(int64_t now) {
    * engine up, and the merge queues behind it on the same channel. */
   close(fd);
   last_warm_ns_ = now;
+  keep_vic_.Warmed(now);
   host_.TraceInt("hwc_gov_warm", 1);
   host_.TraceInt("hwc_gov_warm", 0);
 }
@@ -503,6 +512,23 @@ void TegraGovernor::WarmAhead(const Frame &f, int64_t now, int64_t gap_ns) {
   host_.TraceInt("hwc_gov_warm_ahead", 1);
   Warm(now);
   host_.TraceInt("hwc_gov_warm_ahead", 0);
+}
+
+/* A frame without a merge while the engine is still up from one not long
+ * ago: see KeepWarm. The engine's own last use counts as well as ours --
+ * a merge the plan did not announce keeps it up just the same. Not in
+ * power save. */
+void TegraGovernor::KeepWarmThrough(const Frame &f, int64_t now) {
+  if (f.last_engine_use_ns > keep_vic_.last_up_ns())
+    keep_vic_.Warmed(f.last_engine_use_ns);
+  if (!keep_vic_.Due(now))
+    return;
+  if (profile_.Read(now, int64_t(tuning_.profile_poll_ms) * nsPerMs) ==
+      PerfProfile::powerSave)
+    return;
+  host_.TraceInt("hwc_gov_keep_warm", 1);
+  Warm(now);
+  host_.TraceInt("hwc_gov_keep_warm", 0);
 }
 
 void TegraGovernor::DropEverything() {

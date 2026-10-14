@@ -51,6 +51,8 @@ constexpr TuningKey tuningKeys[] = {
     {"hold_ms", &Tuning::hold_ms},
     {"powergate_ms", &Tuning::powergate_ms},
     {"warm_ahead", &Tuning::warm_ahead},
+    {"keep_warm_ms", &Tuning::keep_warm_ms},
+    {"keep_margin_ms", &Tuning::keep_margin_ms},
     {"lead_us", &Tuning::lead_us},
     {"submit_warm_us", &Tuning::submit_warm_us},
     {"submit_cold_us", &Tuning::submit_cold_us},
