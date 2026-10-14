@@ -310,6 +310,13 @@ bool g_want_zone = true;
  *            they land says the layout's GOB and block height */
 bool g_pad = false;
 bool g_probe = false;
+/* "flush" (fifth argument): after the render pass, a barrier handing the
+ * target's writes to the host and to other devices -- whether the GPU's
+ * cache is written back by the time the fence comes due, as the display
+ * reading the zone would need. "release" does the same as a queue-family
+ * release to an external owner. */
+bool g_flush = false;
+bool g_release = false;
 
 struct ProbePoint {
   int32_t x, y;
@@ -341,6 +348,8 @@ int main(int argc, char **argv) {
   if (argc > 4 && !strcmp(argv[4], "zone")) g_want_gralloc = false;
   if (argc > 5 && strstr(argv[5], "pad")) g_pad = true;
   if (argc > 5 && strstr(argv[5], "probe")) g_probe = true;
+  if (argc > 5 && strstr(argv[5], "flush")) g_flush = true;
+  if (argc > 5 && strstr(argv[5], "release")) g_release = true;
   if (argc > 6) sscanf(argv[6], "%ux%u", &kW, &kH);
   if (argc > 3 && !strcmp(argv[3], "cached")) g_zone_wc = false;
   P("scene %s, zone image %s, zone %s\n", g_noise ? "noise" : "solid",
@@ -635,6 +644,21 @@ int main(int argc, char **argv) {
       vk.CmdDraw(cmd, 4, 1, 0, 0);
     }
     vk.CmdEndRenderPass(cmd);
+    if (g_flush || g_release) {
+      VkImageMemoryBarrier b = {};
+      b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+      b.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+      b.dstAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_MEMORY_READ_BIT;
+      b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+      b.srcQueueFamilyIndex = g_release ? 0u : VK_QUEUE_FAMILY_IGNORED;
+      b.dstQueueFamilyIndex = g_release ? (~0U - 1) /* EXTERNAL_KHR */ : VK_QUEUE_FAMILY_IGNORED;
+      b.image = t.image;
+      b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                            VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                            0, 0, nullptr, 0, nullptr, 1, &b);
+    }
     VK(vk.EndCommandBuffer(cmd));
     VkSubmitInfo subi = {};
     subi.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
