@@ -281,8 +281,12 @@ void VkCompositor::PrepareNow(const Layer &layer) {
   const VkFormat f = FormatOf(layer.format, &opaque);
   if (f == VK_FORMAT_UNDEFINED)
     return;
+  /* Ahead of any frame: no frame's claim, so if it is let go before one
+   * draws it, it goes at once -- and so may what the budget let go to
+   * make room for it, the GPU being idle as often as not meanwhile. */
   cache_->Get(layer.buffer, layer.width, layer.height, layer.stride, layer.format, layer.usage,
-              f, false, frame_, layer.height_word);
+              f, false, 0, layer.height_word);
+  cache_->Retire(retired_);
 }
 
 void VkCompositor::LogOnce(int kind, int prio, const char *what) {
@@ -861,6 +865,7 @@ int VkCompositor::ComposeNow(const Target &target, const Layer *layers, size_t c
   const uint64_t frame = frame_ + 1;
 
   /* Every image first: nothing is acquired until all of them are known. */
+  cache_->BeginFrame();
   bool target_opaque = false;
   if (target.format != kHalRgba8888) {
     LogOnce(kLogTarget, ANDROID_LOG_WARN, "vk: a target not in RGBA 8888");

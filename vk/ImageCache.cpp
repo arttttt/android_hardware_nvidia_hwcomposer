@@ -56,6 +56,13 @@ uint64_t InodeOf(const native_handle_t *h) {
   return static_cast<uint64_t>(st.st_ino);
 }
 
+/* What the buffer holds, near enough: the formats read here are four
+ * bytes a pixel but one. */
+size_t BytesOf(uint32_t stride, uint32_t height, VkFormat format) {
+  const size_t bpp = format == VK_FORMAT_R5G6B5_UNORM_PACK16 ? 2 : 4;
+  return size_t{stride} * height * bpp;
+}
+
 }  // namespace
 
 ImageCache::ImageCache(const VulkanDeviceState &dev, VkRenderPass render_pass)
@@ -88,6 +95,29 @@ void ImageCache::SetAside(Entry e) {
   set_aside_.push_back(e);
 }
 
+void ImageCache::Drop(std::map<Key, Entry>::iterator it) {
+  bytes_ -= it->second.bytes;
+  SetAside(it->second);
+  entries_.erase(it);
+}
+
+void ImageCache::MakeRoom(size_t adding) {
+  while (budget_.Over(entries_.size(), bytes_, adding)) {
+    std::vector<CacheUse> uses;
+    std::vector<std::map<Key, Entry>::iterator> its;
+    uses.reserve(entries_.size());
+    its.reserve(entries_.size());
+    for (auto it = entries_.begin(); it != entries_.end(); ++it) {
+      uses.push_back({it->second.last_use});
+      its.push_back(it);
+    }
+    const auto victim = PickVictim(uses, frame_start_);
+    if (!victim)
+      return; /* all the frame's own: over for a frame, not for good */
+    Drop(its[*victim]);
+  }
+}
+
 void ImageCache::Retire(uint64_t frame) {
   auto done = std::partition(set_aside_.begin(), set_aside_.end(),
                              [frame](const Entry &e) { return e.last_frame > frame; });
@@ -107,22 +137,16 @@ ImageCache::Entry *ImageCache::Get(const native_handle_t *handle, uint32_t width
   auto it = entries_.find(key);
   if (it != entries_.end()) {
     if (it->second.hash == hash && it->second.inode == inode) {
-      it->second.last_frame = frame;
+      /* Never lowered: an import ahead does not undo a frame's claim. */
+      it->second.last_frame = std::max(it->second.last_frame, frame);
+      it->second.last_use = ++tick_;
       return &it->second;
     }
-    SetAside(it->second);
-    entries_.erase(it);
+    Drop(it);
   }
 
-  /* The least recently used goes when the cache is full. */
-  if (entries_.size() >= kLimit) {
-    auto oldest = std::min_element(entries_.begin(), entries_.end(),
-                                   [](const auto &a, const auto &b) {
-                                     return a.second.last_frame < b.second.last_frame;
-                                   });
-    SetAside(oldest->second);
-    entries_.erase(oldest);
-  }
+  const size_t bytes = BytesOf(stride, height, format);
+  MakeRoom(bytes);
 
   /* The height the driver reads is the allocator's word in the handle,
    * and it lays the buffer out by its own rule from it. Told the height
@@ -164,6 +188,8 @@ ImageCache::Entry *ImageCache::Get(const native_handle_t *handle, uint32_t width
   e.hash = hash;
   e.inode = inode;
   e.last_frame = frame;
+  e.last_use = ++tick_;
+  e.bytes = bytes;
   e.copy = copy;
   if (vk.CreateImage(dev_.device(), &ci, nullptr, &e.image) != VK_SUCCESS) {
     Destroy(e);
@@ -196,6 +222,7 @@ ImageCache::Entry *ImageCache::Get(const native_handle_t *handle, uint32_t width
     }
   }
 
+  bytes_ += bytes;
   return &entries_.emplace(key, e).first->second;
 }
 
