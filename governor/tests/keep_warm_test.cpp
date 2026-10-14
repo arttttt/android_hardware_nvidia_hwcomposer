@@ -80,6 +80,25 @@ void TestWindow() {
   CHECK(k.last_up_ns() == 2600 * kMs);
 }
 
+/* For a timer: the next due time follows the last job, and there is none
+ * past the window or once given up -- until real work again. */
+void TestTimer() {
+  KeepWarm k = Make();
+  CHECK(k.NextDueNs() == 0);
+  k.Worked(1000 * kMs);
+  CHECK(k.NextDueNs() == 1400 * kMs);
+  k.Warmed(1400 * kMs);
+  CHECK(k.NextDueNs() == 1800 * kMs);
+  k.Warmed(2200 * kMs);
+  CHECK(k.NextDueNs() == 0); /* 2600 ms is past the window */
+  k.Worked(3000 * kMs);
+  k.GiveUp();
+  CHECK(k.NextDueNs() == 0);
+  CHECK(!k.Due(3450 * kMs));
+  k.Worked(4000 * kMs);
+  CHECK(k.NextDueNs() == 4400 * kMs);
+}
+
 /* Nought turns it off. */
 void TestOff() {
   KeepWarm k(0, 400 * kMs, 500 * kMs);
@@ -93,6 +112,7 @@ int main() {
   TestNotBeforeWork();
   TestNotOnceDown();
   TestWindow();
+  TestTimer();
   TestOff();
   if (failures == 0)
     printf("keep_warm_test: all passed\n");

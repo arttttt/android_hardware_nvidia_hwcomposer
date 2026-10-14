@@ -38,7 +38,8 @@ namespace android::hwc::governor {
  * neither.
  *
  * Plain state, no clock of its own and no lock: its owner calls it from
- * one thread with the time it already has.
+ * one thread with the time it already has -- on each frame, or on a timer
+ * set from NextDueNs and told whether frames came meanwhile.
  */
 class KeepWarm {
  public:
@@ -52,16 +53,29 @@ class KeepWarm {
   void Worked(int64_t now_ns) {
     last_work_ns_ = now_ns;
     last_up_ns_ = now_ns;
+    given_up_ = false;
   }
   void Warmed(int64_t now_ns) { last_up_ns_ = now_ns; }
+  /* No frames came while it was up: the screen is still, and the engine
+   * is let power down; real work starts it over. */
+  void GiveUp() { given_up_ = true; }
 
   /* Whether a frame at `now_ns` should give the engine its tiny job. */
   bool Due(int64_t now_ns) const {
-    if (window_ns_ <= 0 || last_work_ns_ == 0 ||
+    if (window_ns_ <= 0 || last_work_ns_ == 0 || given_up_ ||
         now_ns - last_work_ns_ >= window_ns_)
       return false;
     const int64_t idle = now_ns - last_up_ns_;
     return idle >= lead_ns_ && idle < powergate_ns_;
+  }
+
+  /* For an owner that is woken by a timer rather than by frames: when the
+   * next tiny job would be due, nought for not at all. */
+  int64_t NextDueNs() const {
+    if (window_ns_ <= 0 || last_work_ns_ == 0 || given_up_)
+      return 0;
+    const int64_t due = last_up_ns_ + lead_ns_;
+    return due < last_work_ns_ + window_ns_ ? due : 0;
   }
 
   /* The engine's last job, real or tiny; nought before any. */
@@ -73,6 +87,7 @@ class KeepWarm {
   int64_t powergate_ns_;
   int64_t last_work_ns_ = 0;
   int64_t last_up_ns_ = 0;
+  bool given_up_ = false;
 };
 
 }  // namespace android::hwc::governor

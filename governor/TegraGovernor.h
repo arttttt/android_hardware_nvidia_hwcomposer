@@ -108,7 +108,7 @@ class TegraGovernor final : public Governor {
              int64_t lag_ns, int64_t now_ns);
   void Warm(int64_t now);
   void WarmAhead(const Frame &frame, int64_t now, int64_t gap_ns);
-  void KeepWarmThrough(const Frame &frame, int64_t now);
+  void KeepWarmIfDue(int64_t now);
   void DropCpu();
   void DropEverything();
   /* A merge reported: if it is the last plan's, the path from its
@@ -128,6 +128,8 @@ class TegraGovernor final : public Governor {
    * are ignored and fences are closed on arrival, since nobody would
    * take them out of the mailbox. */
   std::atomic<bool> dead_{false};
+  /* Frames presented, counted by the composer's side. */
+  std::atomic<uint64_t> presented_{0};
 
   Mailbox mailbox_;
   EngineClock engine_;
@@ -143,6 +145,7 @@ class TegraGovernor final : public Governor {
   int64_t cpu_until_ns_ = 0;    /* processor lifted until, nought if not */
   int64_t last_warm_ns_ = 0;
   KeepWarm keep_vic_{0, 0, 0};
+  uint64_t presented_at_up_ = 0;
   bool warm_refused_logged_ = false;
   /* The previous frame's validate, merge or not; nought before the first. */
   int64_t last_plan_ns_ = 0;

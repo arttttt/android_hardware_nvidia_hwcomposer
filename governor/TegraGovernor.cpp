@@ -109,9 +109,10 @@ void TegraGovernor::GpuSubmitted(uint64_t seq, int gpu_fence_fd) {
 }
 
 void TegraGovernor::FramePresented(uint64_t /*seq*/) {
-  /* Nothing to do with it in this version: the merge's own fence says
-   * when the engine is done, and the submit says when the processor may
-   * be let go. */
+  /* Counted only, for keeping the engine up while frames come; the thread
+   * is not woken for it. The merge's own fence says when the engine is
+   * done, and the submit says when the processor may be let go. */
+  presented_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void TegraGovernor::PowerMode(Power mode) {
@@ -129,6 +130,7 @@ int TegraGovernor::TimeoutMs(int64_t now) const {
   consider(cpu_until_ns_);
   consider(vic_.NextDueNs());
   consider(gpu_.NextDueNs());
+  consider(keep_vic_.NextDueNs());
 
   if (due == 0)
     return -1;
@@ -198,6 +200,8 @@ void TegraGovernor::ThreadFn() {
     if (!mail.submitted.empty()) {
       DropCpu();
       vic_.Reported();
+      keep_vic_.Worked(now);
+      presented_at_up_ = presented_.load(std::memory_order_relaxed);
     }
     for (const Watched &w : mail.submitted)
       NoteSubmit(w.seq, w.since_ns);
@@ -223,6 +227,7 @@ void TegraGovernor::ThreadFn() {
 
     vic_.ReleaseIfDue(now);
     gpu_.ReleaseIfDue(now);
+    KeepWarmIfDue(now);
 
     if (cpu_until_ns_ != 0 && now >= cpu_until_ns_)
       DropCpu();
@@ -260,10 +265,8 @@ void TegraGovernor::Decide(const Planned &planned, int64_t now,
   if (!f.merge_planned || f.merge_reuse_predicted) {
     host_.TraceInt("hwc_gov_need_mhz", 0);
     WarmAhead(f, now, gap_ns);
-    KeepWarmThrough(f, now);
     return;
   }
-  keep_vic_.Worked(now);
 
   const int profile =
       profile_.Read(now, int64_t(tuning_.profile_poll_ms) * nsPerMs);
@@ -514,21 +517,28 @@ void TegraGovernor::WarmAhead(const Frame &f, int64_t now, int64_t gap_ns) {
   host_.TraceInt("hwc_gov_warm_ahead", 0);
 }
 
-/* A frame without a merge while the engine is still up from one not long
- * ago: see KeepWarm. The engine's own last use counts as well as ours --
- * a merge the plan did not announce keeps it up just the same. Not in
- * power save. */
-void TegraGovernor::KeepWarmThrough(const Frame &f, int64_t now) {
-  if (f.last_engine_use_ns > keep_vic_.last_up_ns())
-    keep_vic_.Warmed(f.last_engine_use_ns);
-  if (!keep_vic_.Due(now))
+/* The engine still up from a merge not long ago and about to power down:
+ * given its pass if frames came since its last job -- see KeepWarm -- let
+ * go if none did. Let go as well when the thread woke too late, the
+ * engine down already, or the pass was refused: the timer is not set
+ * again for it. Not in power save. */
+void TegraGovernor::KeepWarmIfDue(int64_t now) {
+  const int64_t due = keep_vic_.NextDueNs();
+  if (due == 0 || now < due)
     return;
-  if (profile_.Read(now, int64_t(tuning_.profile_poll_ms) * nsPerMs) ==
-      PerfProfile::powerSave)
+  const uint64_t presented = presented_.load(std::memory_order_relaxed);
+  if (!keep_vic_.Due(now) || presented == presented_at_up_ ||
+      profile_.Read(now, int64_t(tuning_.profile_poll_ms) * nsPerMs) ==
+          PerfProfile::powerSave) {
+    keep_vic_.GiveUp();
     return;
+  }
+  presented_at_up_ = presented;
   host_.TraceInt("hwc_gov_keep_warm", 1);
   Warm(now);
   host_.TraceInt("hwc_gov_keep_warm", 0);
+  if (keep_vic_.last_up_ns() != now)
+    keep_vic_.GiveUp();
 }
 
 void TegraGovernor::DropEverything() {
