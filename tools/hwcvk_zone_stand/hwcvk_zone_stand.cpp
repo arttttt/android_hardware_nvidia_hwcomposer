@@ -298,6 +298,28 @@ bool g_own = false;
  * reports belongs to the one target. */
 bool g_want_gralloc = true;
 bool g_want_zone = true;
+/* A fifth argument, any of these comma-joined:
+ *   pad   -- a 4 KiB buffer is taken from the zone first, so the target
+ *            starts off the 128 KiB boundary: nvgpu then maps it in small
+ *            pages, where it cannot compress, and falls back to the kind's
+ *            uncompressed twin (mm_gk20a.c setup_buffer_kind_and_compression)
+ *   probe -- instead of the scene, single pixels at known places are
+ *            cleared to known colours, and found again in the zone: where
+ *            they land says the layout's GOB and block height */
+bool g_pad = false;
+bool g_probe = false;
+
+struct ProbePoint {
+  int32_t x, y;
+};
+constexpr ProbePoint kProbe[] = {{0, 0},   {1, 0},  {15, 0}, {16, 0},  {32, 0},
+                                 {64, 0},  {0, 1},  {0, 7},  {0, 8},   {0, 16},
+                                 {0, 32},  {0, 64}, {0, 128}, {0, 256}, {16, 8},
+                                 {100, 100}};
+constexpr size_t kProbeCount = sizeof(kProbe) / sizeof(kProbe[0]);
+uint32_t ProbeColour(size_t i) {
+  return 0xff000000u | (0x5au << 16) | (static_cast<uint32_t>(i + 1) << 8) | 0xa5u;
+}
 
 uint32_t Noise(uint32_t *state) {
   uint32_t x = *state;
@@ -315,6 +337,8 @@ int main(int argc, char **argv) {
   if (argc > 2 && !strcmp(argv[2], "own")) g_own = true;
   if (argc > 4 && !strcmp(argv[4], "gralloc")) g_want_zone = false;
   if (argc > 4 && !strcmp(argv[4], "zone")) g_want_gralloc = false;
+  if (argc > 5 && strstr(argv[5], "pad")) g_pad = true;
+  if (argc > 5 && strstr(argv[5], "probe")) g_probe = true;
   if (argc > 3 && !strcmp(argv[3], "cached")) g_zone_wc = false;
   P("scene %s, zone image %s, zone %s\n", g_noise ? "noise" : "solid",
     argc > 2 ? argv[2] : "plain", g_zone_wc ? "write-combined" : "cached");
@@ -585,8 +609,22 @@ int main(int argc, char **argv) {
     rb.clearValueCount = 1;
     rb.pClearValues = &clear;
     vk.CmdBeginRenderPass(cmd, &rb, VK_SUBPASS_CONTENTS_INLINE);
+    if (g_probe) {
+      for (size_t i = 0; i < kProbeCount; i++) {
+        VkClearAttachment ca = {};
+        ca.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        ca.colorAttachment = 0;
+        const uint32_t c = ProbeColour(i);
+        ca.clearValue.color.float32[0] = float(c & 0xff) / 255.f;
+        ca.clearValue.color.float32[1] = float((c >> 8) & 0xff) / 255.f;
+        ca.clearValue.color.float32[2] = float((c >> 16) & 0xff) / 255.f;
+        ca.clearValue.color.float32[3] = 1.f;
+        VkClearRect cr = {{{kProbe[i].x, kProbe[i].y}, {1, 1}}, 0, 1};
+        vk.CmdClearAttachments(cmd, 1, &ca, 1, &cr);
+      }
+    }
     vk.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-    for (uint32_t i = 0; i < 3; i++) {
+    for (uint32_t i = 0; i < (g_probe ? 0u : 3u); i++) {
       vk.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1,
                                &sets[i], 0, nullptr);
       vk.CmdPushConstants(cmd, layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(Push),
@@ -714,6 +752,13 @@ int main(int argc, char **argv) {
     if (nvmap_fd < 0) {
       P("  %s: /dev/nvmap: %s\n", name, strerror(errno));
       return false;
+    }
+    if (g_pad) {
+      /* Kept for the run, never closed: the target must not reuse its
+       * place. */
+      ZoneBuffer pad = TakeZone(nvmap_fd, write_combine, 4096);
+      P("  %s: 4 KiB pad taken from the zone first (%s)\n", name,
+        pad.fd >= 0 ? "ok" : "refused");
     }
     ZoneBuffer z = TakeZone(nvmap_fd, write_combine, ZoneBytesFor(kW, kH));
     close(nvmap_fd);
@@ -886,6 +931,28 @@ int main(int argc, char **argv) {
 
   /* Round-robin: every target draws once per round, so the GPU's clock
    * climbing over the run favours none of them. */
+  if (g_probe) {
+    /* One frame, then every probe colour looked for in the zone. */
+    for (Target &t : targets) {
+      DrawFrame(t);
+      if (t.zone_fd < 0 || !t.pixels) continue;
+      const uint32_t *w = static_cast<const uint32_t *>(t.pixels);
+      const size_t words = size_t{kW} * kH;
+      for (size_t i = 0; i < kProbeCount; i++) {
+        long at = -1;
+        int hits = 0;
+        for (size_t k = 0; k < words; k++)
+          if (w[k] == ProbeColour(i)) {
+            if (at < 0) at = long(k * 4);
+            hits++;
+          }
+        P("%s probe (%d,%d) colour 0x%08x: byte offset %ld (0x%lx), %d hit(s)\n", t.name,
+          kProbe[i].x, kProbe[i].y, ProbeColour(i), at, at, hits);
+      }
+    }
+    return 0;
+  }
+
   const int kWarmup = 10, kFrames = 120;
   std::vector<std::vector<double>> times(targets.size());
   std::vector<double> first(targets.size(), -1);
