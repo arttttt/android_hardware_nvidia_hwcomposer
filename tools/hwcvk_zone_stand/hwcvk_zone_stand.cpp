@@ -834,19 +834,36 @@ int main() {
   P("import (alloc+import+fb) ms: gralloc-bl %.3f  gralloc-pitch %.3f  zone-wc %.3f  zone-cached %.3f\n",
     bl_ms, pitch_ms, wc_ms, cached_ms);
 
+  /* Round-robin: every target draws once per round, so the GPU's clock
+   * climbing over the run favours none of them. */
   const int kWarmup = 10, kFrames = 120;
-  for (Target &t : targets) {
-    std::vector<double> ms;
-    double first = -1;
-    for (int i = 0; i < kWarmup + kFrames; i++) {
-      const double d = DrawFrame(t);
-      if (i == 0) first = d; /* the first drawn frame after the import */
-      if (i >= kWarmup) ms.push_back(d);
+  std::vector<std::vector<double>> times(targets.size());
+  std::vector<double> first(targets.size(), -1);
+  for (int i = 0; i < kWarmup + kFrames; i++) {
+    for (size_t k = 0; k < targets.size(); k++) {
+      const double d = DrawFrame(targets[k]);
+      if (i == 0) first[k] = d; /* the first drawn frame after the import */
+      if (i >= kWarmup) times[k].push_back(d);
     }
-    std::sort(ms.begin(), ms.end());
-    P("%-13s first %.3f | fence ms: median %.3f  p90 %.3f  worst %.3f  (n=%d)\n", t.name,
-      first, ms[ms.size() / 2], ms[ms.size() * 9 / 10], ms.back(), int(ms.size()));
+  }
+  for (size_t k = 0; k < targets.size(); k++) {
+    std::sort(times[k].begin(), times[k].end());
+    P("%-13s first %.3f | fence ms: median %.3f  p90 %.3f  worst %.3f  (n=%d)\n",
+      targets[k].name, first[k], times[k][times[k].size() / 2], times[k][times[k].size() * 9 / 10],
+      times[k].back(), int(times[k].size()));
+  }
 
+  /* A zone target in the driver's own layout cannot be checked pixel by
+   * pixel, but whether the GPU wrote into the zone at all can: the buffer
+   * was zeroed at allocation. */
+  for (Target &t : targets) {
+    if (t.zone_fd < 0 || !t.pixels) continue;
+    const uint32_t *w = static_cast<const uint32_t *>(t.pixels);
+    const size_t words = size_t{kW} * kH;
+    size_t nonzero = 0;
+    for (size_t i = 0; i < words; i++)
+      if (w[i] != 0) nonzero++;
+    P("%s: %zu of %zu words written in the zone\n", t.name, nonzero, words);
   }
 
   /* Correctness, and the read-back for the gralloc targets by lock. */
