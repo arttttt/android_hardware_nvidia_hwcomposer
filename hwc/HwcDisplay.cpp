@@ -977,10 +977,6 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
      * between validate and present -- a millisecond or more -- is time the
      * GPU and its driver no longer take out of the commit. */
     BeginClientOnGpu(*validated_composition_);
-  } else if (gpu != nullptr) {
-    const int64_t now = GetTimeMonotonicNs();
-    if (gpu_warmth_.Due(now) && gpu->Warm())
-      gpu_warmth_.Warmed(now);
   }
 
   // Iterate through the layers to find which layers actually changed.
@@ -2386,9 +2382,18 @@ CommitStatus HwcDisplay::CommitStagedComposition(SharedFd &out_present_fence) {
 
   const bool gpu_drew = validated_composition_->gpu_draws_client &&
                         DrawClientOnGpu(validated_composition_.value());
-  /* A frame the executor sat out is a frame its memory did not watch. */
-  if (!validated_composition_->gpu_draws_client)
+  /* A frame the executor sat out is a frame its memory did not watch --
+   * and, presented whether validated or not, the frame that keeps the GPU
+   * up through a stretch it does not draw. */
+  if (!validated_composition_->gpu_draws_client) {
     gpu_memory_.Forget();
+    auto *gpu = GetPipe().GetGpuExecutor();
+    if (gpu != nullptr) {
+      const int64_t now = GetTimeMonotonicNs();
+      if (gpu_warmth_.Due(now) && gpu->Warm())
+        gpu_warmth_.Warmed(now);
+    }
+  }
   PrepareCompositionForCommit(validated_composition_.value());
   const int64_t t1 = timed ? GetTimeMonotonicNs() : 0;
 
