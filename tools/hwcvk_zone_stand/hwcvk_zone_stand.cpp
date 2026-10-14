@@ -527,7 +527,7 @@ int main() {
   };
 
   /* One frame into a target: three draws by the fragment shader. */
-  auto DrawFrame = [&](Target &t) {
+  auto DrawFrame = [&](Target &t) -> double {
     VK(vk.ResetFences(dev, 1, &fence));
     VK(vk.ResetCommandBuffer(cmd, 0));
     VkCommandBufferBeginInfo bi = {};
@@ -870,7 +870,6 @@ int main() {
 
   for (Target &t : targets) CloseTarget(state, t, const_cast<VulkanPfn &>(vk));
   vk.DestroyFence(dev, fence, nullptr);
-  vk.FreeCommandBuffers(dev, cmd_pool, 1, &cmd);
   vk.DestroyCommandPool(dev, cmd_pool, nullptr);
   vk.DestroyPipeline(dev, pipeline, nullptr);
   vk.DestroyShaderModule(dev, frag, nullptr);
