@@ -276,3 +276,4 @@ include $(BUILD_SHARED_LIBRARY)
 HWC_TOOLS := $(LOCAL_PATH)/tools
 include $(HWC_TOOLS)/hwcvk_probe/Android.mk
 include $(HWC_TOOLS)/hwcvk_stand/Android.mk
+include $(HWC_TOOLS)/hwcvk_zone_stand/Android.mk
