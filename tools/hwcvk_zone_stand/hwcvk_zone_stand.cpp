@@ -67,7 +67,7 @@
 #include <ui/GraphicBuffer.h>
 #include <vulkan/vulkan.h>
 
-#include "tegra/nvmap.h"
+#include KERNEL_NVMAP_H
 #include "vk/runtime/VulkanDeviceState.h"
 #include "vk/runtime/loader/VulkanPfn.h"
 

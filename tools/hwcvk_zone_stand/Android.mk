@@ -33,4 +33,7 @@ LOCAL_C_INCLUDES := $(LOCAL_PATH)/../..
 LOCAL_SHARED_LIBRARIES := libui libutils liblog libcutils libdl
 LOCAL_HEADER_LIBRARIES := vulkan_headers
 LOCAL_CFLAGS := -Wall -Werror -Wno-unused-parameter
+# nvmap's interface from the kernel's own header, named outright as the
+# composer names it (see the composer's KERNEL_NVMAP_H).
+LOCAL_CFLAGS += -DKERNEL_NVMAP_H='"$(abspath $(TARGET_KERNEL_SOURCE))/include/linux/nvmap.h"'
 include $(BUILD_EXECUTABLE)
