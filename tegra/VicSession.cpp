@@ -32,7 +32,7 @@
 #include "bufferinfo/NvGralloc.h"
 #include "compositor/PartialRedraw.h"
 #include "utils/Time.h"
-#include "tegra/nvmap.h"
+#include KERNEL_NVMAP_H
 #include "utils/log.h"
 
 #undef  LOG_TAG

@@ -26,6 +26,7 @@
 #include <ui/Rect.h>
 
 #include <sync/sync.h>
+#include <tegra_dc_ext.h>
 
 #include "bufferinfo/NvGralloc.h"
 #include "tegra/VicSession.h"
@@ -39,46 +40,20 @@ namespace hwc {
 
 namespace {
 
-/* The extension's cursor interface, declared here the way the engine's
- * structures are in VicSession: a handful of plain fields, taken verbatim
- * from the kernel's own header rather than through an include that varies
- * by tree. */
-struct DcCursorImage {
-  struct {
-    uint8_t r, g, b;
-  } foreground, background;
-  uint32_t buff_id;
-  uint32_t flags;
-  int16_t x, y;
-  uint32_t vis;
-  uint32_t mode;
-};
-
-struct DcCursor {
-  int16_t x, y;
-  uint32_t flags;
-};
-
-constexpr unsigned long kGetCursor = _IO('D', 0x04);
-constexpr unsigned long kPutCursor = _IO('D', 0x05);
-const unsigned long kSetCursorImage = _IOW('D', 0x06, DcCursorImage);
-const unsigned long kSetCursor = _IOW('D', 0x07, DcCursor);
-
-constexpr uint32_t kVisible = 1U << 0;
-
-/* Size class in bits 0..2, format in bits 16..18 -- the kernel's own
- * encoding. */
+/* Size class and format, in the extension's own encoding (tegra_dc_ext.h,
+ * the kernel's header, as for the flip). */
 uint32_t SizeFlag(uint32_t side) {
   switch (side) {
-    case 32: return 1;
-    case 64: return 2;
-    case 128: return 3;
-    default: return 4;
+    case 32: return TEGRA_DC_EXT_CURSOR_IMAGE_FLAGS_SIZE_32x32;
+    case 64: return TEGRA_DC_EXT_CURSOR_IMAGE_FLAGS_SIZE_64x64;
+    case 128: return TEGRA_DC_EXT_CURSOR_IMAGE_FLAGS_SIZE_128x128;
+    default: return TEGRA_DC_EXT_CURSOR_IMAGE_FLAGS_SIZE_256x256;
   }
 }
 
 uint32_t FormatFlag(bool premultiplied) {
-  return (premultiplied ? 3U : 1U) << 16;
+  return premultiplied ? TEGRA_DC_EXT_CURSOR_FORMAT_FLAGS_RGBA_PREMULT_ALPHA
+                       : TEGRA_DC_EXT_CURSOR_FORMAT_FLAGS_RGBA_NON_PREMULT_ALPHA;
 }
 
 /* The smallest hardware size that holds the sprite. */
@@ -93,7 +68,7 @@ uint32_t SideFor(uint32_t width, uint32_t height) {
 }  // namespace
 
 std::unique_ptr<CursorUnit> CursorUnit::Claim(int dc_fd, VicSession *vic) {
-  if (ioctl(dc_fd, kGetCursor) != 0) {
+  if (ioctl(dc_fd, TEGRA_DC_EXT_GET_CURSOR) != 0) {
     ALOGI("the cursor is not ours to claim: %s", strerror(errno));
     return nullptr;
   }
@@ -107,7 +82,7 @@ CursorUnit::~CursorUnit() {
    * frames, and a sprite nobody hides outlives its owner. */
   std::lock_guard<std::mutex> guard(lock_);
   PointLocked(0, 0, false);
-  ioctl(fd_, kPutCursor);
+  ioctl(fd_, TEGRA_DC_EXT_PUT_CURSOR);
   ReleaseSlotsLocked();
 }
 
@@ -287,10 +262,10 @@ bool CursorUnit::UploadLocked(buffer_handle_t sprite, uint32_t width,
   if (locked != nullptr)
     mapper.unlock(locked);
 
-  DcCursorImage image = {};
+  tegra_dc_ext_cursor_image image = {};
   image.buff_id = static_cast<uint32_t>(slot.mem_fd);
   image.flags = SizeFlag(side) | FormatFlag(premultiplied);
-  if (ioctl(fd_, kSetCursorImage, &image) != 0) {
+  if (ioctl(fd_, TEGRA_DC_EXT_SET_CURSOR_IMAGE, &image) != 0) {
     ALOGE("the unit refused the sprite: %s", strerror(errno));
     return false;
   }
@@ -302,13 +277,13 @@ bool CursorUnit::UploadLocked(buffer_handle_t sprite, uint32_t width,
 }
 
 bool CursorUnit::PointLocked(int32_t x, int32_t y, bool visible) {
-  DcCursor point = {};
+  tegra_dc_ext_cursor point = {};
   point.x = static_cast<int16_t>(
       x < INT16_MIN ? INT16_MIN : (x > INT16_MAX ? INT16_MAX : x));
   point.y = static_cast<int16_t>(
       y < INT16_MIN ? INT16_MIN : (y > INT16_MAX ? INT16_MAX : y));
-  point.flags = visible ? kVisible : 0;
-  return ioctl(fd_, kSetCursor, &point) == 0;
+  point.flags = visible ? TEGRA_DC_EXT_CURSOR_FLAGS_VISIBLE : 0;
+  return ioctl(fd_, TEGRA_DC_EXT_SET_CURSOR, &point) == 0;
 }
 
 bool CursorUnit::Show(buffer_handle_t sprite, uint64_t id, uint32_t width,
@@ -380,10 +355,10 @@ void CursorUnit::Rearm() {
   if (!slot.buffer)
     return;
 
-  DcCursorImage image = {};
+  tegra_dc_ext_cursor_image image = {};
   image.buff_id = static_cast<uint32_t>(slot.mem_fd);
   image.flags = image_flags_;
-  if (ioctl(fd_, kSetCursorImage, &image) != 0)
+  if (ioctl(fd_, TEGRA_DC_EXT_SET_CURSOR_IMAGE, &image) != 0)
     ALOGE("cannot re-state the sprite after a blank: %s", strerror(errno));
   PointLocked(x_, y_, true);
 }

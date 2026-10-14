@@ -27,6 +27,7 @@
 #include "governor/HwcGovernor.h"
 #include "governor/Log.h"
 #include "governor/SysNode.h"
+#include KERNEL_NVHOST_IOCTL_H
 
 namespace android::hwc::governor::tegra {
 
@@ -34,17 +35,6 @@ namespace {
 
 constexpr const char *devicePath = "/dev/nvhost-vic";
 constexpr const char *devfreqPath = "/sys/class/devfreq/vic03.0/cur_freq";
-
-/* nvhost's per-descriptor clock request, spelled out rather than taken from
- * the kernel's header: that header is GPL and is not exported. Rate in
- * hertz, module nought for the engine's own clock. Nought as the rate lifts
- * the request. Unsigned int, which is what the C library's request
- * argument is. */
-struct ClockRateArgs {
-  uint32_t rate;
-  uint32_t moduleid;
-};
-constexpr unsigned int ioctlSetClockRate = _IOW('H', 10, ClockRateArgs);
 
 }  // namespace
 
@@ -80,8 +70,10 @@ bool EngineClock::Request(uint32_t rate_hz, const char *what) {
   if (!usable())
     return false;
 
-  ClockRateArgs args = {rate_hz, 0};
-  if (ioctl(fd_, ioctlSetClockRate, &args) == 0)
+  /* Rate in hertz, module nought for the engine's own clock; nought as
+   * the rate lifts the request. */
+  nvhost_clk_rate_args args = {rate_hz, 0};
+  if (ioctl(fd_, NVHOST_IOCTL_CHANNEL_SET_CLK_RATE, &args) == 0)
     return true;
 
   const int err = errno;
