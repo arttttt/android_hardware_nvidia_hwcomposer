@@ -82,7 +82,9 @@ constexpr uint32_t kZoneMarker = 0x7a6f7a6fu;
 constexpr uint32_t kZonePitchGrain = 256;
 
 constexpr uint32_t kSrcW = 1536, kSrcH = 2048;
-constexpr uint32_t kW = 720, kH = 720;
+/* The targets' size; a sixth argument WxH changes it, e.g. 1536x512 to
+ * see the layout the driver picks for the panel's width. */
+uint32_t kW = 720, kH = 720;
 constexpr uint32_t kCorner = 48;
 
 constexpr uint32_t kRed = 0xff0000ff;
@@ -339,6 +341,7 @@ int main(int argc, char **argv) {
   if (argc > 4 && !strcmp(argv[4], "zone")) g_want_gralloc = false;
   if (argc > 5 && strstr(argv[5], "pad")) g_pad = true;
   if (argc > 5 && strstr(argv[5], "probe")) g_probe = true;
+  if (argc > 6) sscanf(argv[6], "%ux%u", &kW, &kH);
   if (argc > 3 && !strcmp(argv[3], "cached")) g_zone_wc = false;
   P("scene %s, zone image %s, zone %s\n", g_noise ? "noise" : "solid",
     argc > 2 ? argv[2] : "plain", g_zone_wc ? "write-combined" : "cached");
