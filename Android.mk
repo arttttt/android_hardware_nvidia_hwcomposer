@@ -64,6 +64,13 @@ LOCAL_C_INCLUDES += $(LOCAL_PATH)/compat
 # `new`). Nothing in include/video collides with a libc header name.
 LOCAL_C_INCLUDES += $(TARGET_KERNEL_SOURCE)/include/video
 
+# nvmap's interface lives in include/linux, which for the reason above is
+# never put on the search path: the one file is named outright instead. It
+# keeps everything of the kernel's own behind __KERNEL__. A copy of it once
+# had the caching flags numbered differently from the kernel, and every
+# write-combined zone slot came out cacheable.
+LOCAL_CFLAGS += -DKERNEL_NVMAP_H='"$(abspath $(TARGET_KERNEL_SOURCE))/include/linux/nvmap.h"'
+
 # Format codes, layout modifiers and the way a display timing is written down.
 # Only headers are wanted -- nothing here talks to a display through DRM,
 # because this kernel has no such driver for the display controller. It is the
