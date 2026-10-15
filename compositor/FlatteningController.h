@@ -50,6 +50,10 @@ class FlatteningController {
   // Registers a new frame by updating the flattening state as needed and
   // resetting the idle timer.
   void NewFrame();
+  /* A frame of a scene already laid out as flattening would lay it out,
+   * with nothing in it drawing: there is nothing to wait a timeout for and
+   * no refresh to ask for. Counts as flattened from here. */
+  void SettledFrame();
 
   // Returns true if the FlatteningController detects that the scene is idle
   // and should be flattened by the compositor.

@@ -888,6 +888,12 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
   // Notify the flattening controller of a new frame.
   if (layers_.size() <= 1) {
     flatcon_->DisableFlattening();
+  } else if (plan_consolidated_ && !AnyLayerDrawing()) {
+    /* The plan standing is the consolidated one and nothing in the scene
+     * is drawing -- a small layer's single frame, say, redrawn in part
+     * inside the merge. Waiting out the timeout would only end in a
+     * refresh that wakes the framework to lay out the same plan again. */
+    flatcon_->SettledFrame();
   } else {
     flatcon_->NewFrame();
   }
@@ -1023,6 +1029,18 @@ auto HwcDisplay::AcceptValidatedComposition() -> void {
   for (auto &[_, layer] : layers_) {
     layer.AcceptTypeChange();
   }
+}
+
+auto HwcDisplay::AnyLayerDrawing() const -> bool {
+  /* The class each layer is about to be judged into: the live ones that
+   * stay live and the quiet ones about to turn. */
+  auto drawing = [](const HwcLayer &layer) {
+    return layer.IsLive() != layer.LivenessWouldChange();
+  };
+  if (drawing(client_layer_))
+    return true;
+  return std::any_of(layers_.begin(), layers_.end(),
+                     [&](const auto &entry) { return drawing(entry.second); });
 }
 
 auto HwcDisplay::ValidateForPresentWithoutValidation() -> bool {
@@ -2250,6 +2268,7 @@ HwcDisplay::CreateLayerToPlaneJoiningPlan(
   auto composition = LayerToPlaneJoiningPlan::
       CreateLayerToPlaneJoiningPlan(GetPipe(), std::move(composition_layers),
                                     std::move(cursor_layer), prefer_merge);
+  plan_consolidated_ = prefer_merge && composition != nullptr;
   if (composition) {
     /* The rank the client entry ended at, which the steering may have
      * moved by lowering a drawing layer beneath the merge. */
