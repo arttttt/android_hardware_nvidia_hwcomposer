@@ -58,59 +58,58 @@ std::vector<Member> Card() {
 /* Nothing remembered at first, and after a forgotten frame. */
 void TestFirstSightAndForget() {
   PictureMemory m;
-  CHECK(m.Judge(0, 1536, 2048, Card()) == Verdict::kFirstSight);
-  m.Remember(0, 1536, 2048, Card());
-  CHECK(m.Judge(0, 1536, 2048, Card()) == Verdict::kSame);
+  CHECK(m.Judge(1536, 2048, Card()) == Verdict::kFirstSight);
+  m.Remember(1536, 2048, Card());
+  CHECK(m.Judge(1536, 2048, Card()) == Verdict::kSame);
   m.Forget();
-  CHECK(m.Judge(0, 1536, 2048, Card()) == Verdict::kFirstSight);
+  CHECK(m.Judge(1536, 2048, Card()) == Verdict::kFirstSight);
 }
 
 /* The same members over an idle overview: the same picture. */
 void TestSame() {
   PictureMemory m;
-  m.Remember(0, 1536, 2048, Card());
-  CHECK(m.Judge(0, 1536, 2048, Card()) == Verdict::kSame);
+  m.Remember(1536, 2048, Card());
+  CHECK(m.Judge(1536, 2048, Card()) == Verdict::kSame);
 }
 
 /* Each way a picture can differ is told apart, the client drawing into the
  * same buffer again first among them. */
 void TestEachChange() {
   PictureMemory m;
-  m.Remember(0, 1536, 2048, Card());
+  m.Remember(1536, 2048, Card());
 
   auto c = Card();
   c[0].generation++;
-  CHECK(m.Judge(0, 1536, 2048, c) == Verdict::kChangedFrame);
+  CHECK(m.Judge(1536, 2048, c) == Verdict::kChangedFrame);
 
   c = Card();
   c[1].source = 103;
-  CHECK(m.Judge(0, 1536, 2048, c) == Verdict::kChangedIdentity);
+  CHECK(m.Judge(1536, 2048, c) == Verdict::kChangedIdentity);
 
   c = Card();
   c[0].dst.left = 229;
-  CHECK(m.Judge(0, 1536, 2048, c) == Verdict::kChangedGeometry);
+  CHECK(m.Judge(1536, 2048, c) == Verdict::kChangedGeometry);
 
   c = Card();
   c[0].src.bottom = 1939.5F;
-  CHECK(m.Judge(0, 1536, 2048, c) == Verdict::kChangedGeometry);
+  CHECK(m.Judge(1536, 2048, c) == Verdict::kChangedGeometry);
 
   c = Card();
   c[1].alpha = 0.99F;
-  CHECK(m.Judge(0, 1536, 2048, c) == Verdict::kChangedBlend);
+  CHECK(m.Judge(1536, 2048, c) == Verdict::kChangedBlend);
 
   c = Card();
   c[0].transform = 1;
-  CHECK(m.Judge(0, 1536, 2048, c) == Verdict::kChangedTransform);
+  CHECK(m.Judge(1536, 2048, c) == Verdict::kChangedTransform);
 
   c = Card();
   c[0].corners[4] = 3.5F;
-  CHECK(m.Judge(0, 1536, 2048, c) == Verdict::kChangedEffects);
+  CHECK(m.Judge(1536, 2048, c) == Verdict::kChangedEffects);
 
   c = Card();
   c.pop_back();
-  CHECK(m.Judge(0, 1536, 2048, c) == Verdict::kChangedShape);
-  CHECK(m.Judge(1, 1536, 2048, Card()) == Verdict::kChangedShape);
-  CHECK(m.Judge(0, 1536, 1024, Card()) == Verdict::kChangedSize);
+  CHECK(m.Judge(1536, 2048, c) == Verdict::kChangedShape);
+  CHECK(m.Judge(1536, 1024, Card()) == Verdict::kChangedSize);
 }
 
 /* A member with no name is never recognised; a solid colour is its colour. */
@@ -118,17 +117,17 @@ void TestNamelessAndSolid() {
   PictureMemory m;
   auto c = Card();
   c[0].source = 0;
-  m.Remember(0, 1536, 2048, c);
-  CHECK(m.Judge(0, 1536, 2048, c) == Verdict::kNameless);
+  m.Remember(1536, 2048, c);
+  CHECK(m.Judge(1536, 2048, c) == Verdict::kNameless);
 
   Member dim;
   dim.solid = true;
   dim.color = {0, 0, 0, 0.6F};
   dim.dst = {0, 0, 1536, 2048};
-  m.Remember(0, 1536, 2048, {dim});
-  CHECK(m.Judge(0, 1536, 2048, {dim}) == Verdict::kSame);
+  m.Remember(1536, 2048, {dim});
+  CHECK(m.Judge(1536, 2048, {dim}) == Verdict::kSame);
   dim.color[3] = 0.5F;
-  CHECK(m.Judge(0, 1536, 2048, {dim}) == Verdict::kChangedIdentity);
+  CHECK(m.Judge(1536, 2048, {dim}) == Verdict::kChangedIdentity);
 }
 
 }  // namespace
@@ -140,41 +139,40 @@ void TestSameButFrames() {
   was[0].serial = 11;
   was[1].serial = 12;
   PictureMemory m;
-  CHECK(!m.SameButFrames(3, 1536, 2048, was));
-  m.Remember(3, 1536, 2048, was);
+  CHECK(!m.SameButFrames(1536, 2048, was));
+  m.Remember(1536, 2048, was);
 
   std::vector<Member> now = was;
   now[1].source = 202;
   now[1].generation = 8;
-  CHECK(m.Judge(3, 1536, 2048, now) == Verdict::kChangedIdentity);
-  CHECK(m.SameButFrames(3, 1536, 2048, now));
+  CHECK(m.Judge(1536, 2048, now) == Verdict::kChangedIdentity);
+  CHECK(m.SameButFrames(1536, 2048, now));
 
   now = was;
   now[0].generation = 9;
-  CHECK(m.SameButFrames(3, 1536, 2048, now));
+  CHECK(m.SameButFrames(1536, 2048, now));
 
   now = was;
   now[0].dst.top += 1;
-  CHECK(!m.SameButFrames(3, 1536, 2048, now));
+  CHECK(!m.SameButFrames(1536, 2048, now));
 
   now = was;
   now[1].serial = 13;
-  CHECK(!m.SameButFrames(3, 1536, 2048, now));
+  CHECK(!m.SameButFrames(1536, 2048, now));
 
   now = was;
   now[0].alpha = 0.5F;
-  CHECK(!m.SameButFrames(3, 1536, 2048, now));
+  CHECK(!m.SameButFrames(1536, 2048, now));
 
-  CHECK(!m.SameButFrames(4, 1536, 2048, was));
-  CHECK(!m.SameButFrames(3, 1536, 1024, was));
-  CHECK(!m.SameButFrames(3, 1536, 2048, {was[0]}));
+  CHECK(!m.SameButFrames(1536, 1024, was));
+  CHECK(!m.SameButFrames(1536, 2048, {was[0]}));
 
   /* A layer with no serial cannot be followed across its buffers. */
   std::vector<Member> unnamed = was;
   unnamed[0].serial = 0;
   PictureMemory n;
-  n.Remember(3, 1536, 2048, unnamed);
-  CHECK(!n.SameButFrames(3, 1536, 2048, unnamed));
+  n.Remember(1536, 2048, unnamed);
+  CHECK(!n.SameButFrames(1536, 2048, unnamed));
 }
 
 int main() {

@@ -607,6 +607,38 @@ hwc::VicSession::Layer MergeLayerFrom(const LayerData &layer) {
   return out;
 }
 
+/* Shows the group in a full window when one stands empty this frame,
+ * rather than in the merging plane's own.
+ *
+ * The merging plane is the narrow window, D: the only one that cannot show
+ * what the GPU draws, and so the only one that costs the frame nothing to
+ * give the group. But D is a simple window -- no line buffer, ten
+ * kilobytes of fetch ahead of the scan against fifty to a hundred and
+ * thirty in A, B and C (TRM 21.3.1) -- and a whole screen read through it
+ * outruns that buffer for as long as a memory clock change takes at the
+ * lower clocks. The latency allowance says so, and the display holds the
+ * memory clock up to 396 MHz for a lone full-screen group in D, and to 528
+ * beside a scaled one, where the same window in B or C is content with 102
+ * to 204. A still screen is exactly such a lone group, and it is held up
+ * for as long as it is still.
+ *
+ * Any full window takes the group as it is: rows of thirty-two bits,
+ * unresized, the converter and vibrance off for RGB. Its place in the
+ * stack is the window's depth, not its number. The window D leaves is
+ * simply not described, and switches off in the same flip. Asked here,
+ * before the proposal is weighed, so the controller is asked about the
+ * very layout it will be given. */
+void SeatMergeInEmptyWindow(const std::vector<hwc::DcHead::Window> &windows,
+                            TegraAtomicRequest::Merge *merge) {
+  for (size_t i = 0; i < windows.size(); ++i) {
+    if (i == merge->slot || windows[i].bufferFd != 0)
+      continue;
+    merge->slot = i;
+    merge->window = windows[i].index;
+    return;
+  }
+}
+
 }  // namespace
 
 std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
@@ -883,6 +915,9 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
   if (!UniformTurn(merge.transforms))
     return nullptr;
 
+  if (!merge.layers.empty())
+    SeatMergeInEmptyWindow(windows, &merge);
+
   /* The proposal must weigh the merged window too. Its buffer does not
    * exist yet -- the engine draws it at execute, after exactly one plan has
    * won -- but the bandwidth question never needed the buffer: the kernel
@@ -1155,7 +1190,7 @@ void TegraAtomicStateManager::QueueMerge(const TegraAtomicRequest &tegra) {
   if (pending.untouched)
     pending.held_fence = slot_pictures_.Fence(target);
   slot_pictures_.Lost(target);
-  pending.key.Remember(merge.window, merge.width, merge.height,
+  pending.key.Remember(merge.width, merge.height,
                        pending.members);
   /* The last group may stand in for this one only if it is the same group
    * in the same buffer size: the same members, a newer frame of some or
@@ -1200,7 +1235,7 @@ void TegraAtomicStateManager::QueueMerge(const TegraAtomicRequest &tegra) {
 
 TegraAtomicStateManager::MergeVerdict TegraAtomicStateManager::JudgeMerge(
     const TegraAtomicRequest::Merge &merge) const {
-  return merge_memory_.Judge(merge.window, merge.width, merge.height,
+  return merge_memory_.Judge(merge.width, merge.height,
                              MergeMembers(merge));
 }
 
@@ -1247,7 +1282,7 @@ bool TegraAtomicStateManager::RecognisesMerge(
 void TegraAtomicStateManager::RememberMerge(
     const TegraAtomicRequest::Merge &merge,
     const hwc::DcHead::Window &described, const SharedFd &drawn) {
-  merge_memory_.Remember(merge.window, merge.width, merge.height,
+  merge_memory_.Remember(merge.width, merge.height,
                          MergeMembers(merge));
   last_merge_described_ = described;
   last_merge_fence_ = drawn;
@@ -1410,7 +1445,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
      * again, as for a group shown a frame behind. */
     const bool queued =
         !same && pending_merge_ &&
-        pending_merge_->key.Judge(merge.window, merge.width, merge.height,
+        pending_merge_->key.Judge(merge.width, merge.height,
                                   MergeMembers(merge)) ==
             PictureMemory::Verdict::kSame;
     std::optional<VicDrawn> resolved;
@@ -1433,7 +1468,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
      * places: anything else and the remembered pixels are not this group. */
     const bool lag =
         !same && merge_cache_ && !lagged_last_ && last_merge_fence_ &&
-        merge_memory_.SameButFrames(merge.window, merge.width, merge.height,
+        merge_memory_.SameButFrames(merge.width, merge.height,
                                     MergeMembers(merge)) &&
         std::any_of(merge.layers.begin(), merge.layers.end(),
                     [](const hwc::VicSession::Layer &l) {
@@ -1471,6 +1506,9 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         merges_.lagged++;
       merge_reused = true;
       windows[merge.slot] = last_merge_described_;
+      /* Drawn while shown in one window, perhaps, and shown in another
+       * now: the picture is the same, the window is this frame's. */
+      windows[merge.slot].index = merge.window;
       windows[merge.slot].preFence = last_merge_fence_ ? *last_merge_fence_
                                                        : -1;
 
