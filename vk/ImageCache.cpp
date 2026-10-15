@@ -65,8 +65,9 @@ size_t BytesOf(uint32_t stride, uint32_t height, VkFormat format) {
 
 }  // namespace
 
-ImageCache::ImageCache(const VulkanDeviceState &dev, VkRenderPass render_pass)
-    : dev_(dev), render_pass_(render_pass) {
+ImageCache::ImageCache(const VulkanDeviceState &dev, VkRenderPass render_pass,
+                       drm_hwcomposer::GarbageCollector *gc)
+    : dev_(dev), render_pass_(render_pass), gc_(gc) {
 }
 
 ImageCache::~ImageCache() {
@@ -85,10 +86,26 @@ void ImageCache::Destroy(const Entry &e) {
     vk.DestroyImageView(dev_.device(), e.view, nullptr);
   if (e.image != VK_NULL_HANDLE)
     vk.DestroyImage(dev_.device(), e.image, nullptr);
-  if (e.copy != nullptr) {
-    native_handle_close(e.copy);
-    native_handle_delete(e.copy);
-  }
+  /* The image is gone and with it the driver's reference; the handles
+   * left hold the buffer's last ones, and closing them is what costs --
+   * the SMMU unmapped, the pages back to the pool -- so it is done on the
+   * collector's thread. */
+  native_handle_t *copy = e.copy;
+  native_handle_t *hold = e.hold;
+  if (copy == nullptr && hold == nullptr)
+    return;
+  const auto let_go = [copy, hold] {
+    for (native_handle_t *h : {copy, hold}) {
+      if (h == nullptr)
+        continue;
+      native_handle_close(h);
+      native_handle_delete(h);
+    }
+  };
+  if (gc_ != nullptr)
+    gc_->Post(let_go);
+  else
+    let_go();
 }
 
 void ImageCache::SetAside(Entry e) {
@@ -191,6 +208,8 @@ ImageCache::Entry *ImageCache::Get(const native_handle_t *handle, uint32_t width
   e.last_use = ++tick_;
   e.bytes = bytes;
   e.copy = copy;
+  if (!target)
+    e.hold = native_handle_clone(handle);
   if (vk.CreateImage(dev_.device(), &ci, nullptr, &e.image) != VK_SUCCESS) {
     Destroy(e);
     return nullptr;

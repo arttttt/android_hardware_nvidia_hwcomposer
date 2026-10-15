@@ -311,7 +311,7 @@ bool VkCompositor::Init() {
       host_->Log(ANDROID_LOG_ERROR, "vk: the executor's pipeline would not build");
     return false;
   }
-  cache_ = std::make_unique<ImageCache>(state_, render_pass_);
+  cache_ = std::make_unique<ImageCache>(state_, render_pass_, &gc_);
 
   /* The pipeline's first use, paid now rather than in a frame: the driver
    * translates to GL and builds the program on the first draw (0.6 ms off
