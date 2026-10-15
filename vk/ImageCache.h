@@ -24,6 +24,7 @@
 
 #include <cutils/native_handle.h>
 
+#include "compositor/GarbageCollector.h"
 #include "vk/CacheBudget.h"
 #include "vk/runtime/VulkanDeviceState.h"
 #include "vk/runtime/loader/VulkanPfn.h"
@@ -64,14 +65,21 @@ class ImageCache {
     /* The copy of the handle the image was imported from, when the
      * height had to be told differently; owned, closed with the image. */
     native_handle_t *copy = nullptr;
+    /* A copy of a client buffer's handle, its descriptors duplicated: the
+     * cache's own reference, so that the last one is the cache's and is
+     * let go on the garbage collector's thread, not by whoever destroys
+     * the image. Null for a target, which is ours anyway. */
+    native_handle_t *hold = nullptr;
     /* A target drawn into at least once: its contents are a picture of
      * ours, and it was left in the attachment layout -- what a drawing of
      * only part of it builds on. */
     bool drawn = false;
   };
 
-  /* `render_pass` is the one targets are framed for. */
-  ImageCache(const VulkanDeviceState &dev, VkRenderPass render_pass);
+  /* `render_pass` is the one targets are framed for; `gc` lets go of the
+   * client buffers the cache held, off the drawing thread. */
+  ImageCache(const VulkanDeviceState &dev, VkRenderPass render_pass,
+             drm_hwcomposer::GarbageCollector *gc);
   ~ImageCache();
 
   ImageCache(const ImageCache &) = delete;
@@ -111,6 +119,7 @@ class ImageCache {
 
   const VulkanDeviceState &dev_;
   const VkRenderPass render_pass_;
+  drm_hwcomposer::GarbageCollector *const gc_;
   std::map<Key, Entry> entries_;
   std::vector<Entry> set_aside_;
   size_t bytes_ = 0;

@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "compositor/JobQueue.h"
+#include "compositor/GarbageCollector.h"
 #include "vk/HwcVk.h"
 #include "vk/ImageCache.h"
 #include "vk/runtime/VulkanDeviceState.h"
@@ -104,6 +105,10 @@ class VkCompositor : public Compositor {
 
   Host *const host_;
   VulkanDeviceState state_;
+  /* Where the cache leaves the last reference to a client's buffer: before
+   * the cache, so it outlives it and runs what the cache leaves on its way
+   * out. */
+  drm_hwcomposer::GarbageCollector gc_{"hwc-gc"};
   std::unique_ptr<ImageCache> cache_;
 
   VkRenderPass render_pass_ = VK_NULL_HANDLE;
