@@ -134,7 +134,9 @@ class HwcLayer {
    * frame, stamped where SetLayerProperties accepts them; the class
    * decays to quiet after a second of silence. Asymmetric on purpose:
    * a layer that starts drawing must leave the merge with its first
-   * frame, one that stops may wait a second to enter it. Const for the
+   * frame, one that stops may wait a second to enter it -- except a
+   * small layer, which leaves with its second (see LivenessWouldChange).
+   * Const for the
    * same reason TakePlanInvalidators is: the class is bookkeeping about
    * the layer, not the layer. */
   bool RefreshLiveness() const;
@@ -215,7 +217,18 @@ class HwcLayer {
    * than a blinking text cursor's half-period, so a blinker stays live
    * in its window instead of rocking the plan twice a second. */
   static constexpr std::chrono::milliseconds kLayerQuietDelay{1000};
+  /* Activity closer together than this is one frame announcing itself
+   * through several properties. Half a refresh at sixty. */
+  static constexpr std::chrono::milliseconds kSameFrame{8};
+  /* A layer covering at most this share of the panel -- one eighth -- is
+   * small: bars, strips, icons, a text cursor. */
+  static constexpr uint64_t kSmallShare = 8;
   std::chrono::steady_clock::time_point last_activity_{};
+  std::chrono::steady_clock::time_point previous_activity_{};
+
+  /* The layer drew or moved now. */
+  void MarkActivity();
+  bool IsSmall() const;
   mutable bool live_ = false;
 
   bool prior_buffer_scanout_flag_{};
