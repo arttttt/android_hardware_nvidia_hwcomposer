@@ -1155,7 +1155,7 @@ void TegraAtomicStateManager::QueueMerge(const TegraAtomicRequest &tegra) {
   if (pending.untouched)
     pending.held_fence = slot_pictures_.Fence(target);
   slot_pictures_.Lost(target);
-  pending.key.Remember(merge.window, merge.width, merge.height,
+  pending.key.Remember(merge.width, merge.height,
                        pending.members);
   /* The last group may stand in for this one only if it is the same group
    * in the same buffer size: the same members, a newer frame of some or
@@ -1200,7 +1200,7 @@ void TegraAtomicStateManager::QueueMerge(const TegraAtomicRequest &tegra) {
 
 TegraAtomicStateManager::MergeVerdict TegraAtomicStateManager::JudgeMerge(
     const TegraAtomicRequest::Merge &merge) const {
-  return merge_memory_.Judge(merge.window, merge.width, merge.height,
+  return merge_memory_.Judge(merge.width, merge.height,
                              MergeMembers(merge));
 }
 
@@ -1247,7 +1247,7 @@ bool TegraAtomicStateManager::RecognisesMerge(
 void TegraAtomicStateManager::RememberMerge(
     const TegraAtomicRequest::Merge &merge,
     const hwc::DcHead::Window &described, const SharedFd &drawn) {
-  merge_memory_.Remember(merge.window, merge.width, merge.height,
+  merge_memory_.Remember(merge.width, merge.height,
                          MergeMembers(merge));
   last_merge_described_ = described;
   last_merge_fence_ = drawn;
@@ -1410,7 +1410,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
      * again, as for a group shown a frame behind. */
     const bool queued =
         !same && pending_merge_ &&
-        pending_merge_->key.Judge(merge.window, merge.width, merge.height,
+        pending_merge_->key.Judge(merge.width, merge.height,
                                   MergeMembers(merge)) ==
             PictureMemory::Verdict::kSame;
     std::optional<VicDrawn> resolved;
@@ -1433,7 +1433,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
      * places: anything else and the remembered pixels are not this group. */
     const bool lag =
         !same && merge_cache_ && !lagged_last_ && last_merge_fence_ &&
-        merge_memory_.SameButFrames(merge.window, merge.width, merge.height,
+        merge_memory_.SameButFrames(merge.width, merge.height,
                                     MergeMembers(merge)) &&
         std::any_of(merge.layers.begin(), merge.layers.end(),
                     [](const hwc::VicSession::Layer &l) {

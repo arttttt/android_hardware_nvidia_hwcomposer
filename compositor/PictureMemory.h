@@ -83,22 +83,23 @@ class PictureMemory {
     kChangedEffects,
   };
 
-  /* Is this picture the remembered one? `seat` is wherever the engine's
-   * picture goes -- a window, a target -- and `width` by `height` its
-   * size; both are part of the picture. */
-  Verdict Judge(int32_t seat, uint32_t width, uint32_t height,
+  /* Is this picture the remembered one? `width` by `height` is its size,
+   * part of the picture. Where it is shown is not: one memory serves one
+   * engine's output, and a picture moved to another window is the same
+   * picture. */
+  Verdict Judge(uint32_t width, uint32_t height,
                 const std::vector<Member> &members) const;
 
   /* Is it the remembered picture but for newer frames of its members:
    * the same layers -- by serial, whichever of their buffers a frame came
    * in -- in the same places, blended and turned the same, only some of
    * them drawn again since? */
-  bool SameButFrames(int32_t seat, uint32_t width, uint32_t height,
+  bool SameButFrames(uint32_t width, uint32_t height,
                      const std::vector<Member> &members) const {
-    return Compare(seat, width, height, members, true) == Verdict::kSame;
+    return Compare(width, height, members, true) == Verdict::kSame;
   }
 
-  void Remember(int32_t seat, uint32_t width, uint32_t height,
+  void Remember(uint32_t width, uint32_t height,
                 std::vector<Member> members);
 
   /* A frame went unjudged: nothing remembered can be trusted after it. */
@@ -111,11 +112,10 @@ class PictureMemory {
   }
 
  private:
-  Verdict Compare(int32_t seat, uint32_t width, uint32_t height,
+  Verdict Compare(uint32_t width, uint32_t height,
                   const std::vector<Member> &members, bool frames_aside) const;
 
   bool remembered_ = false;
-  int32_t seat_ = -1;
   uint32_t width_ = 0;
   uint32_t height_ = 0;
   std::vector<Member> members_;

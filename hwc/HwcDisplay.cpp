@@ -416,7 +416,7 @@ void HwcDisplay::BeginClientOnGpu(
 
   /* The picture the executor last drew, wanted again: nothing is drawn,
    * and its buffer goes up once more. */
-  if (gpu_memory_.Judge(0, size.first, size.second, members) ==
+  if (gpu_memory_.Judge(size.first, size.second, members) ==
       PictureMemory::Verdict::kSame) {
     gpu_reuse_ = true;
     return;
@@ -576,7 +576,7 @@ bool HwcDisplay::DrawClientOnGpu(
   const auto size = GetSize();
   gpu_slots_.Drawn(slot, size.first, size.second, gpu_pending_, gpu_plan_,
                    drawn->fence);
-  gpu_memory_.Remember(0, size.first, size.second, std::move(gpu_pending_));
+  gpu_memory_.Remember(size.first, size.second, std::move(gpu_pending_));
   gpu_pending_.clear();
   gpu_drawn_fence_ = drawn->fence;
   gpu_shown_bounds_ = gpu_next_bounds_;

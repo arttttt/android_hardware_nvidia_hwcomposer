@@ -21,17 +21,17 @@
 namespace android::drm_hwcomposer {
 
 PictureMemory::Verdict PictureMemory::Judge(
-    int32_t seat, uint32_t width, uint32_t height,
+    uint32_t width, uint32_t height,
     const std::vector<Member> &members) const {
-  return Compare(seat, width, height, members, false);
+  return Compare(width, height, members, false);
 }
 
 PictureMemory::Verdict PictureMemory::Compare(
-    int32_t seat, uint32_t width, uint32_t height,
+    uint32_t width, uint32_t height,
     const std::vector<Member> &members, bool frames_aside) const {
   if (!remembered_)
     return Verdict::kFirstSight;
-  if (seat != seat_ || members.size() != members_.size())
+  if (members.size() != members_.size())
     return Verdict::kChangedShape;
   if (width != width_ || height != height_)
     return Verdict::kChangedSize;
@@ -72,10 +72,9 @@ PictureMemory::Verdict PictureMemory::Compare(
   return Verdict::kSame;
 }
 
-void PictureMemory::Remember(int32_t seat, uint32_t width, uint32_t height,
+void PictureMemory::Remember(uint32_t width, uint32_t height,
                              std::vector<Member> members) {
   remembered_ = true;
-  seat_ = seat;
   width_ = width;
   height_ = height;
   members_ = std::move(members);
