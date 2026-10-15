@@ -83,6 +83,14 @@ void FlatteningController::NewFrame() {
   }
 }
 
+void FlatteningController::SettledFrame() {
+  auto lock = std::lock_guard<std::mutex>(mutex_);
+  if (state_ == State::kDisabled || state_ == State::kExitThread)
+    return;
+  /* The thread triggers only from kActive, so it is left asleep. */
+  SetState(State::kFlattened);
+}
+
 bool FlatteningController::ShouldFlatten() const {
   auto lock = std::lock_guard<std::mutex>(mutex_);
   return state_ == State::kTriggeredCallback || state_ == State::kFlattened;

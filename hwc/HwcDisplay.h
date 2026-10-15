@@ -463,6 +463,11 @@ class HwcDisplay : public ICompositorDisplay {
   std::shared_ptr<DisplayPipeline> pipeline_;
 
   std::unique_ptr<FlatteningController> flatcon_;
+  /* The last plan made was laid out for a still scene (prefer_merge). A
+   * reused plan keeps the answer of the plan it is. */
+  mutable bool plan_consolidated_ = false;
+  /* Whether any layer, judged now, counts as drawing. */
+  auto AnyLayerDrawing() const -> bool;
   std::unique_ptr<HdcpController> hdcpcon_;
 
   std::unique_ptr<VSyncWorker> vsync_worker_;

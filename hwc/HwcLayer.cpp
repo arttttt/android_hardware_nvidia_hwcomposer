@@ -43,7 +43,7 @@ void HwcLayer::SetLayerProperties(const LayerProperties& layer_properties) {
     if (layer_data_.fb != layer_properties.buffer->fb) {
       /* A new buffer is the layer drawing -- the moment the liveness
        * clock restarts from. */
-      last_activity_ = std::chrono::steady_clock::now();
+      MarkActivity();
     }
 
     /* A new buffer invalidates the plan only when it stops looking like the
@@ -142,7 +142,7 @@ void HwcLayer::SetLayerProperties(const LayerProperties& layer_properties) {
       plan_invalidators_ |= kDisplayFrame;
       /* Movement without redrawing -- a window dragged, not repainted --
        * is a live layer that never posts a buffer. */
-      last_activity_ = std::chrono::steady_clock::now();
+      MarkActivity();
     }
     sf_display_frame_ = layer_properties.display_frame.value();
     layer_data_.pi.display_frame = sf_display_frame_;
@@ -152,14 +152,14 @@ void HwcLayer::SetLayerProperties(const LayerProperties& layer_properties) {
       plan_invalidators_ |= kPlaneAlpha;
       /* A fade is a live layer that never posts a buffer and never
        * moves -- the alpha is the only thing drawing. */
-      last_activity_ = std::chrono::steady_clock::now();
+      MarkActivity();
     }
     layer_data_.pi.alpha = layer_properties.alpha.value();
   }
   if (layer_properties.source_crop) {
     if (sf_source_crop_ != layer_properties.source_crop.value()) {
       plan_invalidators_ |= kSourceCrop;
-      last_activity_ = std::chrono::steady_clock::now();
+      MarkActivity();
     }
     sf_source_crop_ = layer_properties.source_crop.value();
     layer_data_.pi.source_crop = sf_source_crop_;
@@ -170,7 +170,7 @@ void HwcLayer::SetLayerProperties(const LayerProperties& layer_properties) {
     if (current.hflip != incoming.hflip || current.vflip != incoming.vflip ||
         current.rotate90 != incoming.rotate90) {
       plan_invalidators_ |= kTransform;
-      last_activity_ = std::chrono::steady_clock::now();
+      MarkActivity();
     }
     layer_data_.pi.transform = incoming;
   }
@@ -249,9 +249,38 @@ bool HwcLayer::RefreshLiveness() const {
   return true;
 }
 
+void HwcLayer::MarkActivity() {
+  const auto now = std::chrono::steady_clock::now();
+  /* One frame may announce itself several times -- a new buffer and a new
+   * crop arrive in the same transaction -- and that is one activity, not
+   * the two a stream is told by. */
+  if (now - last_activity_ >= kSameFrame)
+    previous_activity_ = last_activity_;
+  last_activity_ = now;
+}
+
+bool HwcLayer::IsSmall() const {
+  const auto size = parent_->GetSize();
+  const uint64_t panel = static_cast<uint64_t>(size.first) * size.second;
+  return static_cast<uint64_t>(GetPixOps()) * kSmallShare <= panel;
+}
+
 bool HwcLayer::LivenessWouldChange() const {
-  const bool live = std::chrono::steady_clock::now() - last_activity_ <
-                    kLayerQuietDelay;
+  const bool recent = std::chrono::steady_clock::now() - last_activity_ <
+                      kLayerQuietDelay;
+  /* A small layer that draws once is not yet drawing: a status bar's clock
+   * or battery, an icon that changed. Taken out of the merge for that one
+   * frame, it would take a still screen apart -- every window lit again,
+   * the memory clock raised for the scan -- and a second later the screen
+   * would be merged whole again, every pixel of it redrawn, all for a
+   * strip the merge redraws in part for a fraction of that. So a small
+   * quiet layer turns live on its second frame within the quiet delay,
+   * when it is a stream. A large one turns live on its first, as before:
+   * that is an application starting to move, and its first frame is not
+   * to wait on the engine. */
+  const bool live =
+      recent && (live_ || !IsSmall() ||
+                 last_activity_ - previous_activity_ < kLayerQuietDelay);
   return live != live_;
 }
 
