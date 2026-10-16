@@ -49,6 +49,8 @@ bool LayerEffects::ReachesPastFrame() const {
   return !AllZero(shadow) || !AllZero(blur) || !AllZero(stretch);
 }
 
+float LayerEffects::min_corner_radius = 0.F;
+
 bool LayerEffects::Any() const {
   return HasCorners() || ReachesPastFrame();
 }

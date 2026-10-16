@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "compositor/DisplayInfo.h"
+#include "compositor/LayerEffects.h"
 #include "backend/Backend.h"
 #include "bufferinfo/BufferInfoGetter.h"
 #include "display/Connector.h"
@@ -113,6 +114,7 @@ Hwc::Hwc()
     : dump_stats_tracker_(this),
       refresh_rates_reporter_(DisplayRefreshRatesChangedAtomReporter::Create()),
       hdcp_on_hotplug_enabled_(Properties::EnableHdcpOnHotplug()) {
+  LayerEffects::min_corner_radius = Properties::MinCornerRadius();
   StartDisplayProfileWatcher();
 }
 

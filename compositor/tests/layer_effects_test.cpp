@@ -61,6 +61,25 @@ void TestCorners() {
   CHECK(!e.HasCorners() && !e.Any());
 }
 
+/* A radius under the floor is a square corner: the layer keeps a window.
+ * The floor is the property's; zero, the default here, draws every one. */
+void TestCornerFloor() {
+  LayerEffects e;
+  Apply(kEffectKeys[0], {0, 0, 768, 1940, 1.0F}, &e);
+  CHECK(e.HasCorners() && e.Any());
+  LayerEffects::min_corner_radius = 2.0F;
+  CHECK(!e.HasCorners() && !e.Any());
+  Apply(kEffectKeys[0], {0, 0, 768, 1940, 2.0F}, &e);
+  CHECK(e.HasCorners() && e.Any());
+  LayerEffects::min_corner_radius = 4.0F;
+  CHECK(!e.HasCorners());
+  Apply(kEffectKeys[0], {0, 0, 768, 1940, 5.13F}, &e);
+  CHECK(e.HasCorners());
+  LayerEffects::min_corner_radius = 0.F;
+  Apply(kEffectKeys[0], {0, 0, 768, 1940, 0.23F}, &e);
+  CHECK(e.HasCorners());
+}
+
 void TestResetByEmptyValue() {
   LayerEffects e;
   Apply(kEffectKeys[0], {0, 0, 100, 100, 8}, &e);
@@ -127,6 +146,7 @@ void TestUnknownKey() {
 
 int main() {
   TestCorners();
+  TestCornerFloor();
   TestResetByEmptyValue();
   TestMalformed();
   TestShadowBlurStretch();

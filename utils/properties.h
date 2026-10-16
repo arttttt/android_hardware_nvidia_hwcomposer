@@ -29,6 +29,7 @@ class Properties {
  public:
   static auto InternalDisplayNames() -> std::string;
   static auto ScaleWithGpu() -> bool;
+  static auto MinCornerRadius() -> float;
   static auto EnableVirtualDisplay() -> bool;
   static auto EnableHdcpOnHotplug() -> bool;
   static auto GetCtmHandling() -> CtmHandling;

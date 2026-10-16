@@ -48,7 +48,14 @@ struct LayerEffects {
 
   /* Whether anything would be drawn differently for these. */
   bool Any() const;
-  bool HasCorners() const { return corners[4] > 0.F; }
+  /* Corners rounded enough to be seen: a radius of at least the floor
+   * below, and always more than nothing. */
+  bool HasCorners() const {
+    return corners[4] > 0.F && corners[4] >= min_corner_radius;
+  }
+  /* Set once at start (Properties::MinCornerRadius); a radius under it is
+   * drawn as a square corner, so the layer keeps a window. */
+  static float min_corner_radius;
   /* A shadow, a blur or a stretch: drawn past the layer's frame, or from
    * what lies under it. Every key arrives every frame, zeros for none. */
   bool ReachesPastFrame() const;
