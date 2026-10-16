@@ -774,6 +774,18 @@ std::unique_ptr<AtomicRequest> TegraAtomicStateManager::GetAtomicModeReqForArgs(
           row.scale_h = src_h / dst_h;
       }
       row.alpha = note_layer.pi.alpha;
+      if (noted) {
+        const auto &rects = note_layer.pi.damage.dmg_rects;
+        row.damage = rects.empty() ? 'W'
+                     : std::all_of(rects.begin(), rects.end(),
+                                   [](const IRect &r) {
+                                     return r.right <= r.left ||
+                                            r.bottom <= r.top;
+                                   })
+                         ? 'E'
+                         : 'R';
+        row.generation = note_layer.generation;
+      }
       if (note_layer.pi.display_frame.i_rect) {
         const auto &dst = *note_layer.pi.display_frame.i_rect;
         row.x = dst.left;
@@ -2069,10 +2081,11 @@ void TegraAtomicStateManager::NoteFrame(
        << SteeringWord(tegra.GetFrameNote().steering)
        << (merge_reused ? " reuse" : "") << " L";
   for (const auto &row : tegra.GetFrameNote().layers) {
-    char b[128];
-    snprintf(b, sizeof(b), " %llu%c%u%c a%.2f s%.2fx%.2f @%d,%d",
+    char b[160];
+    snprintf(b, sizeof(b), " %llu%c%u%c a%.2f s%.2fx%.2f @%d,%d d%cg%llu",
              static_cast<unsigned long long>(row.id), row.seat, row.plane,
-             row.blend, row.alpha, row.scale_w, row.scale_h, row.x, row.y);
+             row.blend, row.alpha, row.scale_w, row.scale_h, row.x, row.y,
+             row.damage, static_cast<unsigned long long>(row.generation));
     line << b;
   }
   /* How the engine drew the group's buffer, when it drew one: k for a

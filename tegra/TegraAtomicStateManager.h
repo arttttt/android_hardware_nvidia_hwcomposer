@@ -76,6 +76,12 @@ struct FrameNote {
     float scale_h = 1.F;
     /* Where on the panel the layer lands. */
     int32_t x = 0, y = 0, w = 0, h = 0;
+    /* The damage the framework last gave the layer: 'W' the whole layer
+     * (no rectangles), 'E' none (only empty rectangles), 'R' some; and
+     * the layer's count of buffers handed over. A layer that drew nothing
+     * should read 'E' with a count that stands still. */
+    char damage = 'W';
+    uint64_t generation = 0;
   };
   std::vector<Row> layers;
 
