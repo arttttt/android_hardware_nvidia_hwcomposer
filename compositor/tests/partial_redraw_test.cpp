@@ -135,17 +135,20 @@ void TestFull() {
   Plan p = Decide(never, kW, kH, now, h, kVic);
   CHECK(p.kind == Plan::Kind::kFull);
   CHECK(p.parts.empty());
+  CHECK(p.why == 'h');
 
   /* A frame whose damage was never seen. */
   p = Decide(Held(4, 3), kW, kH, now, h, kVic);
   CHECK(p.kind == Plan::Kind::kFull);
   CHECK(p.parts == kStrips);
+  CHECK(p.why == 'd');
 
   /* The whole of the taskbar changed: still less than the strips. */
   h.Record(2, 4, {});
   p = Decide(Held(6, 3), kW, kH, {StatusBar(6), Taskbar(4)}, h, kVic);
   CHECK(p.kind == Plan::Kind::kPartial);
   CHECK(p.parts == (std::vector<IRect>{{0, 1902, 1536, 2048}}));
+  CHECK(p.why == 'n');
 
   /* A member moved: where it was and where it is are one part. */
   auto moved = now;
@@ -153,6 +156,7 @@ void TestFull() {
   p = Decide(Held(5, 3), kW, kH, moved, h, kVic);
   CHECK(p.kind == Plan::Kind::kFull);
   CHECK(p.parts == kStrips);
+  CHECK(p.why == 'i');
 
   /* Drawn scaled, by an engine that cannot cut it: whole. */
   Snapshot scaled = Held(5, 3);
@@ -162,6 +166,7 @@ void TestFull() {
   p = Decide(scaled, kW, kH, scaled_now, h, kVic);
   CHECK(p.kind == Plan::Kind::kFull);
   CHECK(p.parts.empty());
+  CHECK(p.why == 's');
 
   /* Too many partial redraws in a row. */
   Snapshot tired = Held(5, 3);
@@ -169,6 +174,7 @@ void TestFull() {
   p = Decide(tired, kW, kH, now, h, kVic);
   CHECK(p.kind == Plan::Kind::kFull);
   CHECK(p.parts == kStrips);
+  CHECK(p.why == 'r');
 
   /* A different group size: nothing known of the buffer. */
   p = Decide(Held(5, 3), kW, 1024, now, h, kVic);
@@ -183,6 +189,7 @@ void TestLeft() {
   DamageHistory h;
   Plan p = Decide(Held(5, 3), kW, kH, {StatusBar(6)}, h, kVic);
   CHECK(p.kind == Plan::Kind::kFull);
+  CHECK(p.why == 'c');
   CHECK(p.parts == (std::vector<IRect>{{0, 0, 1536, 2048}}));
 
   const Member pill = [] {

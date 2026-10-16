@@ -243,7 +243,7 @@ Plan Decide(const Snapshot &held, uint32_t width, uint32_t height,
             Engine engine) {
   /* Nothing known of what the buffer holds: all of it is written. */
   if (!held.valid || held.width != width || held.height != height)
-    return {};
+    return Plan{Plan::Kind::kFull, 'h', {}};
 
   const IRect bounds{0, 0, static_cast<int32_t>(width),
                      static_cast<int32_t>(height)};
@@ -253,7 +253,7 @@ Plan Decide(const Snapshot &held, uint32_t width, uint32_t height,
    * drawing is parts too. */
   if (!engine.draws_scaled_in_part &&
       std::any_of(members.begin(), members.end(), Scaled))
-    return {};
+    return Plan{Plan::Kind::kFull, 's', {}};
 
   /* In full: every member where it is, and every place one stood. */
   std::vector<IRect> held_places;
@@ -261,33 +261,40 @@ Plan Decide(const Snapshot &held, uint32_t width, uint32_t height,
     held_places.push_back(m.dst);
   for (const Member &m : members)
     held_places.push_back(m.dst);
-  const Plan full{Plan::Kind::kFull,
+  const Plan full{Plan::Kind::kFull, 'n',
                   Gather(std::move(held_places), bounds, members, engine)};
+  auto full_for = [&full](char why) {
+    Plan plan = full;
+    plan.why = why;
+    return plan;
+  };
 
-  if (held.members.size() != members.size() ||
-      held.partial_run >= kMostPartialInARow)
-    return full;
+  if (held.members.size() != members.size())
+    return full_for('c');
+  if (held.partial_run >= kMostPartialInARow)
+    return full_for('r');
 
   std::vector<IRect> damage;
   for (size_t i = 0; i < members.size(); ++i) {
     const Member &now = members[i];
     const Member &then = held.members[i];
-    if (now.serial == 0 || !SameButFrame(now, then) ||
-        now.generation < then.generation)
-      return full;
+    if (now.serial == 0 || !SameButFrame(now, then))
+      return full_for('i');
+    if (now.generation < then.generation)
+      return full_for('g');
     if (now.generation == then.generation)
       continue;
 
     /* Damage is in the buffer's own axes; a turned member would need it
      * turned too. */
     if (now.transform != 0 || now.src.Width() <= 0 || now.src.Height() <= 0)
-      return full;
+      return full_for('t');
 
     std::vector<IRect> rects;
     bool whole = false;
     if (!history.Between(now.serial, then.generation, now.generation, &rects,
                          &whole))
-      return full;
+      return full_for('d');
 
     const bool scaled = Scaled(now);
     if (whole)
@@ -299,11 +306,11 @@ Plan Decide(const Snapshot &held, uint32_t width, uint32_t height,
   std::vector<IRect> parts =
       Gather(std::move(damage), bounds, members, engine);
   if (parts.empty())
-    return Plan{Plan::Kind::kUnchanged, {}};
+    return Plan{Plan::Kind::kUnchanged, 'n', {}};
   /* Drawing in part is drawing less, or not worth it. */
   if (Area(parts) >= Area(full.parts))
-    return full;
-  return Plan{Plan::Kind::kPartial, std::move(parts)};
+    return full_for('a');
+  return Plan{Plan::Kind::kPartial, 'n', std::move(parts)};
 }
 
 bool ClipTo(const IRect &bound, FRect *src, IRect *dst) {

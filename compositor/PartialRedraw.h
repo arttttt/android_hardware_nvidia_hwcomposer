@@ -100,6 +100,14 @@ struct Plan {
     kUnchanged,
   };
   Kind kind = Kind::kFull;
+  /* Why a drawing is full, for the frame ring: n none (partial or
+   * unchanged), h nothing known of the buffer, s a scaled member, c the
+   * members' count, r too many partial drawings in a row, i a member that
+   * is not the same layer in the same place, g a frame count that went
+   * back, t a turned or empty member, d damage the history cannot give, a
+   * a partial drawing no smaller than the full one; set by the caller: o
+   * partial drawing off or a turned group, x the engine refused parts. */
+  char why = 'n';
   /* The parts of the buffer to draw. Each is written whole, covered or
    * not, and nothing outside them is touched. None, for a full drawing,
    * means the whole buffer: nothing is known of what it holds. */

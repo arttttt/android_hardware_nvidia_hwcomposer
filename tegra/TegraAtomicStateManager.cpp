@@ -1575,6 +1575,8 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         if (partial_ && group_code == 0)
           plan = slot_pictures_.Decide(target, merge.width, merge.height,
                                        members);
+        else
+          plan.why = 'o';
         untouched = plan.kind == partial::Plan::Kind::kUnchanged;
         if (untouched)
           held_fence = slot_pictures_.Fence(target);
@@ -1614,6 +1616,7 @@ int TegraAtomicStateManager::Execute(const AtomicRequest &request,
         if (drawn.drew_whole) {
           merges_.parts_refused++;
           plan = partial::Plan{};
+          plan.why = 'x';
         }
       }
       pending_merge_.reset();
@@ -2083,7 +2086,11 @@ void TegraAtomicStateManager::NoteFrame(
                       : drawn->parts.empty()                         ? 'w'
                       : drawn->kind == partial::Plan::Kind::kPartial ? 'p'
                                                                      : 'f';
-    line << " | M" << kind << " @" << drawn_x << "," << drawn_y;
+    line << " | M" << kind;
+    /* And why a drawing was not partial (see partial::Plan::why). */
+    if (drawn->why != 'n')
+      line << '/' << drawn->why;
+    line << " @" << drawn_x << "," << drawn_y;
     for (const IRect &part : drawn->parts) {
       char b[48];
       snprintf(b, sizeof(b), " %d,%d,%d,%d", part.left, part.top,
