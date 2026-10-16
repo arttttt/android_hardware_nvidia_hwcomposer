@@ -886,7 +886,8 @@ auto HwcDisplay::ValidateStagedComposition() -> ValidateResult {
   }
 
   // Notify the flattening controller of a new frame.
-  if (layers_.size() <= 1) {
+  static const bool flatten_wanted = Properties::FlattenWhenIdle();
+  if (layers_.size() <= 1 || !flatten_wanted) {
     flatcon_->DisableFlattening();
   } else if (plan_consolidated_ && !AnyLayerDrawing()) {
     /* The plan standing is the consolidated one and nothing in the scene

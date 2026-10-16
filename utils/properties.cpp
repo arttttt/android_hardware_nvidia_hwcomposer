@@ -163,6 +163,14 @@ auto Properties::MinCornerRadius() -> float {
   return value;
 }
 
+auto Properties::FlattenWhenIdle() -> bool {
+  /* Whether a still scene is consolidated into the merge a second after
+   * its last frame. Read once, at start. On by default; upstream turned its
+   * own timer flattening off by default (433aca5), and this is the switch
+   * to measure what ours costs and saves. */
+  return property_get_bool("vendor.hwc.flatten", 1) != 0;
+}
+
 auto Properties::EnableVirtualDisplay() -> bool {
   return (property_get_bool("vendor.hwc.drm.enable_virtual_display", 0) != 0);
 }
