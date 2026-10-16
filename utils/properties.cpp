@@ -150,8 +150,8 @@ auto Properties::MinCornerRadius() -> float {
   /* The smallest corner radius worth drawing, in pixels; read once, at
    * start. A corner rounded by less is not told apart from a square one on
    * this panel, and drawing it costs the layer its window: the whole layer
-   * goes to the GPU. Two by default; zero draws every rounding, as before. */
-  constexpr float kDefault = 2.0F;
+   * goes to the GPU. Four by default; zero draws every rounding, as before. */
+  constexpr float kDefault = 4.0F;
   char buf[PROPERTY_VALUE_MAX] = {};
   property_get("vendor.hwc.min_corner_radius", buf, "");
   if (buf[0] == '\0')
