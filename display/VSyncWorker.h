@@ -73,6 +73,11 @@ class VSyncWorker {
   void SetVsyncTimestampTracking(bool enabled);
   int64_t GetLastVsyncTimestamp();
 
+  /* Whether the display is lit. An unlit one has no blanks to wait for, and
+   * the timer must not stand in for them: it would tick sixty times a second
+   * with the screen off and nobody to tell. */
+  void SetDisplayOn(bool on);
+
   void AddLastPresentFence(SharedFd &fence);
 
   // Get the next predicted vsync timestamp after |time|, based on the last
@@ -121,6 +126,7 @@ class VSyncWorker {
    * expected period. */
   bool RanAtExpectedPeriod(int64_t ran_period_ns) const REQUIRES(mutex_);
   bool enable_vsync_timestamps_ GUARDED_BY(mutex_) = false;
+  bool display_on_ GUARDED_BY(mutex_) = true;
   bool last_timestamp_is_fresh_ GUARDED_BY(mutex_) = false;
   std::optional<VsyncTimestampCallback> callback_ GUARDED_BY(mutex_);
 

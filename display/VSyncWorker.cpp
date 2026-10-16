@@ -172,6 +172,14 @@ void VSyncWorker::UpdateLastVsyncTimeWithPresentTime() {
   }
 }
 
+void VSyncWorker::SetDisplayOn(bool on) {
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    display_on_ = on;
+  }
+  UpdateVSyncControl();
+}
+
 void VSyncWorker::AddLastPresentFence(SharedFd &fence) {
   const std::lock_guard<std::mutex> lock(mutex_);
   last_present_fence_ = fence;
@@ -202,7 +210,7 @@ void VSyncWorker::StopThread() {
 }
 
 bool VSyncWorker::ShouldEnable() const {
-  return enable_vsync_timestamps_ || callback_.has_value();
+  return display_on_ && (enable_vsync_timestamps_ || callback_.has_value());
 };
 
 /*

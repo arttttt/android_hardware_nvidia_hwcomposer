@@ -1405,6 +1405,8 @@ HwcDisplay::Error HwcDisplay::SetPowerMode(PowerMode mode) {
   if (!result.IsSuccess() && !enabled) {
     return HwcDisplay::Error::kBadParameter;
   }
+  if (vsync_worker_)
+    vsync_worker_->SetDisplayOn(enabled);
   return HwcDisplay::Error::kNone;
 }
 
