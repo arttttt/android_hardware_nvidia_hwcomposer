@@ -106,6 +106,12 @@ void TestEachChange() {
   c[0].corners[4] = 3.5F;
   CHECK(m.Judge(1536, 2048, c) == Verdict::kChangedEffects);
 
+  /* A turn moved by a frame of the rotation animation is another picture,
+   * though its frame -- the box around it -- may not have moved. */
+  c = Card();
+  c[0].turned = {1200, 0, 1200, 100, 1000, 0};
+  CHECK(m.Judge(1536, 2048, c) == Verdict::kChangedEffects);
+
   c = Card();
   c.pop_back();
   CHECK(m.Judge(1536, 2048, c) == Verdict::kChangedShape);

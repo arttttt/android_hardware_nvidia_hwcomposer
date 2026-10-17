@@ -66,6 +66,8 @@ class PictureMemory {
 
     /* Rounded corners: crop left, top, right, bottom, radius. */
     std::array<float, 5> corners{};
+    /* Turned: where the crop's top-left, top-right, bottom-left land. */
+    std::array<float, 6> turned{};
   };
 
   /* Why a picture is not the remembered one -- or that it is. */

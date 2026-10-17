@@ -232,7 +232,12 @@ hwc::vk::Layer ToVkLayer(const LayerData &ld, std::pair<uint32_t, uint32_t> size
   } else if (ld.solid_color) {
     std::copy(ld.solid_color->begin(), ld.solid_color->end(), l.color);
   }
-  if (ld.effects.HasCorners()) {
+  if (ld.effects.HasTurn()) {
+    /* Drawn where its corners are told; rounded corners, given as a
+     * rectangle of the screen, would not turn with it and are left. */
+    l.turned = true;
+    std::copy(ld.effects.turned.begin(), ld.effects.turned.end(), l.turned_corners);
+  } else if (ld.effects.HasCorners()) {
     l.corner_left = ld.effects.corners[0];
     l.corner_top = ld.effects.corners[1];
     l.corner_right = ld.effects.corners[2];
@@ -260,6 +265,8 @@ PictureMemory::Member GpuMember(const LayerData &ld, const hwc::vk::Layer &l) {
   m.transform = l.transform;
   m.corners = {l.corner_left, l.corner_top, l.corner_right, l.corner_bottom,
                l.corner_radius};
+  if (l.turned)
+    std::copy(std::begin(l.turned_corners), std::end(l.turned_corners), m.turned.begin());
   return m;
 }
 

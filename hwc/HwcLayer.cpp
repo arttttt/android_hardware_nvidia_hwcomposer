@@ -318,7 +318,11 @@ occlusion::Layer HwcLayer::OcclusionInput(const IRect &screen) const {
   /* Opaque as the framework says it: a buffer it blends with nothing, or a
    * solid colour with no alpha in it -- either at full plane alpha. */
   const bool full_alpha = layer_data_.pi.alpha >= kAlphaOpaque;
-  if (layer_data_.bi)
+  /* Turned by an angle, the layer covers only part of its frame, and
+   * hides nothing it is told to. */
+  if (layer_data_.effects.HasTurn())
+    l.opaque = false;
+  else if (layer_data_.bi)
     l.opaque = full_alpha &&
                layer_data_.bi->blend_mode == BufferBlendMode::kNone;
   else if (layer_data_.solid_color)
@@ -333,10 +337,12 @@ occlusion::Layer HwcLayer::OcclusionInput(const IRect &screen) const {
     l.radius = corners[4];
   }
 
-  /* What reaches past the frame is never cut down to a part of it, and
-   * the pointer is not the occlusion's to move. */
+  /* What reaches past the frame is never cut down to a part of it, nor a
+   * turned layer, whose corners are told for the crop as it came; and the
+   * pointer is not the occlusion's to move. */
   l.keep = sf_type_ == CompositionType::kCursor ||
-           layer_data_.effects.ReachesPastFrame();
+           layer_data_.effects.ReachesPastFrame() ||
+           layer_data_.effects.HasTurn();
   return l;
 }
 

@@ -36,6 +36,11 @@ namespace android::drm_hwcomposer {
  *                    corners TL TR BL BR, alpha, left, top, right, bottom
  *   stretch          width, height, vector x, y, max x, y, mapped child
  *                    bounds left, top, right, bottom; the layer's space
+ *   turned           where the source crop's top-left, top-right and
+ *                    bottom-left land, x and y each, display space; sent
+ *                    with the geometry (patches/frameworks/native/0008)
+ *                    for a layer turned by an angle HWC2 has no transform
+ *                    for, whose display frame is then only their bounds
  *
  * Shadows, blur and stretch are kept as they came, for the executor to
  * read when it draws them; the corners are read out now. */
@@ -45,7 +50,11 @@ struct LayerEffects {
   std::vector<float> shadow;
   std::vector<float> blur;
   std::vector<float> stretch;
+  /* top-left x, y, top-right x, y, bottom-left x, y; all zero for none */
+  std::array<float, 6> turned{};
 
+  /* Turned by an angle: drawn through `turned`, not into the frame. */
+  bool HasTurn() const;
   /* Whether anything would be drawn differently for these. */
   bool Any() const;
   /* Corners rounded enough to be seen: a radius of at least the floor
@@ -62,18 +71,19 @@ struct LayerEffects {
 
   bool operator==(const LayerEffects &o) const {
     return corners == o.corners && shadow == o.shadow && blur == o.blur &&
-           stretch == o.stretch;
+           stretch == o.stretch && turned == o.turned;
   }
   bool operator!=(const LayerEffects &o) const { return !(*this == o); }
 };
 
 /* The keys this composer declares, in the order getLayerGenericMetadataKey
  * hands them out. */
-constexpr std::array<const char *, 4> kEffectKeys = {
+constexpr std::array<const char *, 5> kEffectKeys = {
     "org.lineageos.mocha.rounded_corners",
     "org.lineageos.mocha.shadow",
     "org.lineageos.mocha.blur",
     "org.lineageos.mocha.stretch",
+    "org.lineageos.mocha.turned",
 };
 
 enum class EffectResult {

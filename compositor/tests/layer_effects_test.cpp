@@ -135,6 +135,39 @@ void TestShadowBlurStretch() {
   CHECK(!e.Any());
 }
 
+/* A turned layer: six floats, kept as they came; all zero is not turned,
+ * any other length is refused and the last good corners stay. A turn is
+ * an effect -- the layer is the client's to draw. */
+void TestTurned() {
+  LayerEffects e;
+  const char *key = kEffectKeys[4];
+  CHECK(Apply(key, {1200, 0, 1200, 100, 1000, 0}, &e) == EffectResult::kApplied);
+  CHECK(e.HasTurn());
+  CHECK(e.Any());
+  CHECK(!e.ReachesPastFrame());
+  CHECK(e.turned[0] == 1200 && e.turned[3] == 100 && e.turned[4] == 1000);
+
+  CHECK(Apply(key, {1, 2, 3}, &e) == EffectResult::kMalformed);
+  CHECK(e.turned[0] == 1200);
+  const float inf = std::numeric_limits<float>::infinity();
+  CHECK(Apply(key, {inf, 0, 0, 0, 0, 0}, &e) == EffectResult::kMalformed);
+
+  CHECK(Apply(key, std::vector<float>(6, 0.F), &e) == EffectResult::kApplied);
+  CHECK(!e.HasTurn());
+  CHECK(!e.Any());
+
+  /* An empty value resets the key, as for the others. */
+  Apply(key, {1, 1, 2, 1, 1, 2}, &e);
+  CHECK(ApplyEffectMetadata(key, std::strlen(key), nullptr, 0, &e) == EffectResult::kApplied);
+  CHECK(!e.HasTurn());
+
+  /* Two layers differ by their turn alone. */
+  LayerEffects a;
+  LayerEffects b;
+  Apply(key, {1, 1, 2, 1, 1, 2}, &a);
+  CHECK(a != b);
+}
+
 void TestUnknownKey() {
   LayerEffects e;
   CHECK(Apply("org.lineageos.mocha.glow", {1}, &e) == EffectResult::kUnknownKey);
@@ -150,6 +183,7 @@ int main() {
   TestResetByEmptyValue();
   TestMalformed();
   TestShadowBlurStretch();
+  TestTurned();
   TestUnknownKey();
   if (failures == 0)
     std::printf("layer_effects_test: all passed\n");

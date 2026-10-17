@@ -66,7 +66,7 @@ PictureMemory::Verdict PictureMemory::Compare(
       return Verdict::kChangedBlend;
     if (m.transform != r.transform)
       return Verdict::kChangedTransform;
-    if (m.corners != r.corners)
+    if (m.corners != r.corners || m.turned != r.turned)
       return Verdict::kChangedEffects;
   }
   return Verdict::kSame;

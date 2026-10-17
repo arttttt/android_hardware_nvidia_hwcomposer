@@ -51,8 +51,13 @@ bool LayerEffects::ReachesPastFrame() const {
 
 float LayerEffects::min_corner_radius = 0.F;
 
+bool LayerEffects::HasTurn() const {
+  return std::any_of(turned.begin(), turned.end(), [](float f) { return f != 0.F; });
+}
+
+/* A turned layer is one: the client's to draw, which the executor does. */
 bool LayerEffects::Any() const {
-  return HasCorners() || ReachesPastFrame();
+  return HasCorners() || ReachesPastFrame() || HasTurn();
 }
 
 EffectResult ApplyEffectMetadata(const char *key, size_t key_length, const uint8_t *value,
@@ -69,6 +74,17 @@ EffectResult ApplyEffectMetadata(const char *key, size_t key_length, const uint8
     if (v.size() != effects->corners.size() || v[4] < 0.F)
       return EffectResult::kMalformed;
     std::copy(v.begin(), v.end(), effects->corners.begin());
+    return EffectResult::kApplied;
+  }
+
+  if (KeyIs(key, key_length, kEffectKeys[4])) {
+    if (v.empty()) {
+      effects->turned = {};
+      return EffectResult::kApplied;
+    }
+    if (v.size() != effects->turned.size())
+      return EffectResult::kMalformed;
+    std::copy(v.begin(), v.end(), effects->turned.begin());
     return EffectResult::kApplied;
   }
 
