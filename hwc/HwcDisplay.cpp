@@ -322,6 +322,12 @@ std::string DescribeLayers(
              l.corner_right, l.corner_bottom, l.corner_radius,
              l.acquire_fence);
     out += line;
+    if (l.turned) {
+      snprintf(line, sizeof(line), "    turned %.1f,%.1f %.1f,%.1f %.1f,%.1f\n",
+               l.turned_corners[0], l.turned_corners[1], l.turned_corners[2],
+               l.turned_corners[3], l.turned_corners[4], l.turned_corners[5]);
+      out += line;
+    }
     out += "    gen " + std::to_string(ld.generation) + " damage " +
            DamageWords(ld.pi.damage) + "\n";
   }
