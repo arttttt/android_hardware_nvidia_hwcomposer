@@ -3,11 +3,12 @@
 // rounded-corner mask; blended premultiplied-over by the pipeline.
 layout(set = 0, binding = 0) uniform sampler2D src;
 layout(push_constant) uniform PC {
-    vec4 ndc;
+    vec2 posTL;
+    vec2 posTR;
+    vec2 posBL;
     vec2 uvTL;
     vec2 uvTR;
     vec2 uvBL;
-    vec2 pad0;
     vec4 color;
     vec4 corner;
     float radius;

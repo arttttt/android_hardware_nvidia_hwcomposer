@@ -63,11 +63,12 @@ VkFormat FormatOf(int32_t hal, bool *opaque) {
 
 /* Mirrors the push-constant block of vk/shaders/compose.{vert,frag}. */
 struct LayerConstants {
-  float ndc[4];
+  float pos_tl[2];
+  float pos_tr[2];
+  float pos_bl[2];
   float uv_tl[2];
   float uv_tr[2];
   float uv_bl[2];
-  float pad0[2];
   float color[4];
   float corner[4];
   float radius;
@@ -427,10 +428,12 @@ bool VkCompositor::InitWarm() {
   vk.CmdBindDescriptorSets(warm_cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1,
                            &warm_set_, 0, nullptr);
   LayerConstants pc = {};
-  pc.ndc[0] = -1;
-  pc.ndc[1] = -1;
-  pc.ndc[2] = 1;
-  pc.ndc[3] = 1;
+  pc.pos_tl[0] = -1;
+  pc.pos_tl[1] = -1;
+  pc.pos_tr[0] = 1;
+  pc.pos_tr[1] = -1;
+  pc.pos_bl[0] = -1;
+  pc.pos_bl[1] = 1;
   pc.uv_tr[0] = 1;
   pc.uv_bl[1] = 1;
   pc.corner[2] = 16;
@@ -1022,9 +1025,12 @@ int VkCompositor::ComposeNow(const Target &target, const Layer *layers, size_t c
                        rt < d.offset.y + static_cast<int32_t>(d.extent.height) &&
                        d.offset.y < rb;
     }
-    const bool hides = l.alpha >= 1.f && l.corner_radius <= 0.f &&
+    /* A turned layer covers only part of its place: it blends. */
+    const bool hides = !l.turned && l.alpha >= 1.f && l.corner_radius <= 0.f &&
                        (l.buffer != nullptr ? (l.opaque || opaque[i]) : l.color[3] >= 1.f);
-    written[i] = replace_pipeline_ != VK_NULL_HANDLE && (!lands_on_drawn || hides);
+    /* Written, a layer counts as setting its whole place; a turned one
+     * sets only its part of it, and the rest must still be cleared. */
+    written[i] = replace_pipeline_ != VK_NULL_HANDLE && !l.turned && (!lands_on_drawn || hides);
     if (written[i] && rr > rl && rb > rt)
       written_places[n_written++] = {rl, rt, rr, rb};
   }
@@ -1080,15 +1086,19 @@ int VkCompositor::ComposeNow(const Target &target, const Layer *layers, size_t c
         vk.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound);
       }
 
-      const Quad q = PlaceLayer(l.src_left, l.src_top, l.src_right, l.src_bottom,
-                                l.buffer ? l.width : 1, l.buffer ? l.height : 1, l.dst_left,
-                                l.dst_top, l.dst_right, l.dst_bottom, l.transform, target.width,
-                                target.height);
+      const uint32_t bw = l.buffer ? l.width : 1;
+      const uint32_t bh = l.buffer ? l.height : 1;
+      const Quad q = l.turned
+                         ? PlaceTurnedLayer(l.src_left, l.src_top, l.src_right, l.src_bottom,
+                                            bw, bh, l.turned_corners, target.width,
+                                            target.height)
+                         : PlaceLayer(l.src_left, l.src_top, l.src_right, l.src_bottom, bw, bh,
+                                      l.dst_left, l.dst_top, l.dst_right, l.dst_bottom,
+                                      l.transform, target.width, target.height);
       LayerConstants pc = {};
-      pc.ndc[0] = q.ndc_left;
-      pc.ndc[1] = q.ndc_top;
-      pc.ndc[2] = q.ndc_right;
-      pc.ndc[3] = q.ndc_bottom;
+      std::memcpy(pc.pos_tl, q.pos_tl, sizeof(pc.pos_tl));
+      std::memcpy(pc.pos_tr, q.pos_tr, sizeof(pc.pos_tr));
+      std::memcpy(pc.pos_bl, q.pos_bl, sizeof(pc.pos_bl));
       std::memcpy(pc.uv_tl, q.uv_tl, sizeof(pc.uv_tl));
       std::memcpy(pc.uv_tr, q.uv_tr, sizeof(pc.uv_tr));
       std::memcpy(pc.uv_bl, q.uv_bl, sizeof(pc.uv_bl));

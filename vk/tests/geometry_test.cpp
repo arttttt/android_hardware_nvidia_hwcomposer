@@ -106,10 +106,9 @@ void TestRotationComposes() {
  * buffer, clip space is the destination over the target. */
 void TestCropAndPlacement() {
   const Quad q = PlaceLayer(10, 20, 110, 220, 200, 400, 384, 512, 1152, 1536, 0, 1536, 2048);
-  CHECK(Near(q.ndc_left, -0.5f));
-  CHECK(Near(q.ndc_right, 0.5f));
-  CHECK(Near(q.ndc_top, -0.5f));
-  CHECK(Near(q.ndc_bottom, 0.5f));
+  CHECK(At(q.pos_tl, -0.5f, -0.5f));
+  CHECK(At(q.pos_tr, 0.5f, -0.5f));
+  CHECK(At(q.pos_bl, -0.5f, 0.5f));
   CHECK(At(q.uv_tl, 0.05f, 0.05f));
   CHECK(At(q.uv_tr, 0.55f, 0.05f));
   CHECK(At(q.uv_bl, 0.05f, 0.55f));
@@ -119,10 +118,35 @@ void TestCropAndPlacement() {
  * target's edge maps past it, which the rasteriser clips. */
 void TestEdges() {
   const Quad full = PlaceLayer(0, 0, 4, 4, 4, 4, 0, 0, 1536, 2048, 0, 1536, 2048);
-  CHECK(Near(full.ndc_left, -1) && Near(full.ndc_top, -1));
-  CHECK(Near(full.ndc_right, 1) && Near(full.ndc_bottom, 1));
+  CHECK(At(full.pos_tl, -1, -1) && At(full.pos_tr, 1, -1) && At(full.pos_bl, -1, 1));
   const Quad off = PlaceLayer(0, 0, 4, 4, 4, 4, -768, 0, 768, 2048, 0, 1536, 2048);
-  CHECK(Near(off.ndc_left, -2) && Near(off.ndc_right, 0));
+  CHECK(Near(off.pos_tl[0], -2) && Near(off.pos_tr[0], 0));
+}
+
+/* A turned layer lands where its corners are told, not in a box: the
+ * crop's own corners are its texture coordinates, whatever the angle, and
+ * the fourth corner follows from the three as for a rectangle. */
+void TestTurned() {
+  /* A quarter turn clockwise of a 100x200 crop placed at 1000,0: the
+   * crop's top-left lands top-right of where it shows. */
+  const float quarter[6] = {1200, 0, 1200, 100, 1000, 0};
+  const Quad q = PlaceTurnedLayer(0, 0, 100, 200, 100, 200, quarter, 2000, 1000);
+  CHECK(At(q.pos_tl, 0.2f, -1.f));
+  CHECK(At(q.pos_tr, 0.2f, -0.8f));
+  CHECK(At(q.pos_bl, 0.f, -1.f));
+  CHECK(At(q.uv_tl, 0, 0) && At(q.uv_tr, 1, 0) && At(q.uv_bl, 0, 1));
+
+  /* Thirty degrees, the middle of a rotation animation: the fourth corner
+   * of the place is the parallelogram's, tr + bl - tl. */
+  const float c = std::cos(0.5235988f), s = std::sin(0.5235988f);
+  const float w = 400, h = 300, x0 = 500, y0 = 200;
+  const float turned[6] = {x0, y0, x0 + w * c, y0 + w * s, x0 - h * s, y0 + h * c};
+  const Quad t = PlaceTurnedLayer(50, 60, 450, 360, 500, 400, turned, 1536, 2048);
+  float br_x = t.pos_tr[0] + t.pos_bl[0] - t.pos_tl[0];
+  float br_y = t.pos_tr[1] + t.pos_bl[1] - t.pos_tl[1];
+  CHECK(Near(br_x, 2.f * (x0 + w * c - h * s) / 1536 - 1));
+  CHECK(Near(br_y, 2.f * (y0 + w * s + h * c) / 2048 - 1));
+  CHECK(At(t.uv_tl, 0.1f, 0.15f) && At(t.uv_tr, 0.9f, 0.15f) && At(t.uv_bl, 0.1f, 0.9f));
 }
 
 }  // namespace
@@ -152,6 +176,7 @@ int main() {
   TestRotationComposes();
   TestCropAndPlacement();
   TestEdges();
+  TestTurned();
   TestCovers();
   if (failures == 0)
     std::printf("vk_geometry_test: all passed\n");

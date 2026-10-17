@@ -28,6 +28,12 @@ struct Uv {
   float u, v;
 };
 
+/* A target pixel in clip space. */
+void Ndc(float x, float y, uint32_t target_width, uint32_t target_height, float out[2]) {
+  out[0] = 2.f * x / static_cast<float>(target_width) - 1.f;
+  out[1] = 2.f * y / static_cast<float>(target_height) - 1.f;
+}
+
 }  // namespace
 
 Quad PlaceLayer(float src_left, float src_top, float src_right, float src_bottom,
@@ -35,12 +41,11 @@ Quad PlaceLayer(float src_left, float src_top, float src_right, float src_bottom
                 int32_t dst_top, int32_t dst_right, int32_t dst_bottom, uint8_t transform,
                 uint32_t target_width, uint32_t target_height) {
   Quad q{};
-  const float tw = static_cast<float>(target_width);
-  const float th = static_cast<float>(target_height);
-  q.ndc_left = 2.f * static_cast<float>(dst_left) / tw - 1.f;
-  q.ndc_right = 2.f * static_cast<float>(dst_right) / tw - 1.f;
-  q.ndc_top = 2.f * static_cast<float>(dst_top) / th - 1.f;
-  q.ndc_bottom = 2.f * static_cast<float>(dst_bottom) / th - 1.f;
+  const auto l = static_cast<float>(dst_left), t = static_cast<float>(dst_top);
+  const auto r = static_cast<float>(dst_right), b = static_cast<float>(dst_bottom);
+  Ndc(l, t, target_width, target_height, q.pos_tl);
+  Ndc(r, t, target_width, target_height, q.pos_tr);
+  Ndc(l, b, target_width, target_height, q.pos_bl);
 
   const float bw = static_cast<float>(buffer_width);
   const float bh = static_cast<float>(buffer_height);
@@ -72,6 +77,24 @@ Quad PlaceLayer(float src_left, float src_top, float src_right, float src_bottom
   q.uv_tr[1] = c[1].v;
   q.uv_bl[0] = c[3].u;
   q.uv_bl[1] = c[3].v;
+  return q;
+}
+
+Quad PlaceTurnedLayer(float src_left, float src_top, float src_right, float src_bottom,
+                      uint32_t buffer_width, uint32_t buffer_height, const float corners[6],
+                      uint32_t target_width, uint32_t target_height) {
+  Quad q{};
+  Ndc(corners[0], corners[1], target_width, target_height, q.pos_tl);
+  Ndc(corners[2], corners[3], target_width, target_height, q.pos_tr);
+  Ndc(corners[4], corners[5], target_width, target_height, q.pos_bl);
+  const float bw = static_cast<float>(buffer_width);
+  const float bh = static_cast<float>(buffer_height);
+  q.uv_tl[0] = src_left / bw;
+  q.uv_tl[1] = src_top / bh;
+  q.uv_tr[0] = src_right / bw;
+  q.uv_tr[1] = src_top / bh;
+  q.uv_bl[0] = src_left / bw;
+  q.uv_bl[1] = src_bottom / bh;
   return q;
 }
 

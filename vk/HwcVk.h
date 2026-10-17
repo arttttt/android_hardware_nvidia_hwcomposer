@@ -40,7 +40,7 @@ namespace android::hwc::vk {
 
 /* Bumped whenever anything below changes shape. The composer refuses a
  * library that answers another number. */
-constexpr uint32_t apiVersion = 8;
+constexpr uint32_t apiVersion = 9;
 
 /* One layer to draw. Rectangles are in pixels; `dst` is in the target's
  * own space, whose origin is wherever the composer puts the target. */
@@ -84,6 +84,12 @@ struct Layer {
   /* Rounded corners, in the target's space; radius 0 for none. */
   float corner_left = 0, corner_top = 0, corner_right = 0, corner_bottom = 0;
   float corner_radius = 0;
+
+  /* Turned by any angle: where the crop's top-left, top-right and
+   * bottom-left land, x and y each, in the target's space. The crop is
+   * drawn there, `transform` and `dst` aside -- `dst` only bounds it. */
+  bool turned = false;
+  float turned_corners[6] = {0, 0, 0, 0, 0, 0};
 };
 
 /* Where the layers are drawn. Cleared to transparent first -- all of it,

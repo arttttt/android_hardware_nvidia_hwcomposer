@@ -21,13 +21,16 @@
 
 namespace android::hwc::vk {
 
-/* A layer's place, as the shader takes it: the destination rectangle in
- * Vulkan's clip space, and the texture coordinate at three of its corners
- * -- top-left, top-right, bottom-left; the fourth follows, the mapping
- * being affine. Kept apart from everything Vulkan so it can be checked on
- * a workstation. */
+/* A layer's place, as the shader takes it: three corners of the
+ * destination in Vulkan's clip space -- top-left, top-right, bottom-left --
+ * and the texture coordinate at each; the fourth corner follows, the
+ * mapping being affine, so the place is any parallelogram: a rectangle, or
+ * a rectangle turned. Kept apart from everything Vulkan so it can be
+ * checked on a workstation. */
 struct Quad {
-  float ndc_left, ndc_top, ndc_right, ndc_bottom;
+  float pos_tl[2];
+  float pos_tr[2];
+  float pos_bl[2];
   float uv_tl[2];
   float uv_tr[2];
   float uv_bl[2];
@@ -41,6 +44,14 @@ Quad PlaceLayer(float src_left, float src_top, float src_right, float src_bottom
                 uint32_t buffer_width, uint32_t buffer_height, int32_t dst_left,
                 int32_t dst_top, int32_t dst_right, int32_t dst_bottom, uint8_t transform,
                 uint32_t target_width, uint32_t target_height);
+
+/* A layer turned by any angle: the crop, in the buffer's pixels, drawn
+ * where its top-left, top-right and bottom-left corners land -- `corners`,
+ * x and y each, in the target's pixels. No transform: the corners already
+ * say which way the crop lies. */
+Quad PlaceTurnedLayer(float src_left, float src_top, float src_right, float src_bottom,
+                      uint32_t buffer_width, uint32_t buffer_height, const float corners[6],
+                      uint32_t target_width, uint32_t target_height);
 
 /* A rectangle of the target's pixels, right and bottom exclusive. */
 struct Box {
