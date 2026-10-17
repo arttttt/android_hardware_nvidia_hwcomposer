@@ -36,11 +36,13 @@ namespace android::drm_hwcomposer {
  *                    corners TL TR BL BR, alpha, left, top, right, bottom
  *   stretch          width, height, vector x, y, max x, y, mapped child
  *                    bounds left, top, right, bottom; the layer's space
- *   turned           where the source crop's top-left, top-right and
- *                    bottom-left land, x and y each, display space; sent
- *                    with the geometry (patches/frameworks/native/0008)
- *                    for a layer turned by an angle HWC2 has no transform
- *                    for, whose display frame is then only their bounds
+ *   turned           the buffer's crop the whole layer shows, left, top,
+ *                    right, bottom, then where its top-left, top-right
+ *                    and bottom-left land, x and y each, display space;
+ *                    sent with the geometry (patches/frameworks/native/
+ *                    0008) for a layer turned by an angle HWC2 has no
+ *                    transform for, whose display frame is then only the
+ *                    box around it and whose source crop is cut to it
  *
  * Shadows, blur and stretch are kept as they came, for the executor to
  * read when it draws them; the corners are read out now. */
@@ -50,8 +52,9 @@ struct LayerEffects {
   std::vector<float> shadow;
   std::vector<float> blur;
   std::vector<float> stretch;
-  /* top-left x, y, top-right x, y, bottom-left x, y; all zero for none */
-  std::array<float, 6> turned{};
+  /* crop left, top, right, bottom; top-left x, y, top-right x, y,
+   * bottom-left x, y; all zero for none */
+  std::array<float, 10> turned{};
 
   /* Turned by an angle: drawn through `turned`, not into the frame. */
   bool HasTurn() const;

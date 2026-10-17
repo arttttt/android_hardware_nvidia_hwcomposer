@@ -233,10 +233,17 @@ hwc::vk::Layer ToVkLayer(const LayerData &ld, std::pair<uint32_t, uint32_t> size
     std::copy(ld.solid_color->begin(), ld.solid_color->end(), l.color);
   }
   if (ld.effects.HasTurn()) {
-    /* Drawn where its corners are told; rounded corners, given as a
-     * rectangle of the screen, would not turn with it and are left. */
+    /* Drawn whole where its corners are told, from its own crop rather
+     * than the source crop, which is cut to the box around it; rounded
+     * corners, given as a rectangle of the screen, would not turn with it
+     * and are left. */
+    const auto &t = ld.effects.turned;
     l.turned = true;
-    std::copy(ld.effects.turned.begin(), ld.effects.turned.end(), l.turned_corners);
+    l.src_left = t[0];
+    l.src_top = t[1];
+    l.src_right = t[2];
+    l.src_bottom = t[3];
+    std::copy(t.begin() + 4, t.end(), l.turned_corners);
   } else if (ld.effects.HasCorners()) {
     l.corner_left = ld.effects.corners[0];
     l.corner_top = ld.effects.corners[1];
