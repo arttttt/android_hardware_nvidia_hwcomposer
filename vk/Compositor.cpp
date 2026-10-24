@@ -284,7 +284,18 @@ void VkCompositor::PrepareNow(const Layer &layer) {
     return;
   /* Ahead of any frame: no frame's claim, so if it is let go before one
    * draws it, it goes at once -- and so may what the budget let go to
-   * make room for it, the GPU being idle as often as not meanwhile. */
+   * make room for it, the GPU being idle as often as not meanwhile.
+   *
+   * And no frame is being put together on this thread now, so none has
+   * images to protect: the budget may let go of anything but this one.
+   * Left to the last drawing to mark where its images begin, the mark
+   * stood wherever the GPU last drew, every buffer imported since counted
+   * as that frame's own, and with the GPU idle -- the app's windows shown
+   * by the display and the merge engine -- the budget let go of nothing:
+   * on the device, after a few camera sessions, the composer alone kept
+   * some thirty closed windows' buffers alive, over 300 MB against the
+   * cache's 128, until the next drawing. */
+  cache_->BeginFrame();
   cache_->Get(layer.buffer, layer.width, layer.height, layer.stride, layer.format, layer.usage,
               f, false, 0, layer.height_word);
   cache_->Retire(retired_);
