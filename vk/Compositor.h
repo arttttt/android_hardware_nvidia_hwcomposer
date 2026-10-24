@@ -60,6 +60,7 @@ class VkCompositor : public Compositor {
   void Cancel(uint64_t id) override;
   bool Warm() override;
   void Prepare(const Layer &layer) override;
+  void Forget(uint64_t owner) override;
 
  private:
   explicit VkCompositor(Host *host) : host_(host) {}

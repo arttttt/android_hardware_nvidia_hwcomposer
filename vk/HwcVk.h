@@ -40,7 +40,7 @@ namespace android::hwc::vk {
 
 /* Bumped whenever anything below changes shape. The composer refuses a
  * library that answers another number. */
-constexpr uint32_t apiVersion = 9;
+constexpr uint32_t apiVersion = 10;
 
 /* One layer to draw. Rectangles are in pixels; `dst` is in the target's
  * own space, whose origin is wherever the composer puts the target. */
@@ -61,6 +61,10 @@ struct Layer {
   uint32_t stride = 0; /* in pixels */
   int32_t format = 0;  /* HAL_PIXEL_FORMAT_* */
   uint64_t usage = 0;
+
+  /* Which of the composer's layers the buffer came with, never reused;
+   * 0 for none. What Forget names. */
+  uint64_t owner = 0;
 
   /* Borrowed; the library takes its own copy if it needs one. -1 for a
    * buffer that is ready. */
@@ -168,6 +172,12 @@ class Compositor {
    * SurfaceFlinger's threaded RenderEngine maps a buffer when it is set.
    * Nothing for a solid colour or a buffer already imported. */
   virtual void Prepare(const Layer &layer) = 0;
+
+  /* The composer's layer `owner` is gone, and with it the buffers it came
+   * with: the library keeps none of them for a drawing to come. What a
+   * drawing still in flight reads goes when that drawing is done. Does
+   * not wait. */
+  virtual void Forget(uint64_t owner) = 0;
 };
 
 }  // namespace android::hwc::vk

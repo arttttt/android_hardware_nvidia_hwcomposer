@@ -105,6 +105,10 @@ class GpuExecutor {
    * that may draw it; never waits. */
   void Prepare(const vk::Layer &layer) { compositor_->Prepare(layer); }
 
+  /* The composer's layer `serial` is gone; its buffers are let go on the
+   * executor's thread. Never waits. */
+  void Forget(uint64_t serial) { compositor_->Forget(serial); }
+
   /* The buffer most recently drawn, or the first if none has been: what
    * stands in as the client target while a plan is weighed, before any
    * frame of this one has been drawn. */

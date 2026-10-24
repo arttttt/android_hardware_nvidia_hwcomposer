@@ -297,8 +297,17 @@ void VkCompositor::PrepareNow(const Layer &layer) {
    * cache's 128, until the next drawing. */
   cache_->BeginFrame();
   cache_->Get(layer.buffer, layer.width, layer.height, layer.stride, layer.format, layer.usage,
-              f, false, 0, layer.height_word);
+              f, false, 0, layer.height_word, layer.owner);
   cache_->Retire(retired_);
+}
+
+void VkCompositor::Forget(uint64_t owner) {
+  if (owner == 0)
+    return;
+  Post([this, owner] {
+    cache_->Forget(owner);
+    cache_->Retire(retired_);
+  });
 }
 
 void VkCompositor::LogOnce(int kind, int prio, const char *what) {
@@ -905,7 +914,7 @@ int VkCompositor::ComposeNow(const Target &target, const Layer *layers, size_t c
       return -1;
     }
     src[i] = cache_->Get(l.buffer, l.width, l.height, l.stride, l.format, l.usage, f, false,
-                         frame, l.height_word);
+                         frame, l.height_word, l.owner);
     if (src[i] == nullptr) {
       LogOnce(kLogImport, ANDROID_LOG_WARN, "vk: the driver would not import a buffer");
       return -1;

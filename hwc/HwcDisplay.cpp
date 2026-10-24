@@ -221,6 +221,7 @@ hwc::vk::Layer ToVkLayer(const LayerData &ld, std::pair<uint32_t, uint32_t> size
      * handle itself. */
     l.usage = GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_RENDER |
               GRALLOC_USAGE_HW_COMPOSER;
+    l.owner = ld.serial;
     l.acquire_fence = ld.acquire_fence ? *ld.acquire_fence : -1;
     const auto &sc = ld.pi.source_crop.f_rect;
     l.src_left = sc ? sc->left : 0.F;
@@ -1743,6 +1744,15 @@ auto HwcDisplay::CreateLayer(ILayerId new_layer_id) -> bool {
 }
 
 auto HwcDisplay::DestroyLayer(ILayerId layer_id) -> bool {
+  /* The GPU executor keeps a client buffer imported, for the next drawing
+   * that may read it, until its budget wants the room; a closed app's
+   * window would hold its buffers' memory until then. The layer is gone,
+   * so none of its buffers is drawn again: they are let go now. */
+  auto it = layers_.find(layer_id);
+  auto *gpu = pipeline_ ? GetPipe().GetGpuExecutor() : nullptr;
+  if (it != layers_.end() && gpu != nullptr)
+    gpu->Forget(it->second.GetLayerData().serial);
+
   auto count = layers_.erase(layer_id);
   if (count != 0) {
     MarkPlanInvalid(kLayerRemoved);

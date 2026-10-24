@@ -135,6 +135,16 @@ void ImageCache::MakeRoom(size_t adding) {
   }
 }
 
+void ImageCache::Forget(uint64_t owner) {
+  for (auto it = entries_.begin(); it != entries_.end();) {
+    /* A target is ours, whoever it was drawn for. */
+    if (!it->first.second && it->second.owner == owner)
+      Drop(it++);
+    else
+      ++it;
+  }
+}
+
 void ImageCache::Retire(uint64_t frame) {
   auto done = std::partition(set_aside_.begin(), set_aside_.end(),
                              [frame](const Entry &e) { return e.last_frame > frame; });
@@ -146,7 +156,7 @@ void ImageCache::Retire(uint64_t frame) {
 ImageCache::Entry *ImageCache::Get(const native_handle_t *handle, uint32_t width,
                                    uint32_t height, uint32_t stride, int32_t hal_format,
                                    uint64_t usage, VkFormat format, bool target,
-                                   uint64_t frame, int32_t height_word) {
+                                   uint64_t frame, int32_t height_word, uint64_t owner) {
   const uint32_t hash = HashHandle(handle);
   const uint64_t inode = InodeOf(handle);
   const Key key{handle, target};
@@ -157,6 +167,8 @@ ImageCache::Entry *ImageCache::Get(const native_handle_t *handle, uint32_t width
       /* Never lowered: an import ahead does not undo a frame's claim. */
       it->second.last_frame = std::max(it->second.last_frame, frame);
       it->second.last_use = ++tick_;
+      if (owner != 0)
+        it->second.owner = owner;
       return &it->second;
     }
     Drop(it);
@@ -206,6 +218,7 @@ ImageCache::Entry *ImageCache::Get(const native_handle_t *handle, uint32_t width
   e.inode = inode;
   e.last_frame = frame;
   e.last_use = ++tick_;
+  e.owner = owner;
   e.bytes = bytes;
   e.copy = copy;
   if (!target)

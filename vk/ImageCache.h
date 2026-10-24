@@ -61,6 +61,10 @@ class ImageCache {
     uint64_t last_frame = 0;
     /* When it was last asked for, for the budget's choice. */
     uint64_t last_use = 0;
+    /* The composer's layer it last came with, 0 for none: when that
+     * layer goes, Forget lets the image go without waiting for the
+     * budget. */
+    uint64_t owner = 0;
     size_t bytes = 0;
     /* The copy of the handle the image was imported from, when the
      * height had to be told differently; owned, closed with the image. */
@@ -91,7 +95,12 @@ class ImageCache {
    * use it, nought for an import ahead of any. */
   Entry *Get(const native_handle_t *handle, uint32_t width, uint32_t height, uint32_t stride,
              int32_t hal_format, uint64_t usage, VkFormat format, bool target, uint64_t frame,
-             int32_t height_word = -1);
+             int32_t height_word = -1, uint64_t owner = 0);
+
+  /* The composer's layer `owner` is gone: every client buffer that last
+   * came with it is set aside, to go once the frames that read it are
+   * done. */
+  void Forget(uint64_t owner);
 
   /* Every frame up to `frame` is done: what was set aside and last used
    * by one of them can go. */
